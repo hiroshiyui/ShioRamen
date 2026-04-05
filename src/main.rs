@@ -227,3 +227,151 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_from(args)
+    }
+
+    // ── subcommand routing ───────────────────────────────────────────────────
+
+    #[test]
+    fn no_subcommand_is_an_error() {
+        assert!(parse(&["shio"]).is_err());
+    }
+
+    #[test]
+    fn serve_subcommand_recognised() {
+        let cli = parse(&["shio", "serve"]).unwrap();
+        assert!(matches!(cli.command, Commands::Serve(_)));
+    }
+
+    #[test]
+    fn chat_subcommand_recognised() {
+        let cli = parse(&["shio", "chat"]).unwrap();
+        assert!(matches!(cli.command, Commands::Chat(_)));
+    }
+
+    #[test]
+    fn doctor_subcommand_recognised() {
+        let cli = parse(&["shio", "doctor"]).unwrap();
+        assert!(matches!(cli.command, Commands::Doctor(_)));
+    }
+
+    #[test]
+    fn pull_subcommand_recognised() {
+        let cli = parse(&["shio", "pull", "owner/repo/model.gguf"]).unwrap();
+        assert!(matches!(cli.command, Commands::Pull(_)));
+    }
+
+    // ── global --config flag ─────────────────────────────────────────────────
+
+    #[test]
+    fn config_flag_overrides_default() {
+        let cli = parse(&["shio", "--config", "custom.toml", "doctor"]).unwrap();
+        assert_eq!(cli.config, PathBuf::from("custom.toml"));
+    }
+
+    #[test]
+    fn config_flag_defaults_to_shio_toml() {
+        let cli = parse(&["shio", "doctor"]).unwrap();
+        assert_eq!(cli.config, PathBuf::from("./shio.toml"));
+    }
+
+    // ── serve flags ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn serve_parses_model_flag() {
+        let cli = parse(&["shio", "serve", "--model", "foo.gguf"]).unwrap();
+        let Commands::Serve(args) = cli.command else { panic!() };
+        assert_eq!(args.model, Some(PathBuf::from("foo.gguf")));
+    }
+
+    #[test]
+    fn serve_parses_all_server_flags() {
+        let cli = parse(&[
+            "shio", "serve",
+            "--model", "foo.gguf",
+            "--host", "0.0.0.0",
+            "--port", "9090",
+            "--ngl", "42",
+            "--ctx", "4096",
+            "--cache-type-k", "q4_0",
+            "--cache-type-v", "q8_0",
+            "--flash-attn",
+            "--cont-batching",
+        ]).unwrap();
+        let Commands::Serve(args) = cli.command else { panic!() };
+        assert_eq!(args.host,         Some("0.0.0.0".to_string()));
+        assert_eq!(args.port,         Some(9090u16));
+        assert_eq!(args.ngl,          Some(42i32));
+        assert_eq!(args.ctx,          Some(4096u32));
+        assert_eq!(args.cache_type_k, Some("q4_0".to_string()));
+        assert_eq!(args.cache_type_v, Some("q8_0".to_string()));
+        assert!(args.flash_attn);
+        assert!(args.cont_batching);
+    }
+
+    // ── chat flags ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn chat_parses_no_spawn_flag() {
+        let cli = parse(&["shio", "chat", "--no-spawn"]).unwrap();
+        let Commands::Chat(args) = cli.command else { panic!() };
+        assert!(args.no_spawn);
+    }
+
+    #[test]
+    fn chat_parses_temperature() {
+        let cli = parse(&["shio", "chat", "--temp", "0.3"]).unwrap();
+        let Commands::Chat(args) = cli.command else { panic!() };
+        assert_eq!(args.temp, Some(0.3f32));
+    }
+
+    #[test]
+    fn chat_flags_absent_by_default() {
+        let cli = parse(&["shio", "chat"]).unwrap();
+        let Commands::Chat(args) = cli.command else { panic!() };
+        assert!(!args.no_spawn);
+        assert!(!args.flash_attn);
+        assert!(!args.cont_batching);
+        assert!(args.model.is_none());
+        assert!(args.temp.is_none());
+    }
+
+    // ── pull flags ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn pull_stores_source() {
+        let cli = parse(&["shio", "pull", "owner/repo/model.gguf"]).unwrap();
+        let Commands::Pull(args) = cli.command else { panic!() };
+        assert_eq!(args.source, "owner/repo/model.gguf");
+    }
+
+    #[test]
+    fn pull_parses_models_dir() {
+        let cli = parse(&["shio", "pull", "src", "--models-dir", "/tmp/models"]).unwrap();
+        let Commands::Pull(args) = cli.command else { panic!() };
+        assert_eq!(args.models_dir, Some(PathBuf::from("/tmp/models")));
+    }
+
+    // ── doctor flags ────────────────────────────────────────────────────────
+
+    #[test]
+    fn doctor_parses_model_flag() {
+        let cli = parse(&["shio", "doctor", "--model", "foo.gguf"]).unwrap();
+        let Commands::Doctor(args) = cli.command else { panic!() };
+        assert_eq!(args.model, Some(PathBuf::from("foo.gguf")));
+    }
+
+    #[test]
+    fn doctor_parses_host_and_port() {
+        let cli = parse(&["shio", "doctor", "--host", "0.0.0.0", "--port", "9090"]).unwrap();
+        let Commands::Doctor(args) = cli.command else { panic!() };
+        assert_eq!(args.host, Some("0.0.0.0".to_string()));
+        assert_eq!(args.port, Some(9090u16));
+    }
+}

@@ -200,6 +200,15 @@ mod tests {
     }
 
     #[test]
+    fn load_valid_file_round_trip() {
+        let path = std::env::temp_dir().join("shio_test_valid.toml");
+        std::fs::write(&path, "[server]\nport = 9999\n").unwrap();
+        let cfg = ShioConfig::load_or_default(&path);
+        assert_eq!(cfg.server.port, Some(9999));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn load_invalid_toml_returns_error() {
         let dir = std::env::temp_dir();
         let path = dir.join("shio_test_invalid.toml");

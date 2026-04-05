@@ -73,6 +73,19 @@ impl Drop for ServerProcess {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn external_stores_url_and_has_no_child() {
+        let s = ServerProcess::external("http://127.0.0.1:8080".to_string());
+        assert_eq!(s.url, "http://127.0.0.1:8080");
+        // child is None — dropping it does not attempt to kill any process
+        drop(s);
+    }
+}
+
 async fn health_check(url: &str) -> bool {
     reqwest::get(format!("{url}/health"))
         .await

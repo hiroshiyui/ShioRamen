@@ -169,6 +169,45 @@ fn fmt_bytes(bytes: u64) -> String {
 mod tests {
     use super::*;
 
+    // ── check_binary ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn check_binary_nonexistent_increments_failures() {
+        let mut failures = 0;
+        check_binary(&PathBuf::from("/nonexistent/llama-server"), &mut failures);
+        assert_eq!(failures, 1);
+    }
+
+    #[test]
+    fn check_binary_existing_executable_no_failure() {
+        // Use the test binary itself — guaranteed to exist and be executable.
+        let bin = std::env::current_exe().unwrap();
+        let mut failures = 0;
+        check_binary(&bin, &mut failures);
+        assert_eq!(failures, 0);
+    }
+
+    // ── check_model ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn check_model_nonexistent_increments_failures() {
+        let mut failures = 0;
+        check_model(&PathBuf::from("/nonexistent/model.gguf"), &mut failures);
+        assert_eq!(failures, 1);
+    }
+
+    #[test]
+    fn check_model_existing_file_no_failure() {
+        let path = std::env::temp_dir().join("shio_test_model.gguf");
+        std::fs::write(&path, b"fake").unwrap();
+        let mut failures = 0;
+        check_model(&path, &mut failures);
+        assert_eq!(failures, 0);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── fmt_bytes ────────────────────────────────────────────────────────────
+
     #[test]
     fn fmt_bytes_below_gb_uses_mb() {
         assert_eq!(fmt_bytes(1024 * 1024),       "1 MB");

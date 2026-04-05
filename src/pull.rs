@@ -153,6 +153,25 @@ fn fmt_bytes(bytes: u64) -> String {
 mod tests {
     use super::*;
 
+    // ── run: early return when file already exists ───────────────────────────
+
+    #[tokio::test]
+    async fn run_skips_download_when_file_exists() {
+        let dir = std::env::temp_dir();
+        let existing = dir.join("already_exists.gguf");
+        std::fs::write(&existing, b"").unwrap();
+
+        let args = PullArgs {
+            source: "https://example.com/already_exists.gguf".to_string(),
+            models_dir: Some(dir.clone()),
+        };
+        let cfg = crate::config::ShioConfig::default();
+        // Must return Ok without attempting any network request.
+        run(&args, &cfg).await.unwrap();
+
+        let _ = std::fs::remove_file(&existing);
+    }
+
     // ── resolve_source ───────────────────────────────────────────────────────
 
     #[test]
