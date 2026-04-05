@@ -49,47 +49,81 @@ enum Commands {
     Pull(pull::PullArgs),
 }
 
+/// Server-launch flags shared across subcommands that need to spawn llama-server.
+#[derive(clap::Args, Debug)]
+pub struct ServerArgs {
+    /// llama-server binary [config: server.bin, default: ./bin/llama-server]
+    #[arg(long)]
+    pub server_bin: Option<PathBuf>,
+
+    /// Server host [config: server.host, default: 127.0.0.1]
+    #[arg(long)]
+    pub host: Option<String>,
+
+    /// Server port [config: server.port, default: 8080]
+    #[arg(long)]
+    pub port: Option<u16>,
+
+    /// GPU layers to offload [config: server.ngl, default: 99]
+    #[arg(long)]
+    pub ngl: Option<i32>,
+
+    /// Context window size in tokens [config: server.ctx, default: 8192]
+    #[arg(long)]
+    pub ctx: Option<u32>,
+
+    /// KV cache quantization type for keys, e.g. q4_0, q8_0, f16 [config: server.cache_type_k]
+    #[arg(long)]
+    pub cache_type_k: Option<String>,
+
+    /// KV cache quantization type for values [config: server.cache_type_v]
+    #[arg(long)]
+    pub cache_type_v: Option<String>,
+
+    /// Enable flash attention [config: server.flash_attn]
+    #[arg(long)]
+    pub flash_attn: bool,
+
+    /// Enable continuous batching [config: server.cont_batching]
+    #[arg(long)]
+    pub cont_batching: bool,
+}
+
+impl ServerArgs {
+    /// Build a `Config` from CLI flags, config file values, and hardcoded defaults.
+    /// `model` is passed separately because it lives outside `ServerArgs`.
+    pub fn to_config(&self, model: PathBuf, cfg: &config::ServerSection) -> Config {
+        Config {
+            model_path: model,
+            server_bin: self
+                .server_bin
+                .clone()
+                .or_else(|| cfg.bin.clone())
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_SERVER_BIN)),
+            host: self
+                .host
+                .clone()
+                .or_else(|| cfg.host.clone())
+                .unwrap_or_else(|| DEFAULT_HOST.to_string()),
+            port: self.port.or(cfg.port).unwrap_or(DEFAULT_PORT),
+            n_gpu_layers: self.ngl.or(cfg.ngl).unwrap_or(DEFAULT_NGL),
+            ctx_size: self.ctx.or(cfg.ctx).unwrap_or(DEFAULT_CTX),
+            cache_type_k: self.cache_type_k.clone().or_else(|| cfg.cache_type_k.clone()),
+            cache_type_v: self.cache_type_v.clone().or_else(|| cfg.cache_type_v.clone()),
+            flash_attn: self.flash_attn || cfg.flash_attn.unwrap_or(false),
+            cont_batching: self.cont_batching || cfg.cont_batching.unwrap_or(false),
+        }
+    }
+}
+
 #[derive(clap::Args, Debug)]
 struct ServeArgs {
     /// GGUF model file to load [config: chat.model]
     #[arg(short, long)]
     model: Option<PathBuf>,
 
-    /// llama-server binary [config: server.bin, default: ./bin/llama-server]
-    #[arg(long)]
-    server_bin: Option<PathBuf>,
-
-    /// Server host [config: server.host, default: 127.0.0.1]
-    #[arg(long)]
-    host: Option<String>,
-
-    /// Server port [config: server.port, default: 8080]
-    #[arg(long)]
-    port: Option<u16>,
-
-    /// GPU layers to offload [config: server.ngl, default: 99]
-    #[arg(long)]
-    ngl: Option<i32>,
-
-    /// Context window size in tokens [config: server.ctx, default: 8192]
-    #[arg(long)]
-    ctx: Option<u32>,
-
-    /// KV cache quantization type for keys, e.g. q4_0, q8_0, f16 [config: server.cache_type_k]
-    #[arg(long)]
-    cache_type_k: Option<String>,
-
-    /// KV cache quantization type for values [config: server.cache_type_v]
-    #[arg(long)]
-    cache_type_v: Option<String>,
-
-    /// Enable flash attention [config: server.flash_attn]
-    #[arg(long)]
-    flash_attn: bool,
-
-    /// Enable continuous batching [config: server.cont_batching]
-    #[arg(long)]
-    cont_batching: bool,
+    #[command(flatten)]
+    server: ServerArgs,
 }
 
 #[derive(clap::Args, Debug)]
@@ -98,41 +132,8 @@ struct ChatArgs {
     #[arg(short, long)]
     model: Option<PathBuf>,
 
-    /// llama-server binary [config: server.bin, default: ./bin/llama-server]
-    #[arg(long)]
-    server_bin: Option<PathBuf>,
-
-    /// Server host [config: server.host, default: 127.0.0.1]
-    #[arg(long)]
-    host: Option<String>,
-
-    /// Server port [config: server.port, default: 8080]
-    #[arg(long)]
-    port: Option<u16>,
-
-    /// GPU layers to offload [config: server.ngl, default: 99]
-    #[arg(long)]
-    ngl: Option<i32>,
-
-    /// Context window size in tokens [config: server.ctx, default: 8192]
-    #[arg(long)]
-    ctx: Option<u32>,
-
-    /// KV cache quantization type for keys, e.g. q4_0, q8_0, f16 [config: server.cache_type_k]
-    #[arg(long)]
-    cache_type_k: Option<String>,
-
-    /// KV cache quantization type for values [config: server.cache_type_v]
-    #[arg(long)]
-    cache_type_v: Option<String>,
-
-    /// Enable flash attention [config: server.flash_attn]
-    #[arg(long)]
-    flash_attn: bool,
-
-    /// Enable continuous batching [config: server.cont_batching]
-    #[arg(long)]
-    cont_batching: bool,
+    #[command(flatten)]
+    server: ServerArgs,
 
     /// Sampling temperature [config: chat.temperature, default: 0.7]
     #[arg(long)]
@@ -152,13 +153,6 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let cfg = ShioConfig::load_or_default(&cli.config);
 
-    // Shared resolution helpers (CLI > config > hardcoded default)
-    macro_rules! resolve {
-        ($cli:expr, $cfg:expr, $default:expr) => {
-            $cli.or_else(|| $cfg).unwrap_or_else(|| $default)
-        };
-    }
-
     match cli.command {
         Commands::Serve(args) => {
             let model = args
@@ -169,18 +163,7 @@ async fn main() -> Result<()> {
                         "--model <PATH> is required (or set chat.model in shio.toml)"
                     )
                 })?;
-            let config = Config {
-                model_path:    model,
-                server_bin:    resolve!(args.server_bin, cfg.server.bin.clone(), PathBuf::from(DEFAULT_SERVER_BIN)),
-                host:          resolve!(args.host, cfg.server.host.clone(), DEFAULT_HOST.to_string()),
-                port:          resolve!(args.port, cfg.server.port, DEFAULT_PORT),
-                n_gpu_layers:  resolve!(args.ngl, cfg.server.ngl, DEFAULT_NGL),
-                ctx_size:      resolve!(args.ctx, cfg.server.ctx, DEFAULT_CTX),
-                cache_type_k:  args.cache_type_k.or_else(|| cfg.server.cache_type_k.clone()),
-                cache_type_v:  args.cache_type_v.or_else(|| cfg.server.cache_type_v.clone()),
-                flash_attn:    args.flash_attn    || cfg.server.flash_attn.unwrap_or(false),
-                cont_batching: args.cont_batching || cfg.server.cont_batching.unwrap_or(false),
-            };
+            let config = args.server.to_config(model, &cfg.server);
             let _server = ServerProcess::spawn(&config).await?;
             eprintln!("Server running. Press Ctrl+C to stop.");
             tokio::signal::ctrl_c().await?;
@@ -188,11 +171,18 @@ async fn main() -> Result<()> {
         }
 
         Commands::Chat(args) => {
-            let server_bin = resolve!(args.server_bin, cfg.server.bin.clone(), PathBuf::from(DEFAULT_SERVER_BIN));
-            let host       = resolve!(args.host, cfg.server.host.clone(), DEFAULT_HOST.to_string());
-            let port       = resolve!(args.port, cfg.server.port, DEFAULT_PORT);
-            let temp          = resolve!(args.temp, cfg.chat.temperature, DEFAULT_TEMP);
-            let system_prompt = cfg.chat.system_prompt.clone()
+            let host = args
+                .server
+                .host
+                .clone()
+                .or_else(|| cfg.server.host.clone())
+                .unwrap_or_else(|| DEFAULT_HOST.to_string());
+            let port = args.server.port.or(cfg.server.port).unwrap_or(DEFAULT_PORT);
+            let temp = args.temp.or(cfg.chat.temperature).unwrap_or(DEFAULT_TEMP);
+            let system_prompt = cfg
+                .chat
+                .system_prompt
+                .clone()
                 .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string());
 
             let server = if args.no_spawn {
@@ -208,18 +198,7 @@ async fn main() -> Result<()> {
                             "--model <PATH> is required (or set chat.model in shio.toml)"
                         )
                     })?;
-                let config = Config {
-                    model_path:    model,
-                    server_bin,
-                    host:          host.clone(),
-                    port,
-                    n_gpu_layers:  resolve!(args.ngl, cfg.server.ngl, DEFAULT_NGL),
-                    ctx_size:      resolve!(args.ctx, cfg.server.ctx, DEFAULT_CTX),
-                    cache_type_k:  args.cache_type_k.or_else(|| cfg.server.cache_type_k.clone()),
-                    cache_type_v:  args.cache_type_v.or_else(|| cfg.server.cache_type_v.clone()),
-                    flash_attn:    args.flash_attn    || cfg.server.flash_attn.unwrap_or(false),
-                    cont_batching: args.cont_batching || cfg.server.cont_batching.unwrap_or(false),
-                };
+                let config = args.server.to_config(model, &cfg.server);
                 ServerProcess::spawn(&config).await?
             };
 
@@ -335,14 +314,14 @@ mod tests {
             "--cont-batching",
         ]).unwrap();
         let Commands::Serve(args) = cli.command else { panic!() };
-        assert_eq!(args.host,         Some("0.0.0.0".to_string()));
-        assert_eq!(args.port,         Some(9090u16));
-        assert_eq!(args.ngl,          Some(42i32));
-        assert_eq!(args.ctx,          Some(4096u32));
-        assert_eq!(args.cache_type_k, Some("q4_0".to_string()));
-        assert_eq!(args.cache_type_v, Some("q8_0".to_string()));
-        assert!(args.flash_attn);
-        assert!(args.cont_batching);
+        assert_eq!(args.server.host,         Some("0.0.0.0".to_string()));
+        assert_eq!(args.server.port,         Some(9090u16));
+        assert_eq!(args.server.ngl,          Some(42i32));
+        assert_eq!(args.server.ctx,          Some(4096u32));
+        assert_eq!(args.server.cache_type_k, Some("q4_0".to_string()));
+        assert_eq!(args.server.cache_type_v, Some("q8_0".to_string()));
+        assert!(args.server.flash_attn);
+        assert!(args.server.cont_batching);
     }
 
     // ── chat flags ───────────────────────────────────────────────────────────
@@ -366,8 +345,8 @@ mod tests {
         let cli = parse(&["shio", "chat"]).unwrap();
         let Commands::Chat(args) = cli.command else { panic!() };
         assert!(!args.no_spawn);
-        assert!(!args.flash_attn);
-        assert!(!args.cont_batching);
+        assert!(!args.server.flash_attn);
+        assert!(!args.server.cont_batching);
         assert!(args.model.is_none());
         assert!(args.temp.is_none());
     }
@@ -423,7 +402,7 @@ mod tests {
         assert!(args.temp.is_none());
         assert!(args.files.is_empty());
         assert!(!args.no_spawn);
-        assert!(!args.flash_attn);
+        assert!(!args.server.flash_attn);
     }
 
     // ── edit flags ───────────────────────────────────────────────────────────
@@ -461,7 +440,7 @@ mod tests {
         let Commands::Edit(args) = cli.command else { panic!() };
         assert!(!args.yes);
         assert!(!args.no_spawn);
-        assert!(!args.flash_attn);
+        assert!(!args.server.flash_attn);
         assert!(args.model.is_none());
     }
 
