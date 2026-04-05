@@ -9,7 +9,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-use chat::ChatSession;
+use chat::{ChatSession, DEFAULT_SYSTEM_PROMPT};
 use client::LlamaClient;
 use config::{
     Config, ShioConfig, DEFAULT_CTX, DEFAULT_HOST, DEFAULT_NGL, DEFAULT_PORT, DEFAULT_SERVER_BIN,
@@ -179,7 +179,9 @@ async fn main() -> Result<()> {
             let server_bin = resolve!(args.server_bin, cfg.server.bin.clone(), PathBuf::from(DEFAULT_SERVER_BIN));
             let host       = resolve!(args.host, cfg.server.host.clone(), DEFAULT_HOST.to_string());
             let port       = resolve!(args.port, cfg.server.port, DEFAULT_PORT);
-            let temp       = resolve!(args.temp, cfg.chat.temperature, DEFAULT_TEMP);
+            let temp          = resolve!(args.temp, cfg.chat.temperature, DEFAULT_TEMP);
+            let system_prompt = cfg.chat.system_prompt.clone()
+                .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string());
 
             let server = if args.no_spawn {
                 let url = format!("http://{host}:{port}");
@@ -211,7 +213,7 @@ async fn main() -> Result<()> {
 
             println!();
             let client = LlamaClient::new(server.url.clone());
-            let mut session = ChatSession::new(client, temp);
+            let mut session = ChatSession::new(client, temp, system_prompt);
             session.run().await?;
             drop(server);
         }

@@ -3,7 +3,7 @@ use rustyline::{error::ReadlineError, DefaultEditor};
 
 use crate::client::{LlamaClient, Message};
 
-const SYSTEM_PROMPT: &str = "\
+pub const DEFAULT_SYSTEM_PROMPT: &str = "\
 You are ShioRamen, a sharp, focused local coding assistant running entirely offline. \
 Be concise and accurate. Provide working code with minimal prose unless the user asks \
 for explanation. Always fence code blocks with the correct language identifier.";
@@ -15,12 +15,12 @@ pub struct ChatSession {
 }
 
 impl ChatSession {
-    pub fn new(client: LlamaClient, temperature: f32) -> Self {
+    pub fn new(client: LlamaClient, temperature: f32, system_prompt: String) -> Self {
         Self {
             client,
             messages: vec![Message {
                 role: "system".to_string(),
-                content: SYSTEM_PROMPT.to_string(),
+                content: system_prompt,
             }],
             temperature,
         }

@@ -16,8 +16,16 @@ flash_attn    = true   # Faster attention; disable if you hit compatibility issu
 cont_batching = true   # Better throughput when multiple requests queue up
 
 [chat]
-model       = "./models/gemma4-26b-q4_k_m.gguf"
-temperature = 0.7   # Lower (0.1–0.3) for coding; higher (0.7–1.0) for creative tasks
+model       = "./models/gemma-4-e4b-it-Q8_0.gguf"
+temperature = 0.1   # Low temperature for precise, deterministic coding responses
+
+system_prompt = """
+You are ShioRamen, a sharp, focused local coding assistant running entirely offline.
+Be concise and accurate. Provide working code with minimal prose unless the user asks
+for explanation. Always fence code blocks with the correct language identifier.
+Prefer modern idioms and standard library solutions. If a question is ambiguous, ask
+one clarifying question before proceeding.
+"""
 
 [paths]
 models_dir = "./models"

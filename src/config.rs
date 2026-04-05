@@ -33,8 +33,9 @@ pub struct ServerSection {
 
 #[derive(Debug, Deserialize, Default)]
 pub struct ChatSection {
-    pub model:       Option<PathBuf>,
-    pub temperature: Option<f32>,
+    pub model:         Option<PathBuf>,
+    pub temperature:   Option<f32>,
+    pub system_prompt: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
