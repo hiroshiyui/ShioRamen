@@ -34,6 +34,7 @@ Do not skip files because they look small — bugs hide in helpers.
 ## Step 3: Run automated checks
 
 ```bash
+cargo fmt --check 2>&1
 cargo build 2>&1
 cargo test 2>&1
 cargo clippy -- -D warnings 2>&1
@@ -130,6 +131,7 @@ Write a structured report:
 - **[src/baz.rs:15]** `clone()` inside loop; consider passing a reference instead.
 
 ### Automated checks
+- `cargo fmt --check`: clean
 - `cargo test`: 41 passed, 0 failed
 - `cargo clippy`: clean
 

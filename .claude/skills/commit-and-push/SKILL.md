@@ -25,16 +25,19 @@ Read the output to understand:
 
 ## Step 2: Run quality gates
 
-Before touching git, run tests and lints. **Do not proceed if either fails.**
+Before touching git, run tests and lints. **Do not proceed if any gate fails.**
 
 ```bash
-cargo test
+cargo fmt --check
 cargo clippy -- -D warnings
+cargo test
 ```
 
-If `cargo test` fails: stop, report which tests failed, and ask the user to fix them first.
+If `cargo fmt --check` fails: run `cargo fmt` to fix formatting automatically, then re-stage the affected files as part of the relevant topic commit.
 
-If `cargo clippy` fails: fix the warnings yourself (they are usually trivial — unused imports, needless borrows, etc.), then re-run both checks before continuing.
+If `cargo clippy` fails: fix the warnings yourself (they are usually trivial — unused imports, needless borrows, etc.), then re-run before continuing.
+
+If `cargo test` fails: stop, report which tests failed, and ask the user to fix them first.
 
 ## Step 3: Group changes by topic
 
