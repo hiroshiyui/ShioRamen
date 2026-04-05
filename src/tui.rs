@@ -103,8 +103,9 @@ struct App {
     event_tx: mpsc::UnboundedSender<TuiEvent>,
     event_rx: mpsc::UnboundedReceiver<TuiEvent>,
 
-    status: AppStatus,
-    quit:   bool,
+    status:     AppStatus,
+    anim_frame: u8,   // cycles 0-2 while Waiting, drives the thinking animation
+    quit:       bool,
 }
 
 enum AppStatus {
@@ -168,6 +169,7 @@ async fn run_loop(
         event_tx,
         event_rx,
         status:      AppStatus::Idle,
+        anim_frame:  0,
         quit:        false,
     };
 
@@ -179,6 +181,8 @@ async fn run_loop(
     app.push_info(welcome);
 
     let mut events = EventStream::new();
+    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(400));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     term.draw(|f| render(f, &app))?;
 
     while !app.quit {
@@ -197,6 +201,11 @@ async fn run_loop(
                     handle_model_event(&mut app, ev);
                 }
             },
+            _ = ticker.tick() => {
+                if matches!(app.status, AppStatus::Waiting) {
+                    app.anim_frame = app.anim_frame.wrapping_add(1);
+                }
+            }
         }
 
         term.draw(|f| render(f, &app))?;
@@ -249,10 +258,11 @@ fn render(f: &mut Frame, app: &App) {
     // ── Status line ────────────────────────────────────────────────────────────
     let (status_text, status_style) = match &app.status {
         AppStatus::Idle    => (String::new(), Style::default()),
-        AppStatus::Waiting => (
-            "  ● thinking…".to_string(),
-            Style::default().fg(Color::Yellow),
-        ),
+        AppStatus::Waiting => {
+            const FRAMES: &[&str] = &["🤔.", "🤔..", "🤔..."];
+            let frame = FRAMES[app.anim_frame as usize % FRAMES.len()];
+            (format!("  {frame}"), Style::default().fg(Color::Yellow))
+        }
         AppStatus::Confirming { prompt, .. } => (
             format!("  Confirm: {prompt}  [y/N]"),
             Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
@@ -586,7 +596,8 @@ async fn submit(app: &mut App) {
     // Regular user message.
     app.push_entry(EntryKind::User, &input);
     app.messages.push(Message::user(&input));
-    app.status = AppStatus::Waiting;
+    app.status     = AppStatus::Waiting;
+    app.anim_frame = 0;
     dispatch_turn(app);
 }
 
