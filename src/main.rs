@@ -259,8 +259,10 @@ fn prompt_trust() -> Result<bool> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let path = cwd.display().to_string();
 
-    // Inner box width: wide enough for the path plus 4 chars of padding.
-    let inner = 56usize.max(path.len() + 4);
+    // Inner box width: must fit all static text lines (longest is 56 chars)
+    // plus 4 chars of side padding (2 each side), so minimum is 60.
+    // Also expand if the path is longer.
+    let inner = 60usize.max(path.len() + 4);
     let bar = "─".repeat(inner);
     let w = inner - 4; // text column width (2 spaces each side)
 
