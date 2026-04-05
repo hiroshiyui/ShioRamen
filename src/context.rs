@@ -29,6 +29,17 @@ const SKIP_DIRS: &[&str] = &[
 /// Directories are walked recursively; only source-like text files are kept.
 pub fn collect(root: &Path) -> Result<Vec<(PathBuf, String)>> {
     if root.is_file() {
+        // Apply the same size cap as collect_dir to prevent accidentally loading
+        // a giant binary or log file into the model's context window.
+        let size = root.metadata().map(|m| m.len()).unwrap_or(0);
+        if size > MAX_FILE_BYTES {
+            anyhow::bail!(
+                "File too large to include: {} ({} KB, limit is {} KB)",
+                root.display(),
+                size / 1024,
+                MAX_FILE_BYTES / 1024,
+            );
+        }
         let content = std::fs::read_to_string(root)
             .with_context(|| format!("Cannot read file: {}", root.display()))?;
         return Ok(vec![(root.to_path_buf(), content)]);

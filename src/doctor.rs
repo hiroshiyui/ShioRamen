@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::config::{DEFAULT_HOST, DEFAULT_PORT, DEFAULT_SERVER_BIN, ShioConfig};
@@ -87,7 +87,7 @@ pub async fn run(args: &DoctorArgs, cfg: &ShioConfig) {
     }
 }
 
-fn check_binary(path: &PathBuf, failures: &mut usize) {
+fn check_binary(path: &Path, failures: &mut usize) {
     if !path.is_file() {
         fail!("llama-server binary: {} (not found)", path.display());
         *failures += 1;
@@ -112,7 +112,7 @@ fn check_binary(path: &PathBuf, failures: &mut usize) {
     ok!("llama-server binary: {}", path.display());
 }
 
-fn check_model(path: &PathBuf, failures: &mut usize) {
+fn check_model(path: &Path, failures: &mut usize) {
     match std::fs::metadata(path) {
         Ok(meta) if meta.is_file() => {
             ok!("Model file: {} ({})", path.display(), fmt_bytes(meta.len()));

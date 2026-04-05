@@ -495,11 +495,18 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
 
 fn toggle_select_mode(app: &mut App) {
     use std::io::stdout;
-    app.select_mode = !app.select_mode;
-    if app.select_mode {
-        execute!(stdout(), DisableMouseCapture).ok();
+    let want_select = !app.select_mode;
+    let result = if want_select {
+        execute!(stdout(), DisableMouseCapture)
     } else {
-        execute!(stdout(), EnableMouseCapture).ok();
+        execute!(stdout(), EnableMouseCapture)
+    };
+    match result {
+        Ok(()) => app.select_mode = want_select,
+        Err(e) => app.push_entry(
+            EntryKind::Error,
+            &format!("Failed to toggle select mode: {e}"),
+        ),
     }
 }
 

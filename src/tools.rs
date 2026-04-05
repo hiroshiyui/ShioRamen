@@ -2,10 +2,14 @@
 use std::io::{self, Write};
 use std::path::Path;
 use std::process::Command;
+use std::sync::OnceLock;
 
 use serde_json::Value;
 
 use crate::client::{FunctionSpec, ToolCallItem, ToolDef};
+
+/// Default character limit for `fetch_url` responses.
+const DEFAULT_MAX_CHARS: usize = 8_000;
 
 // ── Tool definitions (sent to the model) ─────────────────────────────────────
 
@@ -223,42 +227,13 @@ pub struct ToolExecutor {
     pub confirm_shell: bool,
 }
 
-const BOLD: &str = "\x1b[1m";
-const CYAN: &str = "\x1b[36m";
-const GREEN: &str = "\x1b[32m";
 const YELLOW: &str = "\x1b[33m";
 const RESET: &str = "\x1b[0m";
 
 impl ToolExecutor {
-    /// Dispatch a tool call and return the result string sent back to the model.
-    /// Logs the call and result to stderr.
-    pub fn execute(&self, call: &ToolCallItem) -> String {
-        let args: Value = match serde_json::from_str(&call.function.arguments) {
-            Ok(v) => v,
-            Err(e) => return format!("Error parsing arguments: {e}"),
-        };
-
-        let name = call.function.name.as_str();
-        let short_args = short_display(&args);
-        eprintln!("  {CYAN}{BOLD}⚡ {name}({short_args}){RESET}");
-
-        let result = self.dispatch(name, &args);
-
-        let preview = result
-            .lines()
-            .next()
-            .unwrap_or("")
-            .chars()
-            .take(80)
-            .collect::<String>();
-        eprintln!("  {GREEN}→ {preview}{RESET}");
-
-        result
-    }
-
-    /// Like `execute` but produces no terminal output.
-    /// Use in TUI mode where stderr would corrupt the display.
+    /// Execute a tool call without producing any terminal output.
     /// Confirmation must be handled externally before calling this.
+    /// Used by the TUI agent loop where stderr would corrupt the display.
     pub fn execute_quiet(&self, call: &ToolCallItem) -> String {
         let args: Value = match serde_json::from_str(&call.function.arguments) {
             Ok(v) => v,
@@ -557,7 +532,15 @@ impl ToolExecutor {
             None => return "Error: missing 'dst'".into(),
         };
 
-        if self.confirm_writes && !confirm(&format!("{YELLOW}Move {src} → {dst}?{RESET}")) {
+        let dst_exists = Path::new(dst).exists();
+        let confirm_msg = if dst_exists {
+            format!(
+                "{YELLOW}Move {src} → {dst}? WARNING: destination already exists and will be overwritten.{RESET}"
+            )
+        } else {
+            format!("{YELLOW}Move {src} → {dst}?{RESET}")
+        };
+        if self.confirm_writes && !confirm(&confirm_msg) {
             return "Aborted by user.".into();
         }
 
@@ -580,11 +563,20 @@ impl ToolExecutor {
             Some(u) => u,
             None => return "Error: missing 'url' argument".into(),
         };
-        let max_chars = args["max_chars"].as_u64().unwrap_or(8_000) as usize;
+        let max_chars = args["max_chars"]
+            .as_u64()
+            .unwrap_or(DEFAULT_MAX_CHARS as u64) as usize;
 
         // Only allow http/https — no file://, ftp://, etc.
         if !url.starts_with("http://") && !url.starts_with("https://") {
             return format!("Error: only http:// and https:// URLs are supported, got: {url}");
+        }
+
+        // Block requests to localhost and private IP ranges to prevent SSRF.
+        if is_private_host(url) {
+            return format!(
+                "Error: requests to localhost and private network addresses are not allowed: {url}"
+            );
         }
 
         let client = match reqwest::blocking::Client::builder()
@@ -613,10 +605,12 @@ impl ToolExecutor {
             .to_string();
 
         // Read up to 2 MB to avoid filling memory on huge pages.
+        // Truncate at a char boundary so we never split a multi-byte codepoint.
         let body = match response.text() {
             Ok(t) => {
-                if t.len() > 2 * 1024 * 1024 {
-                    t[..2 * 1024 * 1024].to_string()
+                const BODY_LIMIT: usize = 2 * 1024 * 1024;
+                if t.len() > BODY_LIMIT {
+                    t[..t.floor_char_boundary(BODY_LIMIT)].to_string()
                 } else {
                     t
                 }
@@ -630,12 +624,13 @@ impl ToolExecutor {
             body
         };
 
-        // Trim and truncate.
+        // Trim and truncate at a char boundary so we never split a multi-byte codepoint.
         let text = text.trim().to_string();
         if text.len() > max_chars {
+            let limit = text.floor_char_boundary(max_chars);
             format!(
                 "{}\n\n[… truncated at {max_chars} chars — use max_chars to get more]",
-                &text[..max_chars]
+                &text[..limit]
             )
         } else {
             text
@@ -653,22 +648,38 @@ impl ToolExecutor {
 /// 3. Strip all remaining tags.
 /// 4. Decode common HTML entities.
 /// 5. Collapse runs of whitespace.
+///
+/// All regexes are compiled once and reused across calls via `OnceLock`.
 fn strip_html(html: &str) -> String {
+    static RE_SCRIPT: OnceLock<regex::Regex> = OnceLock::new();
+    static RE_STYLE: OnceLock<regex::Regex> = OnceLock::new();
+    static RE_BLOCK: OnceLock<regex::Regex> = OnceLock::new();
+    static RE_TAG: OnceLock<regex::Regex> = OnceLock::new();
+    static RE_SPACES: OnceLock<regex::Regex> = OnceLock::new();
+    static RE_NEWLINES: OnceLock<regex::Regex> = OnceLock::new();
+
+    let re_script =
+        RE_SCRIPT.get_or_init(|| regex::Regex::new(r"(?si)<script[^>]*>.*?</script>").unwrap());
+    let re_style =
+        RE_STYLE.get_or_init(|| regex::Regex::new(r"(?si)<style[^>]*>.*?</style>").unwrap());
+    let re_block = RE_BLOCK.get_or_init(|| {
+        regex::Regex::new(
+            r"(?i)</?(?:p|div|h[1-6]|li|tr|br|hr|blockquote|pre|article|section|header|footer|nav|main)[^>]*>",
+        )
+        .unwrap()
+    });
+    let re_tag = RE_TAG.get_or_init(|| regex::Regex::new(r"<[^>]+>").unwrap());
+    let re_spaces = RE_SPACES.get_or_init(|| regex::Regex::new(r"[ \t]+").unwrap());
+    let re_newlines = RE_NEWLINES.get_or_init(|| regex::Regex::new(r"\n{3,}").unwrap());
+
     // 1. Drop script / style blocks (content included).
-    let re_script = regex::Regex::new(r"(?si)<script[^>]*>.*?</script>").unwrap();
-    let re_style = regex::Regex::new(r"(?si)<style[^>]*>.*?</style>").unwrap();
     let s = re_script.replace_all(html, " ");
     let s = re_style.replace_all(&s, " ");
 
     // 2. Block-level tags → newline so paragraphs break visually.
-    let re_block = regex::Regex::new(
-        r"(?i)</?(?:p|div|h[1-6]|li|tr|br|hr|blockquote|pre|article|section|header|footer|nav|main)[^>]*>",
-    )
-    .unwrap();
     let s = re_block.replace_all(&s, "\n");
 
     // 3. Strip all remaining tags.
-    let re_tag = regex::Regex::new(r"<[^>]+>").unwrap();
     let s = re_tag.replace_all(&s, "");
 
     // 4. Decode common HTML entities.
@@ -687,12 +698,72 @@ fn strip_html(html: &str) -> String {
         .replace("&raquo;", "»");
 
     // 5. Collapse runs of whitespace; preserve paragraph breaks (2+ newlines → blank line).
-    let re_spaces = regex::Regex::new(r"[ \t]+").unwrap();
     let s = re_spaces.replace_all(&s, " ");
-    let re_newlines = regex::Regex::new(r"\n{3,}").unwrap();
     let s = re_newlines.replace_all(&s, "\n\n");
 
     s.trim().to_string()
+}
+
+/// Return `true` if the URL's host is localhost, a loopback address, or a
+/// private/link-local IP range — any destination that should not be reachable
+/// from an SSRF attack.
+fn is_private_host(url: &str) -> bool {
+    // Strip scheme.
+    let without_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+
+    // Strip path, query, fragment — everything after the first '/', '?', '#'.
+    let host_with_port = without_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(without_scheme);
+
+    // Strip port.  IPv6 addresses are enclosed in brackets: [::1]:8080.
+    let host = if host_with_port.starts_with('[') {
+        host_with_port
+            .trim_start_matches('[')
+            .split(']')
+            .next()
+            .unwrap_or(host_with_port)
+    } else {
+        // For plain hostnames / IPv4 we can't just split on ':' because colons
+        // appear in IPv6 too — but we've already handled the bracket form above,
+        // so here it's safe to strip the port with rsplit_once.
+        host_with_port
+            .rsplit_once(':')
+            .map(|(h, _)| h)
+            .unwrap_or(host_with_port)
+    };
+
+    let host_lc = host.to_ascii_lowercase();
+
+    // Textual localhost / unspecified.
+    if matches!(host_lc.as_str(), "localhost" | "::1" | "0.0.0.0") {
+        return true;
+    }
+    // .local mDNS names resolve to the LAN.
+    if host_lc.ends_with(".local") {
+        return true;
+    }
+
+    // IPv4 private / loopback / link-local ranges.
+    if let Ok(ipv4) = host.parse::<std::net::Ipv4Addr>() {
+        let o = ipv4.octets();
+        return o[0] == 127                                    // 127.0.0.0/8 loopback
+            || o[0] == 10                                     // 10.0.0.0/8
+            || (o[0] == 172 && (16..=31).contains(&o[1]))    // 172.16.0.0/12
+            || (o[0] == 192 && o[1] == 168)                  // 192.168.0.0/16
+            || (o[0] == 169 && o[1] == 254); // 169.254.0.0/16 IMDS / link-local
+    }
+
+    // IPv6 loopback (::1 already caught above as a string, but cover parsed form too).
+    if let Ok(ipv6) = host.parse::<std::net::Ipv6Addr>() {
+        return ipv6.is_loopback();
+    }
+
+    false
 }
 
 fn grep_path(path: &Path, re: &regex::Regex, out: &mut Vec<String>) {
@@ -729,30 +800,6 @@ fn confirm(prompt: &str) -> bool {
     let mut answer = String::new();
     io::stdin().read_line(&mut answer).ok();
     answer.trim().eq_ignore_ascii_case("y")
-}
-
-/// Summarise JSON args to a short display string for the tool-call log line.
-fn short_display(args: &Value) -> String {
-    let Value::Object(map) = args else {
-        return args.to_string();
-    };
-    map.iter()
-        .map(|(k, v)| {
-            let val = match v {
-                Value::String(s) => {
-                    let s = s.replace('\n', "↵");
-                    if s.chars().count() > 60 {
-                        format!("\"{}…\"", s.chars().take(60).collect::<String>())
-                    } else {
-                        format!("\"{s}\"")
-                    }
-                }
-                other => other.to_string(),
-            };
-            format!("{k}={val}")
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 #[cfg(test)]
@@ -849,15 +896,6 @@ mod tests {
         let args = serde_json::json!({ "pattern": "fn main", "path": "src/main.rs" });
         let out = ex.grep_files(&args);
         assert!(out.contains("fn main"), "{out}");
-    }
-
-    // ── short_display ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn short_display_formats_string_args() {
-        let v = serde_json::json!({ "path": "src/main.rs" });
-        let s = short_display(&v);
-        assert!(s.contains("src/main.rs"), "{s}");
     }
 
     // ── read_file_range ───────────────────────────────────────────────────────
