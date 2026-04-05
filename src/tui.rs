@@ -116,7 +116,8 @@ struct App {
     event_rx: mpsc::UnboundedReceiver<TuiEvent>,
 
     status: AppStatus,
-    anim_frame: u8, // cycles 0-2 while Waiting, drives the thinking animation
+    anim_frame: u8,    // cycles 0-2 while Waiting, drives the thinking animation
+    select_mode: bool, // when true, mouse capture is disabled so the terminal can select text
     quit: bool,
 }
 
@@ -192,6 +193,7 @@ async fn run_loop(
         event_rx,
         status: AppStatus::Idle,
         anim_frame: 0,
+        select_mode: false,
         quit: false,
     };
 
@@ -262,8 +264,9 @@ fn render(f: &mut Frame, app: &App) {
     } else {
         "tools:OFF"
     };
-    let title_str =
-        format!(" ShioRamen  [{mode}]  [Tab] complete  [PgUp/Dn] scroll  [Ctrl+C] quit");
+    let title_str = format!(
+        " ShioRamen  [{mode}]  [Tab] complete  [PgUp/Dn] scroll  [F2] select  [Ctrl+C] quit"
+    );
     f.render_widget(
         Paragraph::new(title_str).style(Style::default().bg(Color::DarkGray).fg(Color::White)),
         chunks[0],
@@ -285,7 +288,19 @@ fn render(f: &mut Frame, app: &App) {
 
     // ── Status line ────────────────────────────────────────────────────────────
     let (status_text, status_style) = match &app.status {
-        AppStatus::Idle => (String::new(), Style::default()),
+        AppStatus::Idle => {
+            if app.select_mode {
+                (
+                    "  Select mode — drag to select text, then copy.  [F2] exit select mode"
+                        .to_string(),
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                (String::new(), Style::default())
+            }
+        }
         AppStatus::Waiting => {
             const FRAMES: &[&str] = &["🤔.", "🤔..", "🤔..."];
             let frame = FRAMES[app.anim_frame as usize % FRAMES.len()];
@@ -443,6 +458,9 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         // Tab completion
         (Tab, _) => do_complete(app),
 
+        // Select mode toggle
+        (F(2), _) => toggle_select_mode(app),
+
         // Bash-style line editing
         (Char('a'), m) if m.contains(Mods::CONTROL) => {
             app.cursor = 0;
@@ -473,6 +491,16 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     }
 
     false
+}
+
+fn toggle_select_mode(app: &mut App) {
+    use std::io::stdout;
+    app.select_mode = !app.select_mode;
+    if app.select_mode {
+        execute!(stdout(), DisableMouseCapture).ok();
+    } else {
+        execute!(stdout(), EnableMouseCapture).ok();
+    }
 }
 
 fn send_confirm(app: &mut App, yes: bool) {
