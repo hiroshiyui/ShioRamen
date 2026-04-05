@@ -152,14 +152,20 @@ Options:
 |---------------|--------|
 | `Enter` | Send message |
 | `Ctrl+C` / `Ctrl+D` | Quit |
-| `PgUp` / `PgDn` | Scroll through chat history |
+| `PgUp` / `PgDn` | Scroll chat history up / down (10 lines) |
 | `Up` / `Down` | Browse input history |
+| `Left` / `Right` | Move cursor one character |
+| `Ctrl+Left` / `Ctrl+Right` | Move cursor one word |
+| `Home` / `End` | Move cursor to start / end of line |
+| `Backspace` / `Delete` | Delete character before / after cursor |
 | `Tab` | Cycle through slash-command or path completions |
 | `Ctrl+U` | Clear current input line |
 | `/reset` | Clear conversation history (keeps system prompt) |
 | `/include <path>` | Load a file or directory into context |
 | `/tools` | List available tools |
 | `/exit` / `/quit` | Quit |
+
+When the model requests a destructive action (writing a file or running a shell command), the status bar shows a `[y/N]` prompt. Press `y` to allow, or `n` / `Esc` / `Enter` to deny.
 
 ### `ask`
 
@@ -221,6 +227,7 @@ shio pull <SOURCE> [--models-dir <DIR>]
 `SOURCE` can be:
 - A HuggingFace path: `owner/repo/filename.gguf`
 - A direct HTTPS URL: `https://…/filename.gguf`
+- A HuggingFace web-page URL (the `/blob/main/` viewer URL is automatically rewritten to the direct download URL)
 
 Downloads are saved to `./models/` (or `paths.models_dir` from config).  
 Already-downloaded files are skipped.
@@ -232,8 +239,10 @@ Check that all required components are present and working.
 ```
 shio doctor [OPTIONS]
 
-  -m, --model <MODEL>   GGUF model file to verify
-      --host / --port   Server address to probe
+  -m, --model <MODEL>        GGUF model file to verify  [config: chat.model]
+      --server-bin <PATH>    llama-server binary to check  [default: ./bin/llama-server]
+      --host <HOST>          Server host to probe  [default: 127.0.0.1]
+      --port <PORT>          Server port to probe  [default: 8080]
 ```
 
 Example output:
@@ -302,4 +311,4 @@ cargo install --path . # install shio to ./bin/
 
 ## License
 
-MIT
+[GPL-3.0-or-later](LICENSE)
