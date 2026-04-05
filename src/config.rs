@@ -12,6 +12,8 @@ pub struct ShioConfig {
     pub chat: ChatSection,
     #[serde(default)]
     pub paths: PathsSection,
+    #[serde(default)]
+    pub tools: ToolsSection,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -41,6 +43,16 @@ pub struct ChatSection {
 #[derive(Debug, Deserialize, Default)]
 pub struct PathsSection {
     pub models_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct ToolsSection {
+    /// Enable tool use (file I/O, shell) in chat sessions. Default: true.
+    pub enabled: Option<bool>,
+    /// Ask for confirmation before writing files. Default: true.
+    pub confirm_writes: Option<bool>,
+    /// Ask for confirmation before running shell commands. Default: true.
+    pub confirm_shell: Option<bool>,
 }
 
 impl ShioConfig {

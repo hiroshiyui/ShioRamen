@@ -1,9 +1,13 @@
+mod ask;
 mod chat;
 mod client;
 mod config;
+mod context;
 mod doctor;
+mod edit;
 mod pull;
 mod server;
+mod tools;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -35,6 +39,10 @@ enum Commands {
     Serve(ServeArgs),
     /// Start an interactive chat session
     Chat(ChatArgs),
+    /// One-shot question with optional file context; streams answer to stdout
+    Ask(ask::AskArgs),
+    /// Apply an AI-suggested edit to a file (shows diff, asks to confirm)
+    Edit(edit::EditArgs),
     /// Check that all required components are present and working
     Doctor(doctor::DoctorArgs),
     /// Download a model from HuggingFace or a direct URL into ./models/
@@ -133,6 +141,10 @@ struct ChatArgs {
     /// Skip spawning llama-server; connect to an already running instance
     #[arg(long)]
     no_spawn: bool,
+
+    /// Disable tool use for this session [config: tools.enabled]
+    #[arg(long)]
+    no_tools: bool,
 }
 
 #[tokio::main]
@@ -170,9 +182,9 @@ async fn main() -> Result<()> {
                 cont_batching: args.cont_batching || cfg.server.cont_batching.unwrap_or(false),
             };
             let _server = ServerProcess::spawn(&config).await?;
-            println!("Server running. Press Ctrl+C to stop.");
+            eprintln!("Server running. Press Ctrl+C to stop.");
             tokio::signal::ctrl_c().await?;
-            println!("\nShutting down...");
+            eprintln!("\nShutting down...");
         }
 
         Commands::Chat(args) => {
@@ -185,7 +197,7 @@ async fn main() -> Result<()> {
 
             let server = if args.no_spawn {
                 let url = format!("http://{host}:{port}");
-                println!("Connecting to {url} ...");
+                eprintln!("Connecting to {url} ...");
                 ServerProcess::external(url)
             } else {
                 let model = args
@@ -212,10 +224,26 @@ async fn main() -> Result<()> {
             };
 
             println!();
+            let executor = if !args.no_tools && cfg.tools.enabled.unwrap_or(true) {
+                Some(tools::ToolExecutor {
+                    confirm_writes: cfg.tools.confirm_writes.unwrap_or(true),
+                    confirm_shell:  cfg.tools.confirm_shell.unwrap_or(true),
+                })
+            } else {
+                None
+            };
             let client = LlamaClient::new(server.url.clone());
-            let mut session = ChatSession::new(client, temp, system_prompt);
+            let mut session = ChatSession::new(client, temp, system_prompt, executor);
             session.run().await?;
             drop(server);
+        }
+
+        Commands::Ask(args) => {
+            ask::run(&args, &cfg).await?;
+        }
+
+        Commands::Edit(args) => {
+            edit::run(&args, &cfg).await?;
         }
 
         Commands::Doctor(args) => {
@@ -358,6 +386,83 @@ mod tests {
         let cli = parse(&["shio", "pull", "src", "--models-dir", "/tmp/models"]).unwrap();
         let Commands::Pull(args) = cli.command else { panic!() };
         assert_eq!(args.models_dir, Some(PathBuf::from("/tmp/models")));
+    }
+
+    // ── ask flags ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn ask_subcommand_recognised() {
+        let cli = parse(&["shio", "ask", "hello"]).unwrap();
+        assert!(matches!(cli.command, Commands::Ask(_)));
+    }
+
+    #[test]
+    fn ask_requires_question() {
+        assert!(parse(&["shio", "ask"]).is_err());
+    }
+
+    #[test]
+    fn ask_parses_question() {
+        let cli = parse(&["shio", "ask", "what does this do?"]).unwrap();
+        let Commands::Ask(args) = cli.command else { panic!() };
+        assert_eq!(args.question, "what does this do?");
+    }
+
+    #[test]
+    fn ask_parses_multiple_files() {
+        let cli = parse(&["shio", "ask", "explain", "--file", "a.rs", "--file", "b.rs"]).unwrap();
+        let Commands::Ask(args) = cli.command else { panic!() };
+        assert_eq!(args.files, vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")]);
+    }
+
+    #[test]
+    fn ask_defaults_are_empty() {
+        let cli = parse(&["shio", "ask", "hello"]).unwrap();
+        let Commands::Ask(args) = cli.command else { panic!() };
+        assert!(args.model.is_none());
+        assert!(args.temp.is_none());
+        assert!(args.files.is_empty());
+        assert!(!args.no_spawn);
+        assert!(!args.flash_attn);
+    }
+
+    // ── edit flags ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn edit_subcommand_recognised() {
+        let cli = parse(&["shio", "edit", "src/main.rs", "add a comment"]).unwrap();
+        assert!(matches!(cli.command, Commands::Edit(_)));
+    }
+
+    #[test]
+    fn edit_requires_file_and_instruction() {
+        assert!(parse(&["shio", "edit"]).is_err());
+        assert!(parse(&["shio", "edit", "foo.rs"]).is_err());
+    }
+
+    #[test]
+    fn edit_parses_file_and_instruction() {
+        let cli = parse(&["shio", "edit", "src/lib.rs", "remove dead code"]).unwrap();
+        let Commands::Edit(args) = cli.command else { panic!() };
+        assert_eq!(args.file,        PathBuf::from("src/lib.rs"));
+        assert_eq!(args.instruction, "remove dead code");
+    }
+
+    #[test]
+    fn edit_yes_flag() {
+        let cli = parse(&["shio", "edit", "f.rs", "fix it", "--yes"]).unwrap();
+        let Commands::Edit(args) = cli.command else { panic!() };
+        assert!(args.yes);
+    }
+
+    #[test]
+    fn edit_defaults_are_false() {
+        let cli = parse(&["shio", "edit", "f.rs", "fix it"]).unwrap();
+        let Commands::Edit(args) = cli.command else { panic!() };
+        assert!(!args.yes);
+        assert!(!args.no_spawn);
+        assert!(!args.flash_attn);
+        assert!(args.model.is_none());
     }
 
     // ── doctor flags ────────────────────────────────────────────────────────

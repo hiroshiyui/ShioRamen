@@ -29,3 +29,8 @@ one clarifying question before proceeding.
 
 [paths]
 models_dir = "./models"
+
+[tools]
+enabled        = true   # let the model read/write files and run commands
+confirm_writes = true   # ask [y/N] before writing files
+confirm_shell  = true   # ask [y/N] before running shell commands
