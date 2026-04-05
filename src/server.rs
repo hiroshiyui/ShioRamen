@@ -28,9 +28,22 @@ impl ServerProcess {
 
         eprintln!("  Launching llama-server ({})...", config.server_bin.display());
 
+        // Extract the model path as a &str before building the command.
+        // model_path.to_str() returns None for non-UTF-8 paths — handle that
+        // instead of panicking.
+        let model_str = config
+            .model_path
+            .to_str()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "model path is not valid UTF-8: {}",
+                    config.model_path.display()
+                )
+            })?;
+
         let mut cmd = Command::new(&config.server_bin);
         cmd.args([
-            "--model",        config.model_path.to_str().unwrap(),
+            "--model",        model_str,
             "--host",         &config.host,
             "--port",         &config.port.to_string(),
             "--n-gpu-layers", &config.n_gpu_layers.to_string(),
@@ -45,8 +58,8 @@ impl ServerProcess {
         if config.flash_attn    { cmd.args(["--flash-attn", "on"]); }
         if config.cont_batching { cmd.arg("--cont-batching"); }
 
-        let child = cmd
-            .stdout(Stdio::null())   // HTTP request logs — keep silent during chat
+        let mut child = cmd
+            .stdout(Stdio::null())    // HTTP request logs — keep silent during chat
             .stderr(Stdio::inherit()) // model loading, GPU layers, startup progress
             .spawn()
             .with_context(|| format!("Failed to spawn {:?}", config.server_bin))?;
@@ -60,6 +73,9 @@ impl ServerProcess {
             }
         }
 
+        // Kill the child before bailing — std::process::Child::drop() does NOT
+        // terminate the process, only closes stdio handles, so we must kill explicitly.
+        let _ = child.kill();
         anyhow::bail!("llama-server did not become healthy within 120 seconds")
     }
 }
@@ -72,6 +88,13 @@ impl Drop for ServerProcess {
     }
 }
 
+async fn health_check(url: &str) -> bool {
+    reqwest::get(format!("{url}/health"))
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,14 +103,6 @@ mod tests {
     fn external_stores_url_and_has_no_child() {
         let s = ServerProcess::external("http://127.0.0.1:8080".to_string());
         assert_eq!(s.url, "http://127.0.0.1:8080");
-        // child is None — dropping it does not attempt to kill any process
-        drop(s);
+        drop(s); // Drop must not attempt to kill any process
     }
-}
-
-async fn health_check(url: &str) -> bool {
-    reqwest::get(format!("{url}/health"))
-        .await
-        .map(|r| r.status().is_success())
-        .unwrap_or(false)
 }

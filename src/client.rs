@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -186,19 +186,22 @@ impl LlamaClient {
             .choices
             .into_iter()
             .next()
-            .ok_or_else(|| anyhow::anyhow!("empty response from server"))?;
+            .ok_or_else(|| anyhow!("empty response from server"))?;
 
         if choice.finish_reason.as_deref() == Some("tool_calls") {
-            let calls = choice
-                .message
-                .tool_calls
-                .ok_or_else(|| anyhow::anyhow!("finish_reason=tool_calls but no tool_calls field"))?;
+            let calls = choice.message.tool_calls.ok_or_else(|| {
+                anyhow!("finish_reason=tool_calls but no tool_calls field in response")
+            })?;
             return Ok(AgentTurn::ToolCalls(calls));
         }
 
-        Ok(AgentTurn::Text(
-            choice.message.content.unwrap_or_default(),
-        ))
+        // A non-tool-call turn must have a non-empty text response.
+        let text = choice
+            .message
+            .content
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow!("model returned no content and no tool calls"))?;
+        Ok(AgentTurn::Text(text))
     }
 
     /// Non-streaming completion without printing; returns the full response.
@@ -225,7 +228,7 @@ impl LlamaClient {
             .into_iter()
             .next()
             .and_then(|c| c.message.content)
-            .ok_or_else(|| anyhow::anyhow!("empty response from server"))
+            .ok_or_else(|| anyhow!("empty response from server"))
     }
 
     /// Streaming chat; prints tokens to stdout as they arrive.
@@ -278,4 +281,76 @@ fn print_flush(s: &str) {
     use std::io::Write;
     print!("{s}");
     std::io::stdout().flush().ok();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Message constructors ──────────────────────────────────────────────────
+
+    #[test]
+    fn system_message_serialises_correctly() {
+        let m = Message::system("be helpful");
+        assert_eq!(m.role, "system");
+        assert_eq!(m.content.as_deref(), Some("be helpful"));
+        assert!(m.tool_calls.is_none());
+        assert!(m.tool_call_id.is_none());
+    }
+
+    #[test]
+    fn user_message_serialises_correctly() {
+        let m = Message::user("hello");
+        assert_eq!(m.role, "user");
+        assert_eq!(m.content.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn assistant_message_serialises_correctly() {
+        let m = Message::assistant("hi there");
+        assert_eq!(m.role, "assistant");
+        assert_eq!(m.content.as_deref(), Some("hi there"));
+    }
+
+    #[test]
+    fn tool_result_message_has_tool_call_id() {
+        let m = Message::tool_result("call_abc", "file contents");
+        assert_eq!(m.role, "tool");
+        assert_eq!(m.content.as_deref(), Some("file contents"));
+        assert_eq!(m.tool_call_id.as_deref(), Some("call_abc"));
+        assert!(m.tool_calls.is_none());
+    }
+
+    #[test]
+    fn assistant_tool_calls_has_no_content() {
+        let call = ToolCallItem {
+            id: "call_1".into(),
+            kind: "function".into(),
+            function: ToolCallFunction {
+                name: "read_file".into(),
+                arguments: r#"{"path":"foo.rs"}"#.into(),
+            },
+        };
+        let m = Message::assistant_tool_calls(vec![call]);
+        assert_eq!(m.role, "assistant");
+        assert!(m.content.is_none());
+        assert!(m.tool_calls.is_some());
+    }
+
+    #[test]
+    fn optional_fields_are_absent_from_json_when_none() {
+        let m = Message::user("hello");
+        let json = serde_json::to_string(&m).unwrap();
+        // skip_serializing_if = "Option::is_none" must suppress these keys
+        assert!(!json.contains("tool_calls"));
+        assert!(!json.contains("tool_call_id"));
+    }
+
+    #[test]
+    fn tool_call_id_present_in_json_when_set() {
+        let m = Message::tool_result("call_abc", "result");
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(json.contains("call_abc"));
+        assert!(json.contains("result"));
+    }
 }
