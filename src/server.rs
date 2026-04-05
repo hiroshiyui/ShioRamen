@@ -22,11 +22,11 @@ impl ServerProcess {
 
         // Re-use an already running server on the same address.
         if health_check(&url).await {
-            println!("  Reusing server already running at {url}");
+            eprintln!("  Reusing server already running at {url}");
             return Ok(Self { child: None, url });
         }
 
-        println!("  Launching llama-server ({})...", config.server_bin.display());
+        eprintln!("  Launching llama-server ({})...", config.server_bin.display());
 
         let mut cmd = Command::new(&config.server_bin);
         cmd.args([
@@ -55,7 +55,7 @@ impl ServerProcess {
         for elapsed in 1..=120 {
             sleep(Duration::from_secs(1)).await;
             if health_check(&url).await {
-                println!("  Server ready after {elapsed}s");
+                eprintln!("  Server ready after {elapsed}s");
                 return Ok(Self { child: Some(child), url });
             }
         }
