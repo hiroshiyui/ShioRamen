@@ -47,13 +47,20 @@ pub async fn run(args: &PullArgs, cfg: &ShioConfig) -> Result<()> {
 /// Resolve a HuggingFace shorthand or raw URL into (url, local_filename).
 fn resolve_source(source: &str) -> Result<(String, String)> {
     if source.starts_with("http://") || source.starts_with("https://") {
-        let filename = source
+        // Rewrite HuggingFace blob page URLs to direct download URLs.
+        // /blob/main/ is the web viewer; /resolve/main/ is the actual file.
+        let url = if source.contains("huggingface.co") && source.contains("/blob/") {
+            source.replace("/blob/", "/resolve/")
+        } else {
+            source.to_string()
+        };
+        let filename = url
             .split('/')
             .next_back()
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("Cannot determine filename from URL: {source}"))?
+            .ok_or_else(|| anyhow::anyhow!("Cannot determine filename from URL: {url}"))?
             .to_string();
-        Ok((source.to_string(), filename))
+        Ok((url, filename))
     } else {
         // owner/repo/filename  (filename may itself contain '/' for repo subdirs)
         let (prefix, filename) = source
@@ -186,6 +193,14 @@ mod tests {
         let (url, name) = resolve_source("owner/repo/subdir/model.gguf").unwrap();
         assert_eq!(url,  "https://huggingface.co/owner/repo/resolve/main/subdir/model.gguf");
         assert_eq!(name, "model.gguf");
+    }
+
+    #[test]
+    fn hf_blob_url_rewritten_to_resolve() {
+        let blob = "https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/blob/main/gemma-4-e4b-it-Q8_0.gguf";
+        let (url, name) = resolve_source(blob).unwrap();
+        assert_eq!(url, "https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-e4b-it-Q8_0.gguf");
+        assert_eq!(name, "gemma-4-e4b-it-Q8_0.gguf");
     }
 
     #[test]
