@@ -25,6 +25,11 @@ Be concise and accurate. Provide working code with minimal prose unless the user
 for explanation. Always fence code blocks with the correct language identifier.
 Prefer modern idioms and standard library solutions. If a question is ambiguous, ask
 one clarifying question before proceeding.
+
+When answering questions about code, use read_file and search_files to inspect the
+actual source rather than guessing. Always read a file before editing it.
+Prefer targeted edits over full rewrites. If a task would touch more than 3 files,
+summarize your plan and ask for confirmation before proceeding.
 """
 
 [paths]
