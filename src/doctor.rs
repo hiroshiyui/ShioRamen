@@ -164,3 +164,26 @@ fn fmt_bytes(bytes: u64) -> String {
         format!("{:.0} MB", bytes as f64 / MB as f64)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fmt_bytes_below_gb_uses_mb() {
+        assert_eq!(fmt_bytes(1024 * 1024),       "1 MB");
+        assert_eq!(fmt_bytes(512 * 1024 * 1024), "512 MB");
+    }
+
+    #[test]
+    fn fmt_bytes_at_or_above_gb_uses_gb() {
+        assert_eq!(fmt_bytes(1024 * 1024 * 1024),     "1.0 GB");
+        assert_eq!(fmt_bytes(4 * 1024 * 1024 * 1024), "4.0 GB");
+    }
+
+    #[test]
+    fn fmt_bytes_boundary() {
+        assert!(fmt_bytes(1024 * 1024 * 1024 - 1).ends_with("MB"));
+        assert!(fmt_bytes(1024 * 1024 * 1024).ends_with("GB"));
+    }
+}

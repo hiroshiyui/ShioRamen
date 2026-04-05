@@ -49,7 +49,7 @@ fn resolve_source(source: &str) -> Result<(String, String)> {
     if source.starts_with("http://") || source.starts_with("https://") {
         let filename = source
             .split('/')
-            .last()
+            .next_back()
             .filter(|s| !s.is_empty())
             .ok_or_else(|| anyhow::anyhow!("Cannot determine filename from URL: {source}"))?
             .to_string();
@@ -146,5 +146,64 @@ fn fmt_bytes(bytes: u64) -> String {
         format!("{:.2} GiB", bytes as f64 / GIB as f64)
     } else {
         format!("{:.1} MiB", bytes as f64 / MIB as f64)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── resolve_source ───────────────────────────────────────────────────────
+
+    #[test]
+    fn hf_path_expands_to_correct_url() {
+        let (url, name) = resolve_source("owner/repo/model.gguf").unwrap();
+        assert_eq!(url,  "https://huggingface.co/owner/repo/resolve/main/model.gguf");
+        assert_eq!(name, "model.gguf");
+    }
+
+    #[test]
+    fn hf_path_with_subdir_strips_subdir_from_local_name() {
+        let (url, name) = resolve_source("owner/repo/subdir/model.gguf").unwrap();
+        assert_eq!(url,  "https://huggingface.co/owner/repo/resolve/main/subdir/model.gguf");
+        assert_eq!(name, "model.gguf");
+    }
+
+    #[test]
+    fn direct_url_passes_through_unchanged() {
+        let src = "https://example.com/path/to/model.gguf";
+        let (url, name) = resolve_source(src).unwrap();
+        assert_eq!(url,  src);
+        assert_eq!(name, "model.gguf");
+    }
+
+    #[test]
+    fn hf_path_missing_filename_returns_error() {
+        assert!(resolve_source("owner/repo").is_err());
+    }
+
+    #[test]
+    fn single_segment_returns_error() {
+        assert!(resolve_source("just-one-part").is_err());
+    }
+
+    // ── fmt_bytes ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn fmt_bytes_below_gib_uses_mib() {
+        assert_eq!(fmt_bytes(1024 * 1024),        "1.0 MiB");
+        assert_eq!(fmt_bytes(512 * 1024 * 1024),  "512.0 MiB");
+    }
+
+    #[test]
+    fn fmt_bytes_at_or_above_gib_uses_gib() {
+        assert_eq!(fmt_bytes(1024 * 1024 * 1024),     "1.00 GiB");
+        assert_eq!(fmt_bytes(4 * 1024 * 1024 * 1024), "4.00 GiB");
+    }
+
+    #[test]
+    fn fmt_bytes_boundary() {
+        assert!(fmt_bytes(1024 * 1024 * 1024 - 1).ends_with("MiB"));
+        assert!(fmt_bytes(1024 * 1024 * 1024).ends_with("GiB"));
     }
 }
