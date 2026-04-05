@@ -393,14 +393,16 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         // Delete
         (Backspace, _) => {
             if app.cursor > 0 {
-                app.cursor -= 1;
-                app.input.remove(app.cursor);
+                let new = char_start_before(&app.input, app.cursor);
+                app.input.drain(new..app.cursor);
+                app.cursor = new;
                 app.comp_candidates.clear();
             }
         }
         (Delete, _) => {
             if app.cursor < app.input.len() {
-                app.input.remove(app.cursor);
+                let next = char_end_at(&app.input, app.cursor);
+                app.input.drain(app.cursor..next);
                 app.comp_candidates.clear();
             }
         }
@@ -413,14 +415,10 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             app.cursor = next_word(&app.input, app.cursor);
         }
         (Left, _) => {
-            if app.cursor > 0 {
-                app.cursor -= 1;
-            }
+            app.cursor = char_start_before(&app.input, app.cursor);
         }
         (Right, _) => {
-            if app.cursor < app.input.len() {
-                app.cursor += 1;
-            }
+            app.cursor = char_end_at(&app.input, app.cursor);
         }
         (Home, _) => {
             app.cursor = 0;
@@ -584,6 +582,31 @@ fn list_path_completions(dir: &str, prefix: &str) -> Vec<String> {
         .collect();
     results.sort();
     results
+}
+
+/// Return the byte index of the start of the Unicode codepoint that ends at `pos`.
+/// Safe to use as a cursor position or slice boundary.
+fn char_start_before(s: &str, pos: usize) -> usize {
+    if pos == 0 {
+        return 0;
+    }
+    let mut i = pos - 1;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Return the byte index just past the Unicode codepoint that starts at `pos`.
+fn char_end_at(s: &str, pos: usize) -> usize {
+    if pos >= s.len() {
+        return s.len();
+    }
+    let mut i = pos + 1;
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
 }
 
 fn prev_word(s: &str, pos: usize) -> usize {
