@@ -21,7 +21,10 @@ one clarifying question before proceeding.\n\n\
 When answering questions about code, use read_file and search_files to inspect the \
 actual source rather than guessing. Always read a file before editing it. \
 Prefer targeted edits over full rewrites. If a task would touch more than 3 files, \
-summarize your plan and ask for confirmation before proceeding.";
+summarize your plan and ask for confirmation before proceeding.\n\n\
+Use plain Unicode symbols (→, ←, ⇒, ×, ≤, ≥, ≠, ≈, …) instead of \
+LaTeX math notation ($\\rightarrow$, $\\leq$, etc.). Output is rendered in a \
+plain terminal, not a LaTeX or Markdown renderer.";
 
 /// Maximum number of tool-call → result rounds per user turn before bailing.
 const MAX_AGENT_ITERATIONS: usize = 20;

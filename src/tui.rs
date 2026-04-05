@@ -724,7 +724,7 @@ fn handle_model_event(app: &mut App, ev: TuiEvent) {
         }
         TuiEvent::AssistantText(text) => {
             finalize_streaming(app);
-            app.push_entry(EntryKind::Assistant, &text);
+            app.push_entry(EntryKind::Assistant, &replace_latex(text));
             app.auto_scroll = true;
         }
         TuiEvent::TurnDone(new_msgs) => {
@@ -751,11 +751,46 @@ fn handle_model_event(app: &mut App, ev: TuiEvent) {
     }
 }
 
+/// Replace LaTeX math notation with Unicode equivalents.
+/// Local models occasionally emit LaTeX ($\rightarrow$, $\leq$, etc.) even in
+/// plain-text contexts; this makes the output readable in a terminal.
+fn replace_latex(mut s: String) -> String {
+    const SUBS: &[(&str, &str)] = &[
+        ("$\\rightarrow$", "→"),
+        ("$\\leftarrow$", "←"),
+        ("$\\Rightarrow$", "⇒"),
+        ("$\\Leftarrow$", "⇐"),
+        ("$\\leftrightarrow$", "↔"),
+        ("$\\uparrow$", "↑"),
+        ("$\\downarrow$", "↓"),
+        ("$\\to$", "→"),
+        ("$\\gets$", "←"),
+        ("$\\times$", "×"),
+        ("$\\cdot$", "·"),
+        ("$\\neq$", "≠"),
+        ("$\\approx$", "≈"),
+        ("$\\leq$", "≤"),
+        ("$\\geq$", "≥"),
+        ("$\\infty$", "∞"),
+        ("$\\pm$", "±"),
+        ("$\\in$", "∈"),
+        ("$\\notin$", "∉"),
+        ("$\\subset$", "⊂"),
+        ("$\\supset$", "⊃"),
+    ];
+    for (from, to) in SUBS {
+        if s.contains(from) {
+            s = s.replace(from, to);
+        }
+    }
+    s
+}
+
 fn finalize_streaming(app: &mut App) {
     if let Some(text) = app.streaming.take() {
         app.entries.push(ChatEntry {
             kind: EntryKind::Assistant,
-            text,
+            text: replace_latex(text),
         });
     }
 }
