@@ -18,8 +18,8 @@ use std::path::PathBuf;
 use chat::{ChatSession, DEFAULT_SYSTEM_PROMPT};
 use client::LlamaClient;
 use config::{
-    Config, ShioConfig, DEFAULT_CTX, DEFAULT_HOST, DEFAULT_NGL, DEFAULT_PORT, DEFAULT_SERVER_BIN,
-    DEFAULT_TEMP,
+    Config, DEFAULT_CTX, DEFAULT_HOST, DEFAULT_NGL, DEFAULT_PORT, DEFAULT_SERVER_BIN, DEFAULT_TEMP,
+    ShioConfig,
 };
 use server::ServerProcess;
 
@@ -110,8 +110,14 @@ impl ServerArgs {
             port: self.port.or(cfg.port).unwrap_or(DEFAULT_PORT),
             n_gpu_layers: self.ngl.or(cfg.ngl).unwrap_or(DEFAULT_NGL),
             ctx_size: self.ctx.or(cfg.ctx).unwrap_or(DEFAULT_CTX),
-            cache_type_k: self.cache_type_k.clone().or_else(|| cfg.cache_type_k.clone()),
-            cache_type_v: self.cache_type_v.clone().or_else(|| cfg.cache_type_v.clone()),
+            cache_type_k: self
+                .cache_type_k
+                .clone()
+                .or_else(|| cfg.cache_type_k.clone()),
+            cache_type_v: self
+                .cache_type_v
+                .clone()
+                .or_else(|| cfg.cache_type_v.clone()),
             flash_attn: self.flash_attn || cfg.flash_attn.unwrap_or(false),
             cont_batching: self.cont_batching || cfg.cont_batching.unwrap_or(false),
         }
@@ -161,9 +167,7 @@ async fn main() -> Result<()> {
                 .model
                 .or_else(|| cfg.chat.model.clone())
                 .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "--model <PATH> is required (or set chat.model in shio.toml)"
-                    )
+                    anyhow::anyhow!("--model <PATH> is required (or set chat.model in shio.toml)")
                 })?;
             let config = args.server.to_config(model, &cfg.server);
             let _server = ServerProcess::spawn(&config).await?;
@@ -208,7 +212,7 @@ async fn main() -> Result<()> {
             let executor = if !args.no_tools && cfg.tools.enabled.unwrap_or(true) {
                 Some(tools::ToolExecutor {
                     confirm_writes: cfg.tools.confirm_writes.unwrap_or(true),
-                    confirm_shell:  cfg.tools.confirm_shell.unwrap_or(true),
+                    confirm_shell: cfg.tools.confirm_shell.unwrap_or(true),
                 })
             } else {
                 None
@@ -297,29 +301,42 @@ mod tests {
     #[test]
     fn serve_parses_model_flag() {
         let cli = parse(&["shio", "serve", "--model", "foo.gguf"]).unwrap();
-        let Commands::Serve(args) = cli.command else { panic!() };
+        let Commands::Serve(args) = cli.command else {
+            panic!()
+        };
         assert_eq!(args.model, Some(PathBuf::from("foo.gguf")));
     }
 
     #[test]
     fn serve_parses_all_server_flags() {
         let cli = parse(&[
-            "shio", "serve",
-            "--model", "foo.gguf",
-            "--host", "0.0.0.0",
-            "--port", "9090",
-            "--ngl", "42",
-            "--ctx", "4096",
-            "--cache-type-k", "q4_0",
-            "--cache-type-v", "q8_0",
+            "shio",
+            "serve",
+            "--model",
+            "foo.gguf",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "9090",
+            "--ngl",
+            "42",
+            "--ctx",
+            "4096",
+            "--cache-type-k",
+            "q4_0",
+            "--cache-type-v",
+            "q8_0",
             "--flash-attn",
             "--cont-batching",
-        ]).unwrap();
-        let Commands::Serve(args) = cli.command else { panic!() };
-        assert_eq!(args.server.host,         Some("0.0.0.0".to_string()));
-        assert_eq!(args.server.port,         Some(9090u16));
-        assert_eq!(args.server.ngl,          Some(42i32));
-        assert_eq!(args.server.ctx,          Some(4096u32));
+        ])
+        .unwrap();
+        let Commands::Serve(args) = cli.command else {
+            panic!()
+        };
+        assert_eq!(args.server.host, Some("0.0.0.0".to_string()));
+        assert_eq!(args.server.port, Some(9090u16));
+        assert_eq!(args.server.ngl, Some(42i32));
+        assert_eq!(args.server.ctx, Some(4096u32));
         assert_eq!(args.server.cache_type_k, Some("q4_0".to_string()));
         assert_eq!(args.server.cache_type_v, Some("q8_0".to_string()));
         assert!(args.server.flash_attn);
@@ -331,21 +348,27 @@ mod tests {
     #[test]
     fn chat_parses_no_spawn_flag() {
         let cli = parse(&["shio", "chat", "--no-spawn"]).unwrap();
-        let Commands::Chat(args) = cli.command else { panic!() };
+        let Commands::Chat(args) = cli.command else {
+            panic!()
+        };
         assert!(args.no_spawn);
     }
 
     #[test]
     fn chat_parses_temperature() {
         let cli = parse(&["shio", "chat", "--temp", "0.3"]).unwrap();
-        let Commands::Chat(args) = cli.command else { panic!() };
+        let Commands::Chat(args) = cli.command else {
+            panic!()
+        };
         assert_eq!(args.temp, Some(0.3f32));
     }
 
     #[test]
     fn chat_flags_absent_by_default() {
         let cli = parse(&["shio", "chat"]).unwrap();
-        let Commands::Chat(args) = cli.command else { panic!() };
+        let Commands::Chat(args) = cli.command else {
+            panic!()
+        };
         assert!(!args.no_spawn);
         assert!(!args.server.flash_attn);
         assert!(!args.server.cont_batching);
@@ -358,14 +381,18 @@ mod tests {
     #[test]
     fn pull_stores_source() {
         let cli = parse(&["shio", "pull", "owner/repo/model.gguf"]).unwrap();
-        let Commands::Pull(args) = cli.command else { panic!() };
+        let Commands::Pull(args) = cli.command else {
+            panic!()
+        };
         assert_eq!(args.source, "owner/repo/model.gguf");
     }
 
     #[test]
     fn pull_parses_models_dir() {
         let cli = parse(&["shio", "pull", "src", "--models-dir", "/tmp/models"]).unwrap();
-        let Commands::Pull(args) = cli.command else { panic!() };
+        let Commands::Pull(args) = cli.command else {
+            panic!()
+        };
         assert_eq!(args.models_dir, Some(PathBuf::from("/tmp/models")));
     }
 
@@ -385,21 +412,30 @@ mod tests {
     #[test]
     fn ask_parses_question() {
         let cli = parse(&["shio", "ask", "what does this do?"]).unwrap();
-        let Commands::Ask(args) = cli.command else { panic!() };
+        let Commands::Ask(args) = cli.command else {
+            panic!()
+        };
         assert_eq!(args.question, "what does this do?");
     }
 
     #[test]
     fn ask_parses_multiple_files() {
         let cli = parse(&["shio", "ask", "explain", "--file", "a.rs", "--file", "b.rs"]).unwrap();
-        let Commands::Ask(args) = cli.command else { panic!() };
-        assert_eq!(args.files, vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")]);
+        let Commands::Ask(args) = cli.command else {
+            panic!()
+        };
+        assert_eq!(
+            args.files,
+            vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")]
+        );
     }
 
     #[test]
     fn ask_defaults_are_empty() {
         let cli = parse(&["shio", "ask", "hello"]).unwrap();
-        let Commands::Ask(args) = cli.command else { panic!() };
+        let Commands::Ask(args) = cli.command else {
+            panic!()
+        };
         assert!(args.model.is_none());
         assert!(args.temp.is_none());
         assert!(args.files.is_empty());
@@ -424,22 +460,28 @@ mod tests {
     #[test]
     fn edit_parses_file_and_instruction() {
         let cli = parse(&["shio", "edit", "src/lib.rs", "remove dead code"]).unwrap();
-        let Commands::Edit(args) = cli.command else { panic!() };
-        assert_eq!(args.file,        PathBuf::from("src/lib.rs"));
+        let Commands::Edit(args) = cli.command else {
+            panic!()
+        };
+        assert_eq!(args.file, PathBuf::from("src/lib.rs"));
         assert_eq!(args.instruction, "remove dead code");
     }
 
     #[test]
     fn edit_yes_flag() {
         let cli = parse(&["shio", "edit", "f.rs", "fix it", "--yes"]).unwrap();
-        let Commands::Edit(args) = cli.command else { panic!() };
+        let Commands::Edit(args) = cli.command else {
+            panic!()
+        };
         assert!(args.yes);
     }
 
     #[test]
     fn edit_defaults_are_false() {
         let cli = parse(&["shio", "edit", "f.rs", "fix it"]).unwrap();
-        let Commands::Edit(args) = cli.command else { panic!() };
+        let Commands::Edit(args) = cli.command else {
+            panic!()
+        };
         assert!(!args.yes);
         assert!(!args.no_spawn);
         assert!(!args.server.flash_attn);
@@ -451,14 +493,18 @@ mod tests {
     #[test]
     fn doctor_parses_model_flag() {
         let cli = parse(&["shio", "doctor", "--model", "foo.gguf"]).unwrap();
-        let Commands::Doctor(args) = cli.command else { panic!() };
+        let Commands::Doctor(args) = cli.command else {
+            panic!()
+        };
         assert_eq!(args.model, Some(PathBuf::from("foo.gguf")));
     }
 
     #[test]
     fn doctor_parses_host_and_port() {
         let cli = parse(&["shio", "doctor", "--host", "0.0.0.0", "--port", "9090"]).unwrap();
-        let Commands::Doctor(args) = cli.command else { panic!() };
+        let Commands::Doctor(args) = cli.command else {
+            panic!()
+        };
         assert_eq!(args.host, Some("0.0.0.0".to_string()));
         assert_eq!(args.port, Some(9090u16));
     }

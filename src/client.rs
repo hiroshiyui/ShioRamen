@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -155,7 +155,10 @@ pub struct LlamaClient {
 
 impl LlamaClient {
     pub fn new(base_url: String) -> Self {
-        Self { http: Client::new(), base_url }
+        Self {
+            http: Client::new(),
+            base_url,
+        }
     }
 
     /// One agentic turn: send messages (with tools), return either text or tool calls.
@@ -236,7 +239,9 @@ impl LlamaClient {
     /// Streaming chat; prints tokens to stdout as they arrive.
     /// Returns the fully assembled text.
     pub async fn chat_stream(&self, messages: &[Message], temperature: f32) -> Result<String> {
-        let text = self.chat_stream_cb(messages, temperature, print_flush).await?;
+        let text = self
+            .chat_stream_cb(messages, temperature, print_flush)
+            .await?;
         println!();
         Ok(text)
     }
@@ -271,7 +276,7 @@ impl LlamaClient {
             .error_for_status()?;
 
         let mut byte_stream = response.bytes_stream();
-        let mut line_buf  = String::new();
+        let mut line_buf = String::new();
         let mut full_text = String::new();
 
         while let Some(chunk) = byte_stream.next().await {
@@ -280,10 +285,16 @@ impl LlamaClient {
                 let raw = line_buf[..pos].trim().to_string();
                 line_buf = line_buf[pos + 1..].to_string();
 
-                let Some(data) = raw.strip_prefix("data: ") else { continue };
-                if data == "[DONE]" { break }
+                let Some(data) = raw.strip_prefix("data: ") else {
+                    continue;
+                };
+                if data == "[DONE]" {
+                    break;
+                }
 
-                let Ok(sc) = serde_json::from_str::<StreamChunk>(data) else { continue };
+                let Ok(sc) = serde_json::from_str::<StreamChunk>(data) else {
+                    continue;
+                };
                 if let Some(token) = sc.choices.first().and_then(|c| c.delta.content.as_deref()) {
                     on_token(token);
                     full_text.push_str(token);

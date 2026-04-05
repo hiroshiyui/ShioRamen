@@ -5,16 +5,16 @@ use anyhow::Result;
 use crossterm::{
     event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use futures_util::StreamExt;
 use ratatui::{
+    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
-    Frame, Terminal,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -33,7 +33,10 @@ enum TuiEvent {
     /// A tool call finished; the string is a one-line result preview.
     ToolDone(String),
     /// The model needs confirmation before a destructive action.
-    NeedsConfirm { prompt: String, reply_tx: oneshot::Sender<bool> },
+    NeedsConfirm {
+        prompt: String,
+        reply_tx: oneshot::Sender<bool>,
+    },
     /// Non-streaming text response (agent mode final answer).
     AssistantText(String),
     /// The turn completed successfully; contains the updated message history.
@@ -63,12 +66,18 @@ fn entry_style(kind: EntryKind) -> (&'static str, &'static str, Style) {
     // Returns (first-line prefix, continuation indent, style)
     // All prefixes are 7 characters wide for consistent alignment.
     match kind {
-        EntryKind::User      => ("  you> ", "       ", Style::default().fg(Color::Cyan)),
+        EntryKind::User => ("  you> ", "       ", Style::default().fg(Color::Cyan)),
         EntryKind::Assistant => (" shio> ", "       ", Style::default()),
-        EntryKind::ToolCall  => ("  [**] ", "       ", Style::default().fg(Color::Yellow)),
-        EntryKind::ToolResult=> ("  [-›] ", "       ", Style::default().fg(Color::Green).add_modifier(Modifier::DIM)),
-        EntryKind::Info      => ("  [--] ", "       ", Style::default().fg(Color::DarkGray)),
-        EntryKind::Error     => ("  [!!] ", "       ", Style::default().fg(Color::Red)),
+        EntryKind::ToolCall => ("  [**] ", "       ", Style::default().fg(Color::Yellow)),
+        EntryKind::ToolResult => (
+            "  [-›] ",
+            "       ",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::DIM),
+        ),
+        EntryKind::Info => ("  [--] ", "       ", Style::default().fg(Color::DarkGray)),
+        EntryKind::Error => ("  [!!] ", "       ", Style::default().fg(Color::Red)),
     }
 }
 
@@ -76,47 +85,53 @@ fn entry_style(kind: EntryKind) -> (&'static str, &'static str, Style) {
 
 struct App {
     // Chat session state
-    messages:    Vec<Message>,
-    tools:       Vec<ToolDef>,
-    executor:    Option<ToolExecutor>,
-    client:      LlamaClient,
+    messages: Vec<Message>,
+    tools: Vec<ToolDef>,
+    executor: Option<ToolExecutor>,
+    client: LlamaClient,
     temperature: f32,
 
     // Display
-    entries:     Vec<ChatEntry>,
-    streaming:   Option<String>, // assistant response being built token-by-token
-    scroll:      u16,
+    entries: Vec<ChatEntry>,
+    streaming: Option<String>, // assistant response being built token-by-token
+    scroll: u16,
     auto_scroll: bool,
 
     // Input
-    input:    String,
-    cursor:   usize,
-    history:  Vec<String>,
+    input: String,
+    cursor: usize,
+    history: Vec<String>,
     hist_idx: Option<usize>,
-    saved:    String, // input saved when browsing history
+    saved: String, // input saved when browsing history
 
     // Tab completion state
     comp_candidates: Vec<String>,
-    comp_idx:        usize,
+    comp_idx: usize,
 
     // Async communication from model task
     event_tx: mpsc::UnboundedSender<TuiEvent>,
     event_rx: mpsc::UnboundedReceiver<TuiEvent>,
 
-    status:     AppStatus,
-    anim_frame: u8,   // cycles 0-2 while Waiting, drives the thinking animation
-    quit:       bool,
+    status: AppStatus,
+    anim_frame: u8, // cycles 0-2 while Waiting, drives the thinking animation
+    quit: bool,
 }
 
 enum AppStatus {
     Idle,
     Waiting,
-    Confirming { prompt: String, reply_tx: oneshot::Sender<bool> },
+    Confirming {
+        prompt: String,
+        reply_tx: oneshot::Sender<bool>,
+    },
 }
 
 impl App {
     fn push_entry(&mut self, kind: EntryKind, text: &str) {
-        self.entries.push(ChatEntry { kind, text: text.to_string() });
+        self.entries.push(ChatEntry {
+            kind,
+            text: text.to_string(),
+        });
         self.auto_scroll = true;
     }
     fn push_info(&mut self, text: &str) {
@@ -130,7 +145,7 @@ pub async fn run(session: ChatSession) -> Result<()> {
     enable_raw_mode()?;
     let mut out = io::stdout();
     execute!(out, EnterAlternateScreen)?;
-    let backend  = CrosstermBackend::new(out);
+    let backend = CrosstermBackend::new(out);
     let mut term = Terminal::new(backend)?;
 
     let result = run_loop(&mut term, session).await;
@@ -150,27 +165,27 @@ async fn run_loop(
 
     let has_tools = session.executor.is_some();
     let mut app = App {
-        messages:    session.messages,
-        tools:       session.tools,
-        executor:    session.executor,
-        client:      session.client,
+        messages: session.messages,
+        tools: session.tools,
+        executor: session.executor,
+        client: session.client,
         temperature: session.temperature,
-        entries:     Vec::new(),
-        streaming:   None,
-        scroll:      0,
+        entries: Vec::new(),
+        streaming: None,
+        scroll: 0,
         auto_scroll: true,
-        input:       String::new(),
-        cursor:      0,
-        history:     Vec::new(),
-        hist_idx:    None,
-        saved:       String::new(),
+        input: String::new(),
+        cursor: 0,
+        history: Vec::new(),
+        hist_idx: None,
+        saved: String::new(),
         comp_candidates: Vec::new(),
-        comp_idx:    0,
+        comp_idx: 0,
         event_tx,
         event_rx,
-        status:      AppStatus::Idle,
-        anim_frame:  0,
-        quit:        false,
+        status: AppStatus::Idle,
+        anim_frame: 0,
+        quit: false,
     };
 
     let welcome = if has_tools {
@@ -228,21 +243,23 @@ fn render(f: &mut Frame, app: &App) {
     .split(area);
 
     // ── Title bar ──────────────────────────────────────────────────────────────
-    let mode = if app.executor.is_some() { "tools:ON" } else { "tools:OFF" };
-    let title_str = format!(
-        " ShioRamen  [{mode}]  [Tab] complete  [PgUp/Dn] scroll  [Ctrl+C] quit"
-    );
+    let mode = if app.executor.is_some() {
+        "tools:ON"
+    } else {
+        "tools:OFF"
+    };
+    let title_str =
+        format!(" ShioRamen  [{mode}]  [Tab] complete  [PgUp/Dn] scroll  [Ctrl+C] quit");
     f.render_widget(
-        Paragraph::new(title_str)
-            .style(Style::default().bg(Color::DarkGray).fg(Color::White)),
+        Paragraph::new(title_str).style(Style::default().bg(Color::DarkGray).fg(Color::White)),
         chunks[0],
     );
 
     // ── Messages area ──────────────────────────────────────────────────────────
     let msg_width = chunks[1].width.saturating_sub(1) as usize;
     let all_lines = build_lines(&app.entries, app.streaming.as_deref(), msg_width);
-    let total    = all_lines.len() as u16;
-    let visible  = chunks[1].height;
+    let total = all_lines.len() as u16;
+    let visible = chunks[1].height;
 
     let scroll_y = if app.auto_scroll {
         total.saturating_sub(visible)
@@ -250,14 +267,11 @@ fn render(f: &mut Frame, app: &App) {
         app.scroll.min(total.saturating_sub(visible))
     };
 
-    f.render_widget(
-        Paragraph::new(all_lines).scroll((scroll_y, 0)),
-        chunks[1],
-    );
+    f.render_widget(Paragraph::new(all_lines).scroll((scroll_y, 0)), chunks[1]);
 
     // ── Status line ────────────────────────────────────────────────────────────
     let (status_text, status_style) = match &app.status {
-        AppStatus::Idle    => (String::new(), Style::default()),
+        AppStatus::Idle => (String::new(), Style::default()),
         AppStatus::Waiting => {
             const FRAMES: &[&str] = &["🤔.", "🤔..", "🤔..."];
             let frame = FRAMES[app.anim_frame as usize % FRAMES.len()];
@@ -265,24 +279,20 @@ fn render(f: &mut Frame, app: &App) {
         }
         AppStatus::Confirming { prompt, .. } => (
             format!("  Confirm: {prompt}  [y/N]"),
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         ),
     };
-    f.render_widget(
-        Paragraph::new(status_text).style(status_style),
-        chunks[2],
-    );
+    f.render_widget(Paragraph::new(status_text).style(status_style), chunks[2]);
 
     // ── Input area ─────────────────────────────────────────────────────────────
     let input_block = Block::default().borders(Borders::TOP);
-    let inner       = input_block.inner(chunks[3]);
+    let inner = input_block.inner(chunks[3]);
     f.render_widget(input_block, chunks[3]);
 
     let prefix = "> ";
-    f.render_widget(
-        Paragraph::new(format!("{prefix}{}", app.input)),
-        inner,
-    );
+    f.render_widget(Paragraph::new(format!("{prefix}{}", app.input)), inner);
 
     // Draw cursor only while input is active.
     if matches!(app.status, AppStatus::Idle) {
@@ -294,11 +304,7 @@ fn render(f: &mut Frame, app: &App) {
     }
 }
 
-fn build_lines(
-    entries: &[ChatEntry],
-    streaming: Option<&str>,
-    width: usize,
-) -> Vec<Line<'static>> {
+fn build_lines(entries: &[ChatEntry], streaming: Option<&str>, width: usize) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
 
     for entry in entries {
@@ -310,7 +316,10 @@ fn build_lines(
     if let Some(text) = streaming {
         push_entry_lines(
             &mut out,
-            &ChatEntry { kind: EntryKind::Assistant, text: text.to_string() },
+            &ChatEntry {
+                kind: EntryKind::Assistant,
+                text: text.to_string(),
+            },
             width,
         );
         out.push(Line::raw(""));
@@ -389,18 +398,30 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         (Right, m) if m.contains(Mods::CONTROL) => {
             app.cursor = next_word(&app.input, app.cursor);
         }
-        (Left, _)  => { if app.cursor > 0 { app.cursor -= 1; } }
-        (Right, _) => { if app.cursor < app.input.len() { app.cursor += 1; } }
-        (Home, _)  => { app.cursor = 0; }
-        (End, _)   => { app.cursor = app.input.len(); }
+        (Left, _) => {
+            if app.cursor > 0 {
+                app.cursor -= 1;
+            }
+        }
+        (Right, _) => {
+            if app.cursor < app.input.len() {
+                app.cursor += 1;
+            }
+        }
+        (Home, _) => {
+            app.cursor = 0;
+        }
+        (End, _) => {
+            app.cursor = app.input.len();
+        }
 
         // Input history
-        (Up, _)   => hist_prev(app),
+        (Up, _) => hist_prev(app),
         (Down, _) => hist_next(app),
 
         // Scroll
-        (PageUp, _)   => view_scroll(app, -10),
-        (PageDown, _) => view_scroll(app,  10),
+        (PageUp, _) => view_scroll(app, -10),
+        (PageDown, _) => view_scroll(app, 10),
 
         // Tab completion
         (Tab, _) => do_complete(app),
@@ -438,17 +459,21 @@ fn view_scroll(app: &mut App, delta: i16) {
 }
 
 fn hist_prev(app: &mut App) {
-    if app.history.is_empty() { return; }
+    if app.history.is_empty() {
+        return;
+    }
     match app.hist_idx {
         None => {
-            app.saved    = app.input.clone();
+            app.saved = app.input.clone();
             app.hist_idx = Some(app.history.len() - 1);
         }
         Some(0) => return,
-        Some(ref mut i) => { *i -= 1; }
+        Some(ref mut i) => {
+            *i -= 1;
+        }
     }
     let idx = app.hist_idx.unwrap();
-    app.input  = app.history[idx].clone();
+    app.input = app.history[idx].clone();
     app.cursor = app.input.len();
 }
 
@@ -457,13 +482,13 @@ fn hist_next(app: &mut App) {
         None => (),
         Some(idx) if idx + 1 >= app.history.len() => {
             app.hist_idx = None;
-            app.input    = app.saved.clone();
-            app.cursor   = app.input.len();
+            app.input = app.saved.clone();
+            app.cursor = app.input.len();
         }
         Some(ref mut i) => {
             *i += 1;
             let idx = *i;
-            app.input  = app.history[idx].clone();
+            app.input = app.history[idx].clone();
             app.cursor = app.input.len();
         }
     }
@@ -492,7 +517,9 @@ fn do_complete(app: &mut App) {
             return;
         };
 
-        if candidates.is_empty() { return; }
+        if candidates.is_empty() {
+            return;
+        }
         app.comp_candidates = candidates;
         app.comp_idx = 0;
     } else {
@@ -501,20 +528,22 @@ fn do_complete(app: &mut App) {
     }
 
     let c = app.comp_candidates[app.comp_idx].clone();
-    app.input  = c;
+    app.input = c;
     app.cursor = app.input.len();
 }
 
 fn split_path(path: &str) -> (String, String) {
     match path.rfind('/') {
         Some(p) => (path[..=p].to_string(), path[p + 1..].to_string()),
-        None    => (String::new(), path.to_string()),
+        None => (String::new(), path.to_string()),
     }
 }
 
 fn list_path_completions(dir: &str, prefix: &str) -> Vec<String> {
     let read_path = if dir.is_empty() { "." } else { dir };
-    let Ok(entries) = std::fs::read_dir(read_path) else { return vec![] };
+    let Ok(entries) = std::fs::read_dir(read_path) else {
+        return vec![];
+    };
     let mut results: Vec<String> = entries
         .filter_map(|e| e.ok())
         .filter_map(|e| {
@@ -534,16 +563,24 @@ fn list_path_completions(dir: &str, prefix: &str) -> Vec<String> {
 fn prev_word(s: &str, pos: usize) -> usize {
     let bytes = s.as_bytes();
     let mut i = pos;
-    while i > 0 && bytes[i - 1] == b' '  { i -= 1; }
-    while i > 0 && bytes[i - 1] != b' '  { i -= 1; }
+    while i > 0 && bytes[i - 1] == b' ' {
+        i -= 1;
+    }
+    while i > 0 && bytes[i - 1] != b' ' {
+        i -= 1;
+    }
     i
 }
 
 fn next_word(s: &str, pos: usize) -> usize {
     let bytes = s.as_bytes();
     let mut i = pos;
-    while i < bytes.len() && bytes[i] != b' ' { i += 1; }
-    while i < bytes.len() && bytes[i] == b' ' { i += 1; }
+    while i < bytes.len() && bytes[i] != b' ' {
+        i += 1;
+    }
+    while i < bytes.len() && bytes[i] == b' ' {
+        i += 1;
+    }
     i
 }
 
@@ -551,7 +588,9 @@ fn next_word(s: &str, pos: usize) -> usize {
 
 async fn submit(app: &mut App) {
     let input = app.input.trim().to_string();
-    if input.is_empty() { return; }
+    if input.is_empty() {
+        return;
+    }
 
     // Save to input history (deduplicate consecutive identical entries).
     if app.history.last() != Some(&input) {
@@ -564,7 +603,10 @@ async fn submit(app: &mut App) {
     app.auto_scroll = true;
 
     match input.as_str() {
-        "/exit" | "/quit" => { app.quit = true; return; }
+        "/exit" | "/quit" => {
+            app.quit = true;
+            return;
+        }
         "/reset" => {
             app.messages.truncate(1);
             app.entries.clear();
@@ -576,7 +618,8 @@ async fn submit(app: &mut App) {
             if app.tools.is_empty() {
                 app.push_info("No tools available.");
             } else {
-                let list = app.tools
+                let list = app
+                    .tools
                     .iter()
                     .map(|t| format!("{} — {}", t.function.name, t.function.description))
                     .collect::<Vec<_>>()
@@ -596,7 +639,7 @@ async fn submit(app: &mut App) {
     // Regular user message.
     app.push_entry(EntryKind::User, &input);
     app.messages.push(Message::user(&input));
-    app.status     = AppStatus::Waiting;
+    app.status = AppStatus::Waiting;
     app.anim_frame = 0;
     dispatch_turn(app);
 }
@@ -611,9 +654,9 @@ fn cmd_include(app: &mut App, path_str: &str) {
             app.push_info(&format!("No source files found in {path_str}"));
         }
         Ok(files) => {
-            let count       = files.len();
+            let count = files.len();
             let total_bytes: usize = files.iter().map(|(_, c)| c.len()).sum();
-            let content     = context::format_as_blocks(&files);
+            let content = context::format_as_blocks(&files);
             app.messages.push(Message::user(&content));
             app.messages.push(Message::assistant(format!(
                 "Understood. I've loaded {count} file(s) and am ready for your questions.",
@@ -622,7 +665,10 @@ fn cmd_include(app: &mut App, path_str: &str) {
             if total_bytes > 512 * 1024 {
                 app.push_entry(
                     EntryKind::Info,
-                    &format!("Warning: {:.0} KB of context injected.", total_bytes as f64 / 1024.0),
+                    &format!(
+                        "Warning: {:.0} KB of context injected.",
+                        total_bytes as f64 / 1024.0
+                    ),
                 );
             }
         }
@@ -630,12 +676,12 @@ fn cmd_include(app: &mut App, path_str: &str) {
 }
 
 fn dispatch_turn(app: &mut App) {
-    let client   = app.client.clone();
-    let msgs     = app.messages.clone();
-    let temp     = app.temperature;
-    let tools    = app.tools.clone();
+    let client = app.client.clone();
+    let msgs = app.messages.clone();
+    let temp = app.temperature;
+    let tools = app.tools.clone();
     let executor = app.executor.clone();
-    let tx       = app.event_tx.clone();
+    let tx = app.event_tx.clone();
 
     tokio::spawn(async move {
         run_model_task(client, msgs, temp, tools, executor, tx).await;
@@ -649,7 +695,7 @@ fn handle_model_event(app: &mut App, ev: TuiEvent) {
         TuiEvent::StreamToken(token) => {
             match &mut app.streaming {
                 Some(s) => s.push_str(&token),
-                None    => app.streaming = Some(token),
+                None => app.streaming = Some(token),
             }
             app.auto_scroll = true;
         }
@@ -672,7 +718,7 @@ fn handle_model_event(app: &mut App, ev: TuiEvent) {
         TuiEvent::TurnDone(new_msgs) => {
             finalize_streaming(app);
             app.messages = new_msgs;
-            app.status   = AppStatus::Idle;
+            app.status = AppStatus::Idle;
             app.auto_scroll = true;
         }
         TuiEvent::TurnError(err) => {
@@ -680,7 +726,11 @@ fn handle_model_event(app: &mut App, ev: TuiEvent) {
             // Roll back the user message we pushed before dispatch.
             app.messages.pop();
             // Remove the matching User display entry and everything after it.
-            if let Some(idx) = app.entries.iter().rposition(|e| matches!(e.kind, EntryKind::User)) {
+            if let Some(idx) = app
+                .entries
+                .iter()
+                .rposition(|e| matches!(e.kind, EntryKind::User))
+            {
                 app.entries.truncate(idx);
             }
             app.push_entry(EntryKind::Error, &err);
@@ -691,7 +741,10 @@ fn handle_model_event(app: &mut App, ev: TuiEvent) {
 
 fn finalize_streaming(app: &mut App) {
     if let Some(text) = app.streaming.take() {
-        app.entries.push(ChatEntry { kind: EntryKind::Assistant, text });
+        app.entries.push(ChatEntry {
+            kind: EntryKind::Assistant,
+            text,
+        });
     }
 }
 
@@ -700,12 +753,12 @@ fn finalize_streaming(app: &mut App) {
 const MAX_AGENT_ITERATIONS: usize = 20;
 
 async fn run_model_task(
-    client:   LlamaClient,
+    client: LlamaClient,
     mut msgs: Vec<Message>,
-    temp:     f32,
-    tools:    Vec<ToolDef>,
+    temp: f32,
+    tools: Vec<ToolDef>,
     executor: Option<ToolExecutor>,
-    tx:       mpsc::UnboundedSender<TuiEvent>,
+    tx: mpsc::UnboundedSender<TuiEvent>,
 ) {
     let result = if let Some(exec) = &executor {
         run_agent_loop(&client, &mut msgs, temp, &tools, exec, &tx).await
@@ -714,17 +767,17 @@ async fn run_model_task(
     };
 
     let ev = match result {
-        Ok(())  => TuiEvent::TurnDone(msgs),
-        Err(e)  => TuiEvent::TurnError(e.to_string()),
+        Ok(()) => TuiEvent::TurnDone(msgs),
+        Err(e) => TuiEvent::TurnError(e.to_string()),
     };
     let _ = tx.send(ev);
 }
 
 async fn run_stream_turn(
     client: &LlamaClient,
-    msgs:   &mut Vec<Message>,
-    temp:   f32,
-    tx:     &mpsc::UnboundedSender<TuiEvent>,
+    msgs: &mut Vec<Message>,
+    temp: f32,
+    tx: &mpsc::UnboundedSender<TuiEvent>,
 ) -> Result<()> {
     let tx_clone = tx.clone();
     let full_text = client
@@ -737,12 +790,12 @@ async fn run_stream_turn(
 }
 
 async fn run_agent_loop(
-    client:   &LlamaClient,
-    msgs:     &mut Vec<Message>,
-    temp:     f32,
-    tools:    &[ToolDef],
+    client: &LlamaClient,
+    msgs: &mut Vec<Message>,
+    temp: f32,
+    tools: &[ToolDef],
     executor: &ToolExecutor,
-    tx:       &mpsc::UnboundedSender<TuiEvent>,
+    tx: &mpsc::UnboundedSender<TuiEvent>,
 ) -> Result<()> {
     for _ in 0..MAX_AGENT_ITERATIONS {
         match client.chat_agent(msgs, temp, tools).await? {
@@ -771,7 +824,10 @@ async fn run_agent_loop(
 
                     // Execute the tool (use spawn_blocking to avoid blocking the async runtime).
                     let result = if should_run {
-                        let exec  = ToolExecutor { confirm_writes: false, confirm_shell: false };
+                        let exec = ToolExecutor {
+                            confirm_writes: false,
+                            confirm_shell: false,
+                        };
                         let call2 = call.clone();
                         tokio::task::spawn_blocking(move || exec.execute_quiet(&call2))
                             .await
@@ -802,8 +858,8 @@ async fn run_agent_loop(
 fn needs_confirm(call: &ToolCallItem, exec: &ToolExecutor) -> bool {
     match call.function.name.as_str() {
         "write_file" => exec.confirm_writes,
-        "run_shell"  => exec.confirm_shell,
-        _            => false,
+        "run_shell" => exec.confirm_shell,
+        _ => false,
     }
 }
 
@@ -812,8 +868,8 @@ fn fmt_confirm_prompt(call: &ToolCallItem) -> String {
         serde_json::from_str(&call.function.arguments).unwrap_or_default();
     match call.function.name.as_str() {
         "write_file" => format!("Write to {}?", args["path"].as_str().unwrap_or("?")),
-        "run_shell"  => format!("Run: {}?",     args["command"].as_str().unwrap_or("?")),
-        name         => format!("Execute {name}?"),
+        "run_shell" => format!("Run: {}?", args["command"].as_str().unwrap_or("?")),
+        name => format!("Execute {name}?"),
     }
 }
 

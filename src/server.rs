@@ -27,28 +27,33 @@ impl ServerProcess {
             return Ok(Self { child: None, url });
         }
 
-        eprintln!("  Launching llama-server ({})...", config.server_bin.display());
+        eprintln!(
+            "  Launching llama-server ({})...",
+            config.server_bin.display()
+        );
 
         // Extract the model path as a &str before building the command.
         // model_path.to_str() returns None for non-UTF-8 paths — handle that
         // instead of panicking.
-        let model_str = config
-            .model_path
-            .to_str()
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "model path is not valid UTF-8: {}",
-                    config.model_path.display()
-                )
-            })?;
+        let model_str = config.model_path.to_str().ok_or_else(|| {
+            anyhow::anyhow!(
+                "model path is not valid UTF-8: {}",
+                config.model_path.display()
+            )
+        })?;
 
         let mut cmd = Command::new(&config.server_bin);
         cmd.args([
-            "--model",        model_str,
-            "--host",         &config.host,
-            "--port",         &config.port.to_string(),
-            "--n-gpu-layers", &config.n_gpu_layers.to_string(),
-            "--ctx-size",     &config.ctx_size.to_string(),
+            "--model",
+            model_str,
+            "--host",
+            &config.host,
+            "--port",
+            &config.port.to_string(),
+            "--n-gpu-layers",
+            &config.n_gpu_layers.to_string(),
+            "--ctx-size",
+            &config.ctx_size.to_string(),
         ]);
         if let Some(ref ct) = config.cache_type_k {
             cmd.args(["--cache-type-k", ct]);
@@ -56,11 +61,15 @@ impl ServerProcess {
         if let Some(ref ct) = config.cache_type_v {
             cmd.args(["--cache-type-v", ct]);
         }
-        if config.flash_attn    { cmd.args(["--flash-attn", "on"]); }
-        if config.cont_batching { cmd.arg("--cont-batching"); }
+        if config.flash_attn {
+            cmd.args(["--flash-attn", "on"]);
+        }
+        if config.cont_batching {
+            cmd.arg("--cont-batching");
+        }
 
         let mut child = cmd
-            .stdout(Stdio::null())    // HTTP request logs — keep silent during chat
+            .stdout(Stdio::null()) // HTTP request logs — keep silent during chat
             .stderr(Stdio::inherit()) // model loading, GPU layers, startup progress
             .spawn()
             .with_context(|| format!("Failed to spawn {:?}", config.server_bin))?;
@@ -70,7 +79,10 @@ impl ServerProcess {
             sleep(Duration::from_secs(1)).await;
             if health_check(&url).await {
                 eprintln!("  Server ready after {elapsed}s");
-                return Ok(Self { child: Some(child), url });
+                return Ok(Self {
+                    child: Some(child),
+                    url,
+                });
             }
         }
 

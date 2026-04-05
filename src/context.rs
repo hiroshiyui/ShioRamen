@@ -5,19 +5,24 @@ use std::path::{Path, PathBuf};
 const MAX_FILE_BYTES: u64 = 100 * 1024; // skip files larger than 100 KB
 
 const SOURCE_EXTS: &[&str] = &[
-    "rs", "toml", "json", "yaml", "yml", "md",
-    "py", "js", "ts", "tsx", "jsx", "mjs", "cjs",
-    "go", "c", "cpp", "cc", "h", "hpp",
-    "java", "kt", "swift", "rb", "php",
-    "sh", "bash", "zsh", "fish",
-    "sql", "html", "css", "scss",
-    "txt", "env", "lock",
+    "rs", "toml", "json", "yaml", "yml", "md", "py", "js", "ts", "tsx", "jsx", "mjs", "cjs", "go",
+    "c", "cpp", "cc", "h", "hpp", "java", "kt", "swift", "rb", "php", "sh", "bash", "zsh", "fish",
+    "sql", "html", "css", "scss", "txt", "env", "lock",
 ];
 
 const SKIP_DIRS: &[&str] = &[
-    ".git", "target", "node_modules", ".cargo",
-    "dist", "build", "__pycache__", ".venv", "venv",
-    "vendor", ".next", ".nuxt",
+    ".git",
+    "target",
+    "node_modules",
+    ".cargo",
+    "dist",
+    "build",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "vendor",
+    ".next",
+    ".nuxt",
 ];
 
 /// Collect `(path, content)` pairs from a file or a directory tree.
@@ -44,8 +49,8 @@ fn collect_dir(dir: &Path, out: &mut Vec<(PathBuf, String)>) -> Result<()> {
         .with_context(|| format!("Cannot read directory: {}", dir.display()))?
     {
         let entry = entry?;
-        let path  = entry.path();
-        let name  = entry.file_name();
+        let path = entry.path();
+        let name = entry.file_name();
         let name_str = name.to_string_lossy();
 
         if path.is_dir() {
@@ -79,7 +84,10 @@ pub fn format_as_blocks(files: &[(PathBuf, String)]) -> String {
     let mut s = String::new();
     for (path, content) in files {
         let lang = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        s.push_str(&format!("File: {}\n```{lang}\n{content}\n```\n\n", path.display()));
+        s.push_str(&format!(
+            "File: {}\n```{lang}\n{content}\n```\n\n",
+            path.display()
+        ));
     }
     s
 }
@@ -90,12 +98,12 @@ mod tests {
     use std::fs;
 
     fn make_tree(dir: &Path) {
-        fs::write(dir.join("main.rs"),    "fn main() {}").unwrap();
-        fs::write(dir.join("README.md"),  "# hi").unwrap();
-        fs::write(dir.join("data.bin"),   &[0u8, 1, 2, 3]).unwrap(); // no matching ext
+        fs::write(dir.join("main.rs"), "fn main() {}").unwrap();
+        fs::write(dir.join("README.md"), "# hi").unwrap();
+        fs::write(dir.join("data.bin"), &[0u8, 1, 2, 3]).unwrap(); // no matching ext
         let sub = dir.join("sub");
         fs::create_dir_all(&sub).unwrap();
-        fs::write(sub.join("util.rs"),    "pub fn util() {}").unwrap();
+        fs::write(sub.join("util.rs"), "pub fn util() {}").unwrap();
         let target = dir.join("target");
         fs::create_dir_all(&target).unwrap();
         fs::write(target.join("skip.rs"), "// should be skipped").unwrap();
@@ -108,15 +116,16 @@ mod tests {
         make_tree(&dir);
 
         let files = collect(&dir).unwrap();
-        let names: Vec<&str> = files.iter()
+        let names: Vec<&str> = files
+            .iter()
             .map(|(p, _)| p.file_name().unwrap().to_str().unwrap())
             .collect();
 
         assert!(names.contains(&"main.rs"));
         assert!(names.contains(&"README.md"));
         assert!(names.contains(&"util.rs"));
-        assert!(!names.contains(&"data.bin"));   // wrong extension
-        assert!(!names.contains(&"skip.rs"));    // inside target/
+        assert!(!names.contains(&"data.bin")); // wrong extension
+        assert!(!names.contains(&"skip.rs")); // inside target/
 
         let _ = fs::remove_dir_all(&dir);
     }

@@ -2,12 +2,12 @@
 use anyhow::Result;
 use std::path::PathBuf;
 
+use crate::ServerArgs;
 use crate::chat::DEFAULT_SYSTEM_PROMPT;
 use crate::client::{LlamaClient, Message};
-use crate::config::{ShioConfig, DEFAULT_HOST, DEFAULT_PORT, DEFAULT_TEMP};
+use crate::config::{DEFAULT_HOST, DEFAULT_PORT, DEFAULT_TEMP, ShioConfig};
 use crate::context;
 use crate::server::ServerProcess;
-use crate::ServerArgs;
 
 #[derive(clap::Args, Debug)]
 pub struct AskArgs {
@@ -71,10 +71,7 @@ pub async fn run(args: &AskArgs, cfg: &ShioConfig) -> Result<()> {
     }
     content.push_str(&args.question);
 
-    let messages = vec![
-        Message::system(system_prompt),
-        Message::user(content),
-    ];
+    let messages = vec![Message::system(system_prompt), Message::user(content)];
 
     let client = LlamaClient::new(server.url.clone());
     client.chat_stream(&messages, temp).await?;

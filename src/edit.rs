@@ -4,10 +4,10 @@ use similar::{ChangeTag, TextDiff};
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-use crate::client::{LlamaClient, Message};
-use crate::config::{ShioConfig, DEFAULT_HOST, DEFAULT_PORT, DEFAULT_TEMP};
-use crate::server::ServerProcess;
 use crate::ServerArgs;
+use crate::client::{LlamaClient, Message};
+use crate::config::{DEFAULT_HOST, DEFAULT_PORT, DEFAULT_TEMP, ShioConfig};
+use crate::server::ServerProcess;
 
 const EDIT_SYSTEM_PROMPT: &str = "\
 You are a precise code editor. When given a file and an instruction, output ONLY \
@@ -70,11 +70,7 @@ pub async fn run(args: &EditArgs, cfg: &ShioConfig) -> Result<()> {
         ServerProcess::spawn(&config).await?
     };
 
-    let lang = args
-        .file
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+    let lang = args.file.extension().and_then(|e| e.to_str()).unwrap_or("");
     let user_content = format!(
         "File: {}\n```{lang}\n{original}\n```\n\nInstruction: {}",
         args.file.display(),
@@ -133,7 +129,7 @@ fn strip_fences(s: &str) -> &str {
     let after_open = &s["```".len()..];
     let body_start = match after_open.find('\n') {
         Some(i) => i + 1,
-        None    => return s,
+        None => return s,
     };
     let body = &after_open[body_start..];
     // Strip closing fence
@@ -147,9 +143,9 @@ fn strip_fences(s: &str) -> &str {
 }
 
 fn build_diff(original: &str, updated: &str) -> String {
-    const RED:   &str = "\x1b[31m";
+    const RED: &str = "\x1b[31m";
     const GREEN: &str = "\x1b[32m";
-    const DIM:   &str = "\x1b[2m";
+    const DIM: &str = "\x1b[2m";
     const RESET: &str = "\x1b[0m";
 
     let diff = TextDiff::from_lines(original, updated);
@@ -158,11 +154,15 @@ fn build_diff(original: &str, updated: &str) -> String {
         match change.tag() {
             ChangeTag::Delete => out.push_str(&format!("{RED}-{}{RESET}", change)),
             ChangeTag::Insert => out.push_str(&format!("{GREEN}+{}{RESET}", change)),
-            ChangeTag::Equal  => out.push_str(&format!("{DIM} {}{RESET}", change)),
+            ChangeTag::Equal => out.push_str(&format!("{DIM} {}{RESET}", change)),
         }
     }
     // Only return the diff string if there were actual changes.
-    if diff.ratio() >= 1.0 { String::new() } else { out }
+    if diff.ratio() >= 1.0 {
+        String::new()
+    } else {
+        out
+    }
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use crate::config::{ShioConfig, DEFAULT_HOST, DEFAULT_PORT, DEFAULT_SERVER_BIN};
+use crate::config::{DEFAULT_HOST, DEFAULT_PORT, DEFAULT_SERVER_BIN, ShioConfig};
 
 #[derive(clap::Args, Debug)]
 pub struct DoctorArgs {
@@ -47,10 +47,14 @@ macro_rules! info {
 
 pub async fn run(args: &DoctorArgs, cfg: &ShioConfig) {
     // Resolve CLI > config > hardcoded default
-    let server_bin = args.server_bin.clone()
+    let server_bin = args
+        .server_bin
+        .clone()
         .or_else(|| cfg.server.bin.clone())
         .unwrap_or_else(|| PathBuf::from(DEFAULT_SERVER_BIN));
-    let host = args.host.clone()
+    let host = args
+        .host
+        .clone()
         .or_else(|| cfg.server.host.clone())
         .unwrap_or_else(|| DEFAULT_HOST.to_string());
     let port = args.port.or(cfg.server.port).unwrap_or(DEFAULT_PORT);
@@ -211,13 +215,13 @@ mod tests {
 
     #[test]
     fn fmt_bytes_below_gb_uses_mb() {
-        assert_eq!(fmt_bytes(1024 * 1024),       "1 MB");
+        assert_eq!(fmt_bytes(1024 * 1024), "1 MB");
         assert_eq!(fmt_bytes(512 * 1024 * 1024), "512 MB");
     }
 
     #[test]
     fn fmt_bytes_at_or_above_gb_uses_gb() {
-        assert_eq!(fmt_bytes(1024 * 1024 * 1024),     "1.0 GB");
+        assert_eq!(fmt_bytes(1024 * 1024 * 1024), "1.0 GB");
         assert_eq!(fmt_bytes(4 * 1024 * 1024 * 1024), "4.0 GB");
     }
 

@@ -10,7 +10,7 @@ use rustyline::{Context, Editor, Helper};
 
 use crate::client::{AgentTurn, LlamaClient, Message, ToolDef};
 use crate::context;
-use crate::tools::{all_tools, ToolExecutor};
+use crate::tools::{ToolExecutor, all_tools};
 
 pub const DEFAULT_SYSTEM_PROMPT: &str = "\
 You are ShioRamen, a sharp, focused local coding assistant running entirely offline. \
@@ -30,8 +30,8 @@ const MAX_AGENT_ITERATIONS: usize = 20;
 const INCLUDE_WARN_BYTES: usize = 512 * 1024;
 
 pub struct ChatSession {
-    pub(crate) client:      LlamaClient,
-    pub(crate) messages:    Vec<Message>,
+    pub(crate) client: LlamaClient,
+    pub(crate) messages: Vec<Message>,
     pub(crate) temperature: f32,
     /// When Some, the agentic loop is active and these tools are offered to the model.
     pub(crate) executor: Option<ToolExecutor>,
@@ -68,20 +68,26 @@ impl ChatSession {
 
         println!("ShioRamen — local coding assistant");
         if let Some(exec) = &self.executor {
-            println!("Commands: /reset  clear history | /include <path>  load file(s) | /tools  list tools | /exit  quit");
+            println!(
+                "Commands: /reset  clear history | /include <path>  load file(s) | /tools  list tools | /exit  quit"
+            );
             println!("Tool use: ON");
             if !exec.confirm_writes || !exec.confirm_shell {
                 let what = match (!exec.confirm_writes, !exec.confirm_shell) {
-                    (true,  true)  => "writes and shell commands",
-                    (true,  false) => "writes",
-                    (false, true)  => "shell commands",
+                    (true, true) => "writes and shell commands",
+                    (true, false) => "writes",
+                    (false, true) => "shell commands",
                     (false, false) => unreachable!(),
                 };
-                eprintln!("\x1b[33m  Warning: confirmation disabled for {what} — \
-                    the model can modify files/run commands without prompting.\x1b[0m");
+                eprintln!(
+                    "\x1b[33m  Warning: confirmation disabled for {what} — \
+                    the model can modify files/run commands without prompting.\x1b[0m"
+                );
             }
         } else {
-            println!("Commands: /reset  clear history | /include <path>  load file(s) | /exit  quit");
+            println!(
+                "Commands: /reset  clear history | /include <path>  load file(s) | /exit  quit"
+            );
         }
         println!();
 
@@ -127,7 +133,7 @@ impl ChatSession {
 
                     let result = match &self.executor {
                         Some(_) => self.run_agent_turn().await,
-                        None    => self.run_stream_turn().await,
+                        None => self.run_stream_turn().await,
                     };
 
                     if let Err(e) = result {
@@ -154,7 +160,10 @@ impl ChatSession {
 
     async fn run_stream_turn(&mut self) -> Result<()> {
         print_flush("shio> ");
-        let response = self.client.chat_stream(&self.messages, self.temperature).await?;
+        let response = self
+            .client
+            .chat_stream(&self.messages, self.temperature)
+            .await?;
         self.messages.push(Message::assistant(response));
         Ok(())
     }
@@ -166,7 +175,11 @@ impl ChatSession {
             eprint!("shio> ");
             flush_stderr();
 
-            match self.client.chat_agent(&self.messages, self.temperature, &self.tools).await? {
+            match self
+                .client
+                .chat_agent(&self.messages, self.temperature, &self.tools)
+                .await?
+            {
                 AgentTurn::Text(text) => {
                     // Clear the "shio> " prompt and print the response.
                     println!("{text}");
@@ -177,7 +190,8 @@ impl ChatSession {
                 AgentTurn::ToolCalls(calls) => {
                     eprintln!(); // newline after "shio> "
                     // Record the assistant's tool-call turn.
-                    self.messages.push(Message::assistant_tool_calls(calls.clone()));
+                    self.messages
+                        .push(Message::assistant_tool_calls(calls.clone()));
 
                     // Execute each tool and push the result.
                     for call in &calls {
@@ -204,7 +218,7 @@ impl ChatSession {
                 println!("[no source files found in {path_str}]");
             }
             Ok(files) => {
-                let count   = files.len();
+                let count = files.len();
                 let total_bytes: usize = files.iter().map(|(_, c)| c.len()).sum();
                 let listing: Vec<String> = files
                     .iter()
@@ -212,9 +226,9 @@ impl ChatSession {
                     .collect();
                 let content = context::format_as_blocks(&files);
                 self.messages.push(Message::user(content));
-                self.messages.push(Message::assistant(
-                    format!("Understood. I've loaded {count} file(s) and am ready for your questions."),
-                ));
+                self.messages.push(Message::assistant(format!(
+                    "Understood. I've loaded {count} file(s) and am ready for your questions."
+                )));
                 println!("[included {count} file(s) from {path_str}]");
                 for line in &listing {
                     println!("{line}");
@@ -257,7 +271,10 @@ impl SlashCompleter {
         if has_tools {
             commands.push("/tools");
         }
-        Self { file_completer: FilenameCompleter::new(), commands }
+        Self {
+            file_completer: FilenameCompleter::new(),
+            commands,
+        }
     }
 }
 
@@ -284,7 +301,7 @@ impl Completer for SlashCompleter {
                 .iter()
                 .filter(|&&cmd| cmd.starts_with(typed))
                 .map(|&cmd| Pair {
-                    display:     cmd.to_string(),
+                    display: cmd.to_string(),
                     replacement: cmd.to_string(),
                 })
                 .collect();
@@ -334,7 +351,10 @@ mod tests {
 
     #[test]
     fn new_session_with_executor_has_executor() {
-        let exec = ToolExecutor { confirm_writes: true, confirm_shell: true };
+        let exec = ToolExecutor {
+            confirm_writes: true,
+            confirm_shell: true,
+        };
         let session = make_session(Some(exec));
         assert!(session.executor.is_some());
     }

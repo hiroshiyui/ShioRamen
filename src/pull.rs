@@ -4,7 +4,7 @@ use futures_util::StreamExt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::config::{ShioConfig, DEFAULT_MODELS_DIR};
+use crate::config::{DEFAULT_MODELS_DIR, ShioConfig};
 
 const HF_BASE: &str = "https://huggingface.co";
 
@@ -19,7 +19,9 @@ pub struct PullArgs {
 }
 
 pub async fn run(args: &PullArgs, cfg: &ShioConfig) -> Result<()> {
-    let models_dir = args.models_dir.clone()
+    let models_dir = args
+        .models_dir
+        .clone()
         .or_else(|| cfg.paths.models_dir.clone())
         .unwrap_or_else(|| PathBuf::from(DEFAULT_MODELS_DIR));
 
@@ -77,9 +79,7 @@ fn resolve_source(source: &str) -> Result<(String, String)> {
                 }
             })
             .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Expected owner/repo/filename.gguf or a URL, got: {source}"
-                )
+                anyhow::anyhow!("Expected owner/repo/filename.gguf or a URL, got: {source}")
             })?;
 
         // Use only the basename for the local file (strip any subfolder path inside the repo)
@@ -185,14 +185,20 @@ mod tests {
     #[test]
     fn hf_path_expands_to_correct_url() {
         let (url, name) = resolve_source("owner/repo/model.gguf").unwrap();
-        assert_eq!(url,  "https://huggingface.co/owner/repo/resolve/main/model.gguf");
+        assert_eq!(
+            url,
+            "https://huggingface.co/owner/repo/resolve/main/model.gguf"
+        );
         assert_eq!(name, "model.gguf");
     }
 
     #[test]
     fn hf_path_with_subdir_strips_subdir_from_local_name() {
         let (url, name) = resolve_source("owner/repo/subdir/model.gguf").unwrap();
-        assert_eq!(url,  "https://huggingface.co/owner/repo/resolve/main/subdir/model.gguf");
+        assert_eq!(
+            url,
+            "https://huggingface.co/owner/repo/resolve/main/subdir/model.gguf"
+        );
         assert_eq!(name, "model.gguf");
     }
 
@@ -200,7 +206,10 @@ mod tests {
     fn hf_blob_url_rewritten_to_resolve() {
         let blob = "https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/blob/main/gemma-4-e4b-it-Q8_0.gguf";
         let (url, name) = resolve_source(blob).unwrap();
-        assert_eq!(url, "https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-e4b-it-Q8_0.gguf");
+        assert_eq!(
+            url,
+            "https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-e4b-it-Q8_0.gguf"
+        );
         assert_eq!(name, "gemma-4-e4b-it-Q8_0.gguf");
     }
 
@@ -208,7 +217,7 @@ mod tests {
     fn direct_url_passes_through_unchanged() {
         let src = "https://example.com/path/to/model.gguf";
         let (url, name) = resolve_source(src).unwrap();
-        assert_eq!(url,  src);
+        assert_eq!(url, src);
         assert_eq!(name, "model.gguf");
     }
 
@@ -226,13 +235,13 @@ mod tests {
 
     #[test]
     fn fmt_bytes_below_gib_uses_mib() {
-        assert_eq!(fmt_bytes(1024 * 1024),        "1.0 MiB");
-        assert_eq!(fmt_bytes(512 * 1024 * 1024),  "512.0 MiB");
+        assert_eq!(fmt_bytes(1024 * 1024), "1.0 MiB");
+        assert_eq!(fmt_bytes(512 * 1024 * 1024), "512.0 MiB");
     }
 
     #[test]
     fn fmt_bytes_at_or_above_gib_uses_gib() {
-        assert_eq!(fmt_bytes(1024 * 1024 * 1024),     "1.00 GiB");
+        assert_eq!(fmt_bytes(1024 * 1024 * 1024), "1.00 GiB");
         assert_eq!(fmt_bytes(4 * 1024 * 1024 * 1024), "4.00 GiB");
     }
 
