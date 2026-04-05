@@ -120,7 +120,6 @@ struct ChatResponse {
 #[derive(Deserialize)]
 struct CompletionChoice {
     message: CompletionMessage,
-    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -193,10 +192,12 @@ impl LlamaClient {
             .next()
             .ok_or_else(|| anyhow!("empty response from server"))?;
 
-        if choice.finish_reason.as_deref() == Some("tool_calls") {
-            let calls = choice.message.tool_calls.ok_or_else(|| {
-                anyhow!("finish_reason=tool_calls but no tool_calls field in response")
-            })?;
+        // Prefer tool_calls if present and non-empty, regardless of finish_reason.
+        // Some local models (Gemma, Qwen, …) set finish_reason="stop" even when
+        // returning tool calls, so we cannot rely on finish_reason alone.
+        if let Some(calls) = choice.message.tool_calls
+            && !calls.is_empty()
+        {
             return Ok(AgentTurn::ToolCalls(calls));
         }
 
