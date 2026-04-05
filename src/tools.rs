@@ -216,6 +216,38 @@ pub fn all_tools() -> Vec<ToolDef> {
                 }),
             },
         },
+        ToolDef {
+            kind: "function",
+            function: FunctionSpec {
+                name: "create_directory",
+                description: "Create a directory and any missing parent directories \
+                    (equivalent to `mkdir -p`). Safe to call even if the directory \
+                    already exists.",
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Directory path to create"
+                        }
+                    },
+                    "required": ["path"]
+                }),
+            },
+        },
+        ToolDef {
+            kind: "function",
+            function: FunctionSpec {
+                name: "get_working_directory",
+                description: "Return the current working directory. \
+                    Call this to resolve relative paths or orient yourself \
+                    before constructing file paths.",
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            },
+        },
     ]
 }
 
@@ -255,6 +287,8 @@ impl ToolExecutor {
             "delete_file" => self.delete_file(args),
             "move_file" => self.move_file(args),
             "fetch_url" => self.fetch_url(args),
+            "create_directory" => self.create_directory(args),
+            "get_working_directory" => self.get_working_directory(),
             _ => format!("Unknown tool: {name}"),
         }
     }
@@ -634,6 +668,24 @@ impl ToolExecutor {
             )
         } else {
             text
+        }
+    }
+
+    fn create_directory(&self, args: &Value) -> String {
+        let path = match args["path"].as_str() {
+            Some(p) => p,
+            None => return "Error: missing 'path' argument".into(),
+        };
+        match std::fs::create_dir_all(path) {
+            Ok(()) => format!("Created directory: {path}"),
+            Err(e) => format!("Error creating {path}: {e}"),
+        }
+    }
+
+    fn get_working_directory(&self) -> String {
+        match std::env::current_dir() {
+            Ok(p) => p.display().to_string(),
+            Err(e) => format!("Error getting working directory: {e}"),
         }
     }
 }
@@ -1026,8 +1078,8 @@ mod tests {
     // ── all_tools ─────────────────────────────────────────────────────────────
 
     #[test]
-    fn all_tools_has_eleven_entries() {
-        assert_eq!(all_tools().len(), 11);
+    fn all_tools_has_thirteen_entries() {
+        assert_eq!(all_tools().len(), 13);
     }
 
     // ── strip_html ────────────────────────────────────────────────────────────
@@ -1065,5 +1117,44 @@ mod tests {
         let ex = executor(false, false);
         let result = ex.fetch_url(&serde_json::json!({}));
         assert!(result.starts_with("Error"), "{result}");
+    }
+
+    // ── create_directory ──────────────────────────────────────────────────────
+
+    #[test]
+    fn create_directory_creates_nested_dirs() {
+        let dir = std::env::temp_dir().join("shio_test_mkdir/a/b/c");
+        let ex = executor(false, false);
+        let result = ex.create_directory(&serde_json::json!({ "path": dir.to_str().unwrap() }));
+        assert!(result.contains("Created"), "{result}");
+        assert!(dir.is_dir());
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("shio_test_mkdir"));
+    }
+
+    #[test]
+    fn create_directory_is_idempotent() {
+        let dir = std::env::temp_dir().join("shio_test_mkdir_exist");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ex = executor(false, false);
+        let result = ex.create_directory(&serde_json::json!({ "path": dir.to_str().unwrap() }));
+        assert!(result.contains("Created"), "{result}");
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn create_directory_requires_path() {
+        let ex = executor(false, false);
+        let result = ex.create_directory(&serde_json::json!({}));
+        assert!(result.starts_with("Error"), "{result}");
+    }
+
+    // ── get_working_directory ─────────────────────────────────────────────────
+
+    #[test]
+    fn get_working_directory_returns_nonempty_path() {
+        let ex = executor(false, false);
+        let result = ex.get_working_directory();
+        assert!(!result.is_empty());
+        assert!(!result.starts_with("Error"), "{result}");
     }
 }
