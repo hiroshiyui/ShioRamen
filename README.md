@@ -6,7 +6,9 @@ Runs entirely offline — no cloud API, no data leaving your machine.
 ## Features
 
 - **`serve`** — launch `llama-server` and keep it running
-- **`chat`** — interactive REPL against a running server
+- **`chat`** — full-screen TUI chat session (spawns the server automatically)
+- **`ask`** — one-shot question with optional file context; streams answer to stdout
+- **`edit`** — apply an AI-suggested edit to a file (shows diff, asks to confirm)
 - **`pull`** — download GGUF models from HuggingFace or a direct URL
 - **`doctor`** — check that all components are present and working
 - **`shio.toml`** — TOML config file; CLI flags always override it
@@ -131,7 +133,7 @@ Options:
 
 ### `chat`
 
-Start an interactive chat session (spawns the server automatically unless `--no-spawn`).
+Start an interactive chat session inside a full-screen TUI (spawns the server automatically unless `--no-spawn`).
 
 ```
 shio chat [OPTIONS]
@@ -140,17 +142,73 @@ Options:
   -m, --model <MODEL>                GGUF model file  [config: chat.model]
       --no-spawn                     Connect to an already-running server
       --temp <TEMP>                  Sampling temperature  [default: 0.7]
+      --no-tools                     Disable tool use for this session
       (all serve options also apply)
 ```
 
-**In-session commands:**
+**TUI keybindings and commands:**
 
-| Command | Action |
-|---------|--------|
+| Key / Command | Action |
+|---------------|--------|
+| `Enter` | Send message |
+| `Ctrl+C` / `Ctrl+D` | Quit |
+| `PgUp` / `PgDn` | Scroll through chat history |
+| `Up` / `Down` | Browse input history |
+| `Tab` | Cycle through slash-command or path completions |
+| `Ctrl+U` | Clear current input line |
 | `/reset` | Clear conversation history (keeps system prompt) |
-| `/exit` | Quit |
-| `Ctrl+C` | Cancel current line |
-| `Ctrl+D` | Quit |
+| `/include <path>` | Load a file or directory into context |
+| `/tools` | List available tools |
+| `/exit` / `/quit` | Quit |
+
+### `ask`
+
+Ask a one-shot question; streams the answer to stdout.
+
+```
+shio ask <QUESTION> [OPTIONS]
+
+Arguments:
+  <QUESTION>   The question to ask
+
+Options:
+  -f, --file <PATH>                  File(s) to include as context (repeatable)
+  -m, --model <MODEL>                GGUF model file  [config: chat.model]
+      --temp <TEMP>                  Sampling temperature  [default: 0.7]
+      --no-spawn                     Connect to an already-running server
+      (all serve options also apply)
+```
+
+Example:
+
+```bash
+shio ask "what does this function do?" --file src/main.rs
+```
+
+### `edit`
+
+Apply an AI-suggested edit to a file. Shows a coloured diff and asks to confirm before writing.
+
+```
+shio edit <FILE> <INSTRUCTION> [OPTIONS]
+
+Arguments:
+  <FILE>         File to edit
+  <INSTRUCTION>  What to change (e.g. "add error handling to the parse function")
+
+Options:
+  -y, --yes                          Apply without asking for confirmation
+  -m, --model <MODEL>                GGUF model file  [config: chat.model]
+      --temp <TEMP>                  Sampling temperature  [default: 0.7]
+      --no-spawn                     Connect to an already-running server
+      (all serve options also apply)
+```
+
+Example:
+
+```bash
+shio edit src/main.rs "add a docstring to every public function"
+```
 
 ### `pull`
 
@@ -212,9 +270,15 @@ cont_batching = true
 [chat]
 model         = "./models/model.gguf"
 temperature   = 0.7
+system_prompt = "..."                  # optional: override the built-in system prompt
 
 [paths]
-models_dir    = "./models"
+models_dir    = "./models"             # default download directory for `shio pull`
+
+[tools]
+enabled        = true   # let the model read/write files and run commands
+confirm_writes = true   # ask [y/N] before the model writes files
+confirm_shell  = true   # ask [y/N] before the model runs shell commands
 ```
 
 A custom config file can be specified with the global `--config` flag:
@@ -228,10 +292,10 @@ shio --config /path/to/other.toml serve
 ## Development
 
 ```bash
-cargo build           # debug build
-cargo test            # run tests
-cargo clippy          # lint
-cargo install --path  # install shio to ./bin/
+cargo build            # debug build
+cargo test             # run tests
+cargo clippy           # lint
+cargo install --path . # install shio to ./bin/
 ```
 
 ---
