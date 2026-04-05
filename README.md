@@ -1,0 +1,241 @@
+# ShioRamen 🍜
+
+A local AI coding assistant powered by [llama.cpp](https://github.com/ggml-org/llama.cpp).  
+Runs entirely offline — no cloud API, no data leaving your machine.
+
+## Features
+
+- **`serve`** — launch `llama-server` and keep it running
+- **`chat`** — interactive REPL against a running server
+- **`pull`** — download GGUF models from HuggingFace or a direct URL
+- **`doctor`** — check that all components are present and working
+- **`shio.toml`** — TOML config file; CLI flags always override it
+
+---
+
+## Requirements
+
+- Rust (stable) — see [`rust-toolchain.toml`](rust-toolchain.toml)
+- A built `llama-server` binary in `./bin/` (see [Build llama.cpp](#build-llamacpp))
+- A GGUF model file (see [`shio pull`](#pull))
+- NVIDIA GPU recommended; CPU-only works but is slow
+
+---
+
+## Installation
+
+```bash
+git clone --recurse-submodules https://github.com/hiroshiyui/ShioRamen.git
+cd ShioRamen
+
+# Build llama.cpp and place binaries in ./bin/ (see below)
+
+# Install the shio binary to ./bin/
+cargo install --path .
+```
+
+> `cargo install --path .` places `shio` in `./bin/` automatically  
+> (configured via [`.cargo/config.toml`](.cargo/config.toml)).
+
+### Build llama.cpp
+
+```bash
+cd vendor/llama.cpp
+cmake -B build \
+  -DGGML_CUDA=ON \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+cp build/bin/llama-server ../../bin/
+cd ../..
+```
+
+Omit `-DGGML_CUDA=ON` for CPU-only builds.
+
+---
+
+## Quick start
+
+### 1. Download a model
+
+```bash
+# From HuggingFace (owner/repo/filename)
+./bin/shio pull bartowski/Qwen2.5-Coder-7B-Instruct-GGUF/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf
+
+# From a direct URL
+./bin/shio pull https://example.com/model.gguf
+```
+
+Models are saved to `./models/` by default.
+
+### 2. Configure
+
+Edit `shio.toml` to set your model path and tuning parameters:
+
+```toml
+[server]
+bin  = "./bin/llama-server"
+host = "127.0.0.1"
+port = 8080
+ngl  = 99      # GPU layers — set lower if VRAM is tight
+ctx  = 8192    # Context window size
+
+# Optional KV cache quantization (saves VRAM at a small quality cost)
+cache_type_k = "q4_0"
+cache_type_v = "q4_0"
+
+flash_attn    = true
+cont_batching = true
+
+[chat]
+model       = "./models/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf"
+temperature = 0.7   # 0.1–0.3 for coding; 0.7–1.0 for creative tasks
+
+[paths]
+models_dir = "./models"
+```
+
+### 3. Start chatting
+
+```bash
+# Launch server + open chat in one step
+./bin/shio chat
+
+# Or run server and chat separately
+./bin/shio serve
+./bin/shio chat --no-spawn   # connects to the already-running server
+```
+
+---
+
+## Commands
+
+### `serve`
+
+Launch `llama-server` and keep it running until `Ctrl+C`.
+
+```
+shio serve [OPTIONS]
+
+Options:
+  -m, --model <MODEL>                GGUF model file  [config: chat.model]
+      --server-bin <PATH>            llama-server binary  [default: ./bin/llama-server]
+      --host <HOST>                  Bind host  [default: 127.0.0.1]
+      --port <PORT>                  Bind port  [default: 8080]
+      --ngl <N>                      GPU layers to offload  [default: 99]
+      --ctx <N>                      Context window size  [default: 8192]
+      --cache-type-k <TYPE>          KV cache type for keys (q4_0, q8_0, f16)
+      --cache-type-v <TYPE>          KV cache type for values
+      --flash-attn                   Enable flash attention
+      --cont-batching                Enable continuous batching
+```
+
+### `chat`
+
+Start an interactive chat session (spawns the server automatically unless `--no-spawn`).
+
+```
+shio chat [OPTIONS]
+
+Options:
+  -m, --model <MODEL>                GGUF model file  [config: chat.model]
+      --no-spawn                     Connect to an already-running server
+      --temp <TEMP>                  Sampling temperature  [default: 0.7]
+      (all serve options also apply)
+```
+
+**In-session commands:**
+
+| Command | Action |
+|---------|--------|
+| `/reset` | Clear conversation history (keeps system prompt) |
+| `/exit` | Quit |
+| `Ctrl+C` | Cancel current line |
+| `Ctrl+D` | Quit |
+
+### `pull`
+
+Download a GGUF model from HuggingFace or a direct URL.
+
+```
+shio pull <SOURCE> [--models-dir <DIR>]
+```
+
+`SOURCE` can be:
+- A HuggingFace path: `owner/repo/filename.gguf`
+- A direct HTTPS URL: `https://…/filename.gguf`
+
+Downloads are saved to `./models/` (or `paths.models_dir` from config).  
+Already-downloaded files are skipped.
+
+### `doctor`
+
+Check that all required components are present and working.
+
+```
+shio doctor [OPTIONS]
+
+  -m, --model <MODEL>   GGUF model file to verify
+      --host / --port   Server address to probe
+```
+
+Example output:
+
+```
+🩺 Checking components…
+
+  ✅  llama-server binary: ./bin/llama-server
+  ✅  Model file: ./models/gemma4-26b-q4_k_m.gguf (14.9 GB)
+  🔍  GPU (NVIDIA): NVIDIA GeForce RTX 3060, 12288 MiB
+  ✅  Server health: http://127.0.0.1:8080
+
+🎉  All checks passed.
+```
+
+---
+
+## Config file reference (`shio.toml`)
+
+All settings are optional. CLI flags always take precedence over the config file.
+
+```toml
+[server]
+bin           = "./bin/llama-server"   # path to llama-server binary
+host          = "127.0.0.1"
+port          = 8080
+ngl           = 99                     # GPU layers to offload
+ctx           = 8192                   # context window (tokens)
+cache_type_k  = "q4_0"                 # KV key cache quantization
+cache_type_v  = "q4_0"                 # KV value cache quantization
+flash_attn    = true
+cont_batching = true
+
+[chat]
+model         = "./models/model.gguf"
+temperature   = 0.7
+
+[paths]
+models_dir    = "./models"
+```
+
+A custom config file can be specified with the global `--config` flag:
+
+```bash
+shio --config /path/to/other.toml serve
+```
+
+---
+
+## Development
+
+```bash
+cargo build           # debug build
+cargo test            # run tests
+cargo clippy          # lint
+cargo install --path  # install shio to ./bin/
+```
+
+---
+
+## License
+
+MIT
