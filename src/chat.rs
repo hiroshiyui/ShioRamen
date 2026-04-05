@@ -1,5 +1,11 @@
 use anyhow::Result;
-use rustyline::{error::ReadlineError, DefaultEditor};
+use rustyline::completion::{Completer, FilenameCompleter, Pair};
+use rustyline::error::ReadlineError;
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::history::DefaultHistory;
+use rustyline::validate::Validator;
+use rustyline::{Context, Editor, Helper};
 
 use crate::client::{AgentTurn, LlamaClient, Message, ToolDef};
 use crate::context;
@@ -49,7 +55,8 @@ impl ChatSession {
     }
 
     pub async fn run(&mut self) -> Result<()> {
-        let mut rl = DefaultEditor::new()?;
+        let mut rl: Editor<SlashCompleter, DefaultHistory> = Editor::new()?;
+        rl.set_helper(Some(SlashCompleter::new(self.executor.is_some())));
 
         println!("ShioRamen — local coding assistant");
         if let Some(exec) = &self.executor {
@@ -225,6 +232,69 @@ fn flush_stderr() {
     use std::io::Write;
     std::io::stderr().flush().ok();
 }
+
+// ── Tab-completion for slash commands ────────────────────────────────────────
+
+/// Rustyline helper that completes slash commands and, for `/include`, delegates
+/// to `FilenameCompleter` so the user gets filesystem path completion.
+pub struct SlashCompleter {
+    file_completer: FilenameCompleter,
+    /// The full set of slash commands offered for completion.
+    commands: Vec<&'static str>,
+}
+
+impl SlashCompleter {
+    pub fn new(has_tools: bool) -> Self {
+        let mut commands = vec!["/exit", "/quit", "/reset", "/include "];
+        if has_tools {
+            commands.push("/tools");
+        }
+        Self { file_completer: FilenameCompleter::new(), commands }
+    }
+}
+
+impl Completer for SlashCompleter {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        ctx: &Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Pair>)> {
+        // For `/include <path>`, hand the whole line to FilenameCompleter.
+        // It extracts the last word (the path) and returns (word_start, matches).
+        if line.starts_with("/include ") {
+            return self.file_completer.complete(line, pos, ctx);
+        }
+
+        // For any other `/…` prefix, complete from the known command list.
+        if line.starts_with('/') {
+            let typed = &line[..pos];
+            let candidates: Vec<Pair> = self
+                .commands
+                .iter()
+                .filter(|&&cmd| cmd.starts_with(typed))
+                .map(|&cmd| Pair {
+                    display:     cmd.to_string(),
+                    replacement: cmd.to_string(),
+                })
+                .collect();
+            return Ok((0, candidates));
+        }
+
+        Ok((pos, vec![]))
+    }
+}
+
+// The remaining traits are required by rustyline's `Helper` supertrait but need
+// no custom behaviour here — the defaults do nothing.
+impl Hinter for SlashCompleter {
+    type Hint = String;
+}
+impl Highlighter for SlashCompleter {}
+impl Validator for SlashCompleter {}
+impl Helper for SlashCompleter {}
 
 #[cfg(test)]
 mod tests {
