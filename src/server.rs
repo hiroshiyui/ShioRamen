@@ -28,15 +28,25 @@ impl ServerProcess {
 
         println!("  Launching llama-server ({})...", config.server_bin.display());
 
-        let child = Command::new(&config.server_bin)
-            .args([
-                "--model",        config.model_path.to_str().unwrap(),
-                "--host",         &config.host,
-                "--port",         &config.port.to_string(),
-                "--n-gpu-layers", &config.n_gpu_layers.to_string(),
-                "--ctx-size",     &config.ctx_size.to_string(),
-                "--log-disable",
-            ])
+        let mut cmd = Command::new(&config.server_bin);
+        cmd.args([
+            "--model",        config.model_path.to_str().unwrap(),
+            "--host",         &config.host,
+            "--port",         &config.port.to_string(),
+            "--n-gpu-layers", &config.n_gpu_layers.to_string(),
+            "--ctx-size",     &config.ctx_size.to_string(),
+            "--log-disable",
+        ]);
+        if let Some(ref ct) = config.cache_type_k {
+            cmd.args(["--cache-type-k", ct]);
+        }
+        if let Some(ref ct) = config.cache_type_v {
+            cmd.args(["--cache-type-v", ct]);
+        }
+        if config.flash_attn    { cmd.arg("--flash-attn"); }
+        if config.cont_batching { cmd.arg("--cont-batching"); }
+
+        let child = cmd
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()

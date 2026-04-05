@@ -1,0 +1,23 @@
+[server]
+bin  = "./bin/llama-server"
+host = "127.0.0.1"
+port = 8080
+
+# Gemma 4 26B-A4B — tune these per model/scenario
+ngl  = 42        # GPU layers to offload; lower if VRAM is tight
+ctx  = 32768     # Context window; reduce to save VRAM (e.g. 8192 for coding)
+
+# KV cache quantization — trades a little quality for significant VRAM savings
+cache_type_k = "q4_0"
+cache_type_v = "q4_0"
+
+# Performance flags
+flash_attn    = true   # Faster attention; disable if you hit compatibility issues
+cont_batching = true   # Better throughput when multiple requests queue up
+
+[chat]
+model       = "./models/gemma4-26b-q4_k_m.gguf"
+temperature = 0.7   # Lower (0.1–0.3) for coding; higher (0.7–1.0) for creative tasks
+
+[paths]
+models_dir = "./models"
