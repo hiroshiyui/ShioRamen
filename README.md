@@ -161,7 +161,10 @@ Options:
 | `Home` / `End` | Move cursor to start / end of line |
 | `Backspace` / `Delete` | Delete character before / after cursor |
 | `Tab` | Cycle through slash-command or path completions |
-| `Ctrl+U` | Clear current input line |
+| `Ctrl+A` | Move cursor to beginning of line |
+| `Ctrl+E` | Move cursor to end of line |
+| `Ctrl+U` | Erase from cursor to beginning of line |
+| `Ctrl+W` | Erase word before cursor |
 | `/reset` | Clear conversation history (keeps system prompt) |
 | `/include <path>` | Load a file or directory into context |
 | `/tools` | List available tools |

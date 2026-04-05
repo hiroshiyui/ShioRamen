@@ -426,10 +426,22 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         // Tab completion
         (Tab, _) => do_complete(app),
 
-        // Ctrl+U: clear line
+        // Bash-style line editing
+        (Char('a'), m) if m.contains(Mods::CONTROL) => {
+            app.cursor = 0;
+        }
+        (Char('e'), m) if m.contains(Mods::CONTROL) => {
+            app.cursor = app.input.len();
+        }
         (Char('u'), m) if m.contains(Mods::CONTROL) => {
             app.input.clear();
             app.cursor = 0;
+            app.comp_candidates.clear();
+        }
+        (Char('w'), m) if m.contains(Mods::CONTROL) => {
+            let new_cursor = prev_word(&app.input, app.cursor);
+            app.input.drain(new_cursor..app.cursor);
+            app.cursor = new_cursor;
             app.comp_candidates.clear();
         }
 
