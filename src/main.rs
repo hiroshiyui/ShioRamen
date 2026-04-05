@@ -209,11 +209,17 @@ async fn main() -> Result<()> {
             };
 
             println!();
-            let executor = if !args.no_tools && cfg.tools.enabled.unwrap_or(true) {
-                Some(tools::ToolExecutor {
-                    confirm_writes: cfg.tools.confirm_writes.unwrap_or(true),
-                    confirm_shell: cfg.tools.confirm_shell.unwrap_or(true),
-                })
+            let tools_requested = !args.no_tools && cfg.tools.enabled.unwrap_or(true);
+            let executor = if tools_requested {
+                if prompt_trust()? {
+                    Some(tools::ToolExecutor {
+                        confirm_writes: cfg.tools.confirm_writes.unwrap_or(true),
+                        confirm_shell: cfg.tools.confirm_shell.unwrap_or(true),
+                    })
+                } else {
+                    eprintln!("  Tools disabled for this session.\n");
+                    None
+                }
             } else {
                 None
             };
@@ -241,6 +247,47 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+// ── Directory trust prompt ────────────────────────────────────────────────────
+
+/// Ask the user whether to trust the current working directory before enabling
+/// tool use. Returns `true` if the user typed `y`/`Y`, false otherwise.
+fn prompt_trust() -> Result<bool> {
+    use std::io::Write;
+
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let path = cwd.display().to_string();
+
+    // Inner box width: wide enough for the path plus 4 chars of padding.
+    let inner = 56usize.max(path.len() + 4);
+    let bar = "─".repeat(inner);
+    let w = inner - 4; // text column width (2 spaces each side)
+
+    eprintln!();
+    eprintln!("  ╭{bar}╮");
+    eprintln!("  │  {:<w$}  │", "Do you trust the files in this folder?");
+    eprintln!("  │  {:<w$}  │", "");
+    eprintln!("  │  \x1b[1m{:<w$}\x1b[0m  │", path);
+    eprintln!("  │  {:<w$}  │", "");
+    eprintln!(
+        "  │  {:<w$}  │",
+        "ShioRamen may read/write files and run shell"
+    );
+    eprintln!(
+        "  │  {:<w$}  │",
+        "commands here. Only proceed if you trust this directory."
+    );
+    eprintln!("  ╰{bar}╯");
+    eprintln!();
+    eprint!("  Trust this directory? [y/N] ");
+    std::io::stderr().flush()?;
+
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    let trusted = answer.trim().eq_ignore_ascii_case("y");
+    eprintln!();
+    Ok(trusted)
 }
 
 #[cfg(test)]
