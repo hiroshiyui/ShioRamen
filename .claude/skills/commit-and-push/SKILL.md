@@ -23,7 +23,20 @@ Read the output to understand:
 - What the actual changes are
 - The existing commit style (message format, conventions, capitalization)
 
-## Step 2: Group changes by topic
+## Step 2: Run quality gates
+
+Before touching git, run tests and lints. **Do not proceed if either fails.**
+
+```bash
+cargo test
+cargo clippy -- -D warnings
+```
+
+If `cargo test` fails: stop, report which tests failed, and ask the user to fix them first.
+
+If `cargo clippy` fails: fix the warnings yourself (they are usually trivial — unused imports, needless borrows, etc.), then re-run both checks before continuing.
+
+## Step 3: Group changes by topic
 
 Analyze the diff and mentally cluster files by what they accomplish together. A "topic" is a cohesive unit of intent — not just a file type or directory. Good examples:
 
@@ -35,7 +48,7 @@ Do NOT split arbitrarily by file type or directory. Ask: "Would reverting this c
 
 If all changes belong to a single topic, make a single commit. If changes are clearly unrelated (e.g., a bug fix AND a refactor AND a dependency update), split them into separate commits.
 
-## Step 3: Commit each topic
+## Step 4: Commit each topic
 
 For each topic group, in a logical order (dependencies first, then features, then chores):
 
@@ -65,7 +78,7 @@ For each topic group, in a logical order (dependencies first, then features, the
 
 Repeat for each topic group.
 
-## Step 4: Push
+## Step 5: Push
 
 After all commits are made, push to the tracked remote branch:
 
@@ -86,7 +99,7 @@ git push
 
 Inform the user if there were conflicts that required manual resolution.
 
-## Step 5: Confirm
+## Step 6: Confirm
 
 Show the user a summary:
 - How many commits were made and their messages
