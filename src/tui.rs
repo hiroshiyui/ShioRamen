@@ -3,7 +3,10 @@ use std::io;
 
 use anyhow::Result;
 use crossterm::{
-    event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers},
+    event::{
+        DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent,
+        KeyModifiers, MouseEventKind,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -144,7 +147,7 @@ impl App {
 pub async fn run(session: ChatSession) -> Result<()> {
     enable_raw_mode()?;
     let mut out = io::stdout();
-    execute!(out, EnterAlternateScreen)?;
+    execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(out);
     let mut term = Terminal::new(backend)?;
 
@@ -152,7 +155,11 @@ pub async fn run(session: ChatSession) -> Result<()> {
 
     // Always restore terminal, even on error.
     disable_raw_mode()?;
-    execute!(term.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        term.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
     term.show_cursor()?;
     result
 }
@@ -205,6 +212,13 @@ async fn run_loop(
             maybe_ev = events.next() => match maybe_ev {
                 Some(Ok(Event::Key(key))) => {
                     if handle_key(&mut app, key).await { app.quit = true; }
+                }
+                Some(Ok(Event::Mouse(mouse))) => {
+                    match mouse.kind {
+                        MouseEventKind::ScrollUp   => view_scroll(&mut app, -3),
+                        MouseEventKind::ScrollDown => view_scroll(&mut app,  3),
+                        _ => {}
+                    }
                 }
                 Some(Ok(Event::Resize(_, _))) => {}   // just re-render
                 Some(Err(e)) => return Err(e.into()),
