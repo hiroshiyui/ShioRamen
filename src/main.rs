@@ -8,6 +8,7 @@ mod edit;
 mod pull;
 mod server;
 mod tools;
+mod tui;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -212,7 +213,7 @@ async fn main() -> Result<()> {
                 None
             };
             let client = LlamaClient::new(server.url.clone());
-            let mut session = ChatSession::new(client, temp, system_prompt, executor);
+            let session = ChatSession::new(client, temp, system_prompt, executor);
             session.run().await?;
             drop(server);
         }

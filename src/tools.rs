@@ -114,6 +114,7 @@ pub fn all_tools() -> Vec<ToolDef> {
 
 // ── Executor ─────────────────────────────────────────────────────────────────
 
+#[derive(Clone)]
 pub struct ToolExecutor {
     pub confirm_writes: bool,
     pub confirm_shell: bool,
@@ -127,6 +128,7 @@ const RESET: &str = "\x1b[0m";
 
 impl ToolExecutor {
     /// Dispatch a tool call and return the result string sent back to the model.
+    /// Logs the call and result to stderr.
     pub fn execute(&self, call: &ToolCallItem) -> String {
         let args: Value = match serde_json::from_str(&call.function.arguments) {
             Ok(v)  => v,
@@ -137,20 +139,35 @@ impl ToolExecutor {
         let short_args = short_display(&args);
         eprintln!("  {CYAN}{BOLD}⚡ {name}({short_args}){RESET}");
 
-        let result = match name {
-            "read_file"      => self.read_file(&args),
-            "write_file"     => self.write_file(&args),
-            "list_directory" => self.list_directory(&args),
-            "run_shell"      => self.run_shell(&args),
-            "search_files"   => self.search_files(&args),
-            "grep_files"     => self.grep_files(&args),
-            _                => format!("Unknown tool: {name}"),
-        };
+        let result = self.dispatch(name, &args);
 
         let preview = result.lines().next().unwrap_or("").chars().take(80).collect::<String>();
         eprintln!("  {GREEN}→ {preview}{RESET}");
 
         result
+    }
+
+    /// Like `execute` but produces no terminal output.
+    /// Use in TUI mode where stderr would corrupt the display.
+    /// Confirmation must be handled externally before calling this.
+    pub fn execute_quiet(&self, call: &ToolCallItem) -> String {
+        let args: Value = match serde_json::from_str(&call.function.arguments) {
+            Ok(v)  => v,
+            Err(e) => return format!("Error parsing arguments: {e}"),
+        };
+        self.dispatch(call.function.name.as_str(), &args)
+    }
+
+    fn dispatch(&self, name: &str, args: &Value) -> String {
+        match name {
+            "read_file"      => self.read_file(args),
+            "write_file"     => self.write_file(args),
+            "list_directory" => self.list_directory(args),
+            "run_shell"      => self.run_shell(args),
+            "search_files"   => self.search_files(args),
+            "grep_files"     => self.grep_files(args),
+            _                => format!("Unknown tool: {name}"),
+        }
     }
 
     // ── Individual tools ──────────────────────────────────────────────────────

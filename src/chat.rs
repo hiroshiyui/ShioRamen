@@ -29,13 +29,13 @@ const MAX_AGENT_ITERATIONS: usize = 20;
 const INCLUDE_WARN_BYTES: usize = 512 * 1024;
 
 pub struct ChatSession {
-    client: LlamaClient,
-    messages: Vec<Message>,
-    temperature: f32,
+    pub(crate) client:      LlamaClient,
+    pub(crate) messages:    Vec<Message>,
+    pub(crate) temperature: f32,
     /// When Some, the agentic loop is active and these tools are offered to the model.
-    executor: Option<ToolExecutor>,
+    pub(crate) executor: Option<ToolExecutor>,
     /// Tool definitions, computed once and reused across turns.
-    tools: Vec<ToolDef>,
+    pub(crate) tools: Vec<ToolDef>,
 }
 
 impl ChatSession {
@@ -54,7 +54,14 @@ impl ChatSession {
         }
     }
 
-    pub async fn run(&mut self) -> Result<()> {
+    /// Start the interactive session. Consumes `self` and hands ownership to the TUI.
+    pub async fn run(self) -> Result<()> {
+        crate::tui::run(self).await
+    }
+
+    /// Legacy line-mode REPL, kept for testing and fallback use.
+    #[allow(dead_code)]
+    pub async fn run_line_mode(&mut self) -> Result<()> {
         let mut rl: Editor<SlashCompleter, DefaultHistory> = Editor::new()?;
         rl.set_helper(Some(SlashCompleter::new(self.executor.is_some())));
 

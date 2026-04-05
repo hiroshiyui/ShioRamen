@@ -75,14 +75,14 @@ pub struct ToolCallFunction {
 }
 
 /// A tool definition sent to the model so it knows what it can call.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct ToolDef {
     #[serde(rename = "type")]
     pub kind: &'static str,
     pub function: FunctionSpec,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct FunctionSpec {
     pub name: &'static str,
     pub description: &'static str,
@@ -146,6 +146,7 @@ struct Delta {
 
 // ── Client ───────────────────────────────────────────────────────────────────
 
+#[derive(Clone)]
 pub struct LlamaClient {
     http: Client,
     base_url: String,
@@ -234,6 +235,23 @@ impl LlamaClient {
     /// Streaming chat; prints tokens to stdout as they arrive.
     /// Returns the fully assembled text.
     pub async fn chat_stream(&self, messages: &[Message], temperature: f32) -> Result<String> {
+        let text = self.chat_stream_cb(messages, temperature, print_flush).await?;
+        println!();
+        Ok(text)
+    }
+
+    /// Streaming chat with a per-token callback instead of printing.
+    /// The callback is called synchronously for each token as it arrives.
+    /// Returns the fully assembled text.
+    pub async fn chat_stream_cb<F>(
+        &self,
+        messages: &[Message],
+        temperature: f32,
+        mut on_token: F,
+    ) -> Result<String>
+    where
+        F: FnMut(&str),
+    {
         let request = ChatRequest {
             model: "local",
             messages,
@@ -266,13 +284,12 @@ impl LlamaClient {
 
                 let Ok(sc) = serde_json::from_str::<StreamChunk>(data) else { continue };
                 if let Some(token) = sc.choices.first().and_then(|c| c.delta.content.as_deref()) {
-                    print_flush(token);
+                    on_token(token);
                     full_text.push_str(token);
                 }
             }
         }
 
-        println!();
         Ok(full_text)
     }
 }
