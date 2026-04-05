@@ -35,7 +35,6 @@ impl ServerProcess {
             "--port",         &config.port.to_string(),
             "--n-gpu-layers", &config.n_gpu_layers.to_string(),
             "--ctx-size",     &config.ctx_size.to_string(),
-            "--log-disable",
         ]);
         if let Some(ref ct) = config.cache_type_k {
             cmd.args(["--cache-type-k", ct]);
@@ -43,12 +42,12 @@ impl ServerProcess {
         if let Some(ref ct) = config.cache_type_v {
             cmd.args(["--cache-type-v", ct]);
         }
-        if config.flash_attn    { cmd.arg("--flash-attn"); }
+        if config.flash_attn    { cmd.args(["--flash-attn", "on"]); }
         if config.cont_batching { cmd.arg("--cont-batching"); }
 
         let child = cmd
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(Stdio::null())   // HTTP request logs — keep silent during chat
+            .stderr(Stdio::inherit()) // model loading, GPU layers, startup progress
             .spawn()
             .with_context(|| format!("Failed to spawn {:?}", config.server_bin))?;
 
