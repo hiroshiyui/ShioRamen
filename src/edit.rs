@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 use anyhow::{Context, Result};
 use similar::{ChangeTag, TextDiff};
 use std::io::{self, Write};

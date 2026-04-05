@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use std::io::Write;

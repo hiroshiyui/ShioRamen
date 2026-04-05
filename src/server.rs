@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 use anyhow::{Context, Result};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
