@@ -84,6 +84,15 @@ Make the minimum edits needed to make docs accurate:
 
 The `shio.toml` in the repo root is an example config. Cross-check it against `src/config.rs` (or equivalent): every key present in the file must be a recognized field. Update the example file if needed.
 
+### 5a. Sync `system_prompt` ↔ `DEFAULT_SYSTEM_PROMPT`
+
+`shio.toml` `[chat].system_prompt` must be kept word-for-word in sync with `DEFAULT_SYSTEM_PROMPT` in `src/chat.rs`. They serve the same role: `shio.toml` is the editable copy users customise; the Rust constant is the compile-time fallback used when no config file is present.
+
+- Read `DEFAULT_SYSTEM_PROMPT` from `src/chat.rs`.
+- Read `system_prompt` from `shio.toml`.
+- If they differ, update `shio.toml` to match `src/chat.rs` (the Rust source is authoritative).
+- TOML `"""` strings use `\` as a line-ending escape (same as Rust), so the formatting translates directly.
+
 ## Step 6: Report
 
 After completing repairs, give the user a concise summary:
