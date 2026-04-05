@@ -1,7 +1,9 @@
 # ShioRamen 🍜
 
-A local AI coding assistant powered by [llama.cpp](https://github.com/ggml-org/llama.cpp).  
+A local AI coding assistant powered by [llama.cpp](https://github.com/ggml-org/llama.cpp).
 Runs entirely offline — no cloud API, no data leaving your machine.
+
+![Running ShioRamen](スクリーンショット_20260405_144128.png)
 
 ## Features
 
@@ -36,7 +38,7 @@ cd ShioRamen
 cargo install --path .
 ```
 
-> `cargo install --path .` places `shio` in `./bin/` automatically  
+> `cargo install --path .` places `shio` in `./bin/` automatically
 > (configured via [`.cargo/config.toml`](.cargo/config.toml)).
 
 ### Build llama.cpp
@@ -229,7 +231,7 @@ shio pull <SOURCE> [--models-dir <DIR>]
 - A direct HTTPS URL: `https://…/filename.gguf`
 - A HuggingFace web-page URL (the `/blob/main/` viewer URL is automatically rewritten to the direct download URL)
 
-Downloads are saved to `./models/` (or `paths.models_dir` from config).  
+Downloads are saved to `./models/` (or `paths.models_dir` from config).
 Already-downloaded files are skipped.
 
 ### `doctor`
