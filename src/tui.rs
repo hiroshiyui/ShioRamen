@@ -309,8 +309,13 @@ fn render(f: &mut Frame, app: &App) {
     f.render_widget(Paragraph::new(format!("{prefix}{}", app.input)), inner);
 
     // Draw cursor only while input is active.
+    // Use display-column width (not byte offset) so CJK and other wide
+    // characters — which are 2 terminal columns but 2–4 bytes — are handled
+    // correctly.
     if matches!(app.status, AppStatus::Idle) {
-        let cx = inner.x + prefix.len() as u16 + app.cursor as u16;
+        use unicode_width::UnicodeWidthStr;
+        let display_col = app.input[..app.cursor].width() as u16;
+        let cx = inner.x + prefix.len() as u16 + display_col;
         let cy = inner.y;
         if cx < inner.x + inner.width {
             f.set_cursor_position((cx, cy));
