@@ -6,6 +6,7 @@ mod config;
 mod context;
 mod doctor;
 mod edit;
+mod init;
 mod lsp;
 mod pull;
 mod server;
@@ -50,6 +51,8 @@ enum Commands {
     Doctor(doctor::DoctorArgs),
     /// Download a model from HuggingFace or a direct URL into ./models/
     Pull(pull::PullArgs),
+    /// Create a shio.toml config file in the current directory
+    Init(init::InitArgs),
 }
 
 /// Server-launch flags shared across subcommands that need to spawn llama-server.
@@ -246,6 +249,10 @@ async fn main() -> Result<()> {
         Commands::Pull(args) => {
             pull::run(&args, &cfg).await?;
         }
+
+        Commands::Init(args) => {
+            init::run(&args)?;
+        }
     }
 
     Ok(())
@@ -331,6 +338,12 @@ mod tests {
     fn pull_subcommand_recognised() {
         let cli = parse(&["shio", "pull", "owner/repo/model.gguf"]).unwrap();
         assert!(matches!(cli.command, Commands::Pull(_)));
+    }
+
+    #[test]
+    fn init_subcommand_recognised() {
+        let cli = parse(&["shio", "init"]).unwrap();
+        assert!(matches!(cli.command, Commands::Init(_)));
     }
 
     // ── global --config flag ─────────────────────────────────────────────────
