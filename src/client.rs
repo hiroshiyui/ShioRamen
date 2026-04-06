@@ -485,8 +485,7 @@ mod tests {
         let calls = extract_embedded_tool_calls(text);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].function.name, "read_file");
-        let args: serde_json::Value =
-            serde_json::from_str(&calls[0].function.arguments).unwrap();
+        let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
         assert_eq!(args["path"], "a.txt");
     }
 
