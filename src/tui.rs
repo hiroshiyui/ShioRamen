@@ -1005,7 +1005,36 @@ async fn run_agent_loop(
             tools
         };
 
-        match client.chat_agent(msgs, temp, tools_for_call).await? {
+        // Some local models occasionally return an empty response (no content,
+        // no tool calls).  Retry a few times before surfacing the error.
+        let turn = {
+            const MAX_EMPTY_RETRIES: usize = 3;
+            let mut last_err = anyhow::anyhow!("unreachable");
+            let mut turn_opt = None;
+            for attempt in 0..MAX_EMPTY_RETRIES {
+                match client.chat_agent(msgs, temp, tools_for_call).await {
+                    Ok(t) => {
+                        turn_opt = Some(t);
+                        break;
+                    }
+                    Err(e) if e.to_string().contains("no content and no tool calls") => {
+                        last_err = e;
+                        if attempt + 1 < MAX_EMPTY_RETRIES {
+                            let _ = tx.send(TuiEvent::ToolStart(format!(
+                                "empty response, retrying ({}/{MAX_EMPTY_RETRIES})…",
+                                attempt + 1
+                            )));
+                        }
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            match turn_opt {
+                Some(t) => t,
+                None => return Err(last_err),
+            }
+        };
+        match turn {
             AgentTurn::Text(text) => {
                 let _ = tx.send(TuiEvent::AssistantText(text.clone()));
                 msgs.push(Message::assistant(&text));
