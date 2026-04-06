@@ -284,7 +284,7 @@ impl LlamaClient {
             line_buf.push_str(&String::from_utf8_lossy(&chunk?));
             while let Some(pos) = line_buf.find('\n') {
                 let raw = line_buf[..pos].trim().to_string();
-                line_buf = line_buf[pos + 1..].to_string();
+                line_buf.drain(..=pos);
 
                 let Some(data) = raw.strip_prefix("data: ") else {
                     continue;

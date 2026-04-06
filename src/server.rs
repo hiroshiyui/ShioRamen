@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use anyhow::{Context, Result};
 use std::process::{Child, Command, Stdio};
+use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -101,7 +102,11 @@ impl Drop for ServerProcess {
 }
 
 async fn health_check(url: &str) -> bool {
-    reqwest::get(format!("{url}/health"))
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    let client = CLIENT.get_or_init(reqwest::Client::new);
+    client
+        .get(format!("{url}/health"))
+        .send()
         .await
         .map(|r| r.status().is_success())
         .unwrap_or(false)

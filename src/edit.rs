@@ -53,7 +53,8 @@ pub async fn run(args: &EditArgs, cfg: &ShioConfig) -> Result<()> {
     let port = args.server.port.or(cfg.server.port).unwrap_or(DEFAULT_PORT);
     let temp = args.temp.or(cfg.chat.temperature).unwrap_or(DEFAULT_TEMP);
 
-    let original = std::fs::read_to_string(&args.file)
+    let original = tokio::fs::read_to_string(&args.file)
+        .await
         .with_context(|| format!("Cannot read file: {}", args.file.display()))?;
 
     let server = if args.no_spawn {

@@ -64,12 +64,19 @@ pub async fn run(args: &AskArgs, cfg: &ShioConfig) -> Result<()> {
     };
 
     // Build user message: collect files/dirs as fenced code blocks, then append the question.
-    let mut content = String::new();
-    for path in &args.files {
-        let files = context::collect(path)?;
-        content.push_str(&context::format_as_blocks(&files));
-    }
-    content.push_str(&args.question);
+    // context::collect uses std::fs, so run it on a blocking thread to avoid
+    // stalling the tokio executor.
+    let paths = args.files.clone();
+    let file_blocks = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+        let mut out = String::new();
+        for path in &paths {
+            let files = context::collect(path)?;
+            out.push_str(&context::format_as_blocks(&files));
+        }
+        Ok(out)
+    })
+    .await??;
+    let content = file_blocks + &args.question;
 
     let messages = vec![Message::system(system_prompt), Message::user(content)];
 
