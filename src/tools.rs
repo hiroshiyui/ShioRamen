@@ -47,6 +47,24 @@ pub fn all_tools() -> Vec<ToolDef> {
         ToolDef {
             kind: "function",
             function: FunctionSpec {
+                name: "append_file",
+                description: "Append content to the end of a file, creating it if it does not \
+                    exist. The existing content is always preserved. No need to read the file \
+                    first — use this instead of read_file + write_file when you only need to add \
+                    content at the end.",
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path":    { "type": "string" },
+                        "content": { "type": "string" }
+                    },
+                    "required": ["path", "content"]
+                }),
+            },
+        },
+        ToolDef {
+            kind: "function",
+            function: FunctionSpec {
                 name: "list_directory",
                 description: "List files and directories inside a directory.",
                 parameters: serde_json::json!({
@@ -460,6 +478,7 @@ impl ToolExecutor {
         match name {
             "read_file" => self.read_file(args),
             "write_file" => self.write_file(args),
+            "append_file" => self.append_file(args),
             "list_directory" => self.list_directory(args),
             "run_shell" => self.run_shell(args),
             "search_files" => self.search_files(args),
@@ -521,6 +540,41 @@ impl ToolExecutor {
         match std::fs::write(path, content) {
             Ok(()) => format!("Wrote {} bytes to {path}", content.len()),
             Err(e) => format!("Error writing {path}: {e}"),
+        }
+    }
+
+    fn append_file(&self, args: &Value) -> String {
+        let path = match args["path"].as_str() {
+            Some(p) => p,
+            None => return "Error: missing 'path'".into(),
+        };
+        let content = match args["content"].as_str() {
+            Some(c) => c,
+            None => return "Error: missing 'content'".into(),
+        };
+
+        if self.confirm_writes && !confirm(&format!("{YELLOW}Append to {path}?{RESET}")) {
+            return "Aborted by user.".into();
+        }
+
+        if let Some(parent) = Path::new(path).parent()
+            && !parent.as_os_str().is_empty()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            return format!("Error creating directories: {e}");
+        }
+
+        use std::io::Write as _;
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            Err(e) => format!("Error opening {path}: {e}"),
+            Ok(mut f) => match f.write_all(content.as_bytes()) {
+                Ok(()) => format!("Appended {} bytes to {path}", content.len()),
+                Err(e) => format!("Error appending to {path}: {e}"),
+            },
         }
     }
 
@@ -1488,8 +1542,8 @@ mod tests {
     // ── all_tools ─────────────────────────────────────────────────────────────
 
     #[test]
-    fn all_tools_has_twenty_entries() {
-        assert_eq!(all_tools().len(), 20);
+    fn all_tools_has_twenty_one_entries() {
+        assert_eq!(all_tools().len(), 21);
     }
 
     // ── lsp_query ─────────────────────────────────────────────────────────────
