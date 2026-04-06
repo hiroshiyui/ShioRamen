@@ -1729,4 +1729,114 @@ mod tests {
         // "é" encodes as %C3%A9 in UTF-8
         assert_eq!(percent_decode("%C3%A9"), "é");
     }
+
+    // ── is_private_host ───────────────────────────────────────────────────────
+
+    #[test]
+    fn is_private_host_localhost() {
+        assert!(is_private_host("http://localhost/path"));
+        assert!(is_private_host("https://localhost:8080/x"));
+    }
+
+    #[test]
+    fn is_private_host_loopback_ipv4() {
+        assert!(is_private_host("http://127.0.0.1/"));
+        assert!(is_private_host("http://127.1.2.3/"));
+    }
+
+    #[test]
+    fn is_private_host_private_ipv4_ranges() {
+        assert!(is_private_host("http://10.0.0.1/"));
+        assert!(is_private_host("http://10.255.255.255/"));
+        assert!(is_private_host("http://172.16.0.1/"));
+        assert!(is_private_host("http://172.31.255.255/"));
+        assert!(is_private_host("http://192.168.1.100/"));
+    }
+
+    #[test]
+    fn is_private_host_link_local_imds() {
+        // 169.254.169.254 is the AWS/GCP IMDS endpoint — must be blocked.
+        assert!(is_private_host("http://169.254.169.254/latest/meta-data/"));
+    }
+
+    #[test]
+    fn is_private_host_ipv6_loopback() {
+        assert!(is_private_host("http://[::1]/"));
+        assert!(is_private_host("http://[::1]:9000/"));
+    }
+
+    #[test]
+    fn is_private_host_mdns_local() {
+        assert!(is_private_host("http://mydevice.local/api"));
+    }
+
+    #[test]
+    fn is_private_host_public_address_returns_false() {
+        assert!(!is_private_host("https://example.com/"));
+        assert!(!is_private_host("https://8.8.8.8/dns"));
+        assert!(!is_private_host("https://172.32.0.1/")); // just outside 172.16-31
+    }
+
+    #[test]
+    fn is_private_host_strips_port_correctly() {
+        assert!(is_private_host("http://192.168.0.1:3000/api"));
+        assert!(!is_private_host("http://93.184.216.34:443/"));
+    }
+
+    // ── write_file — parent directory auto-creation ───────────────────────────
+
+    #[test]
+    fn write_file_creates_parent_dirs() {
+        let dir = std::env::temp_dir().join("shio_write_nested/a/b");
+        let path = dir.join("out.txt");
+        let ex = executor(false, false);
+        let args = serde_json::json!({ "path": path.to_str().unwrap(), "content": "nested" });
+        let result = ex.write_file(&args);
+        assert!(
+            result.contains("bytes") || result.contains("nested"),
+            "{result}"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "nested");
+        let _ = fs::remove_dir_all(std::env::temp_dir().join("shio_write_nested"));
+    }
+
+    // ── run_shell — missing command argument ──────────────────────────────────
+
+    #[test]
+    fn run_shell_missing_command_returns_error() {
+        let ex = executor(false, false);
+        let out = ex.run_shell(&serde_json::json!({}));
+        assert!(
+            out.starts_with("Error"),
+            "expected error for missing command, got: {out}"
+        );
+    }
+
+    // ── grep_files — case-insensitive and invalid regex ───────────────────────
+
+    #[test]
+    fn grep_files_case_insensitive_flag() {
+        let path = std::env::temp_dir().join("shio_grep_ci.txt");
+        fs::write(&path, "Hello World\nlower case\n").unwrap();
+        let ex = executor(false, false);
+        let args = serde_json::json!({
+            "pattern": "hello",
+            "path": path.to_str().unwrap(),
+            "case_insensitive": true
+        });
+        let out = ex.grep_files(&args);
+        assert!(out.contains("Hello World"), "got: {out}");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn grep_files_invalid_regex_returns_error() {
+        let ex = executor(false, false);
+        let args = serde_json::json!({ "pattern": "[invalid(regex", "path": "src" });
+        let out = ex.grep_files(&args);
+        assert!(
+            out.contains("Invalid regex") || out.starts_with("Error"),
+            "got: {out}"
+        );
+    }
 }

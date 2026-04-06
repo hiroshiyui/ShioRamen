@@ -891,4 +891,230 @@ mod tests {
         let resp = json!({"result": null});
         assert!(extract_hover_text(&resp).contains("No hover"));
     }
+
+    // ── lang_from_ext — additional variants ──────────────────────────────────
+
+    #[test]
+    fn lang_from_ext_javascript_variants() {
+        for ext in ["js", "jsx", "mjs", "cjs"] {
+            assert_eq!(lang_from_ext(ext), "javascript", "failed for .{ext}");
+        }
+    }
+
+    #[test]
+    fn lang_from_ext_go() {
+        assert_eq!(lang_from_ext("go"), "go");
+    }
+
+    #[test]
+    fn lang_from_ext_c_and_header() {
+        assert_eq!(lang_from_ext("c"), "c");
+        assert_eq!(lang_from_ext("h"), "c");
+    }
+
+    #[test]
+    fn lang_from_ext_cpp_variants() {
+        for ext in ["cpp", "cc", "cxx", "hpp", "hxx"] {
+            assert_eq!(lang_from_ext(ext), "cpp", "failed for .{ext}");
+        }
+    }
+
+    #[test]
+    fn lang_from_ext_other_languages() {
+        assert_eq!(lang_from_ext("lua"), "lua");
+        assert_eq!(lang_from_ext("zig"), "zig");
+        assert_eq!(lang_from_ext("rb"), "ruby");
+        assert_eq!(lang_from_ext("java"), "java");
+        assert_eq!(lang_from_ext("sh"), "bash");
+        assert_eq!(lang_from_ext("bash"), "bash");
+    }
+
+    // ── extract_hover_text — plain string and array forms ────────────────────
+
+    #[test]
+    fn extract_hover_text_plain_string() {
+        let resp = json!({ "result": { "contents": "fn foo() -> i32" } });
+        assert_eq!(extract_hover_text(&resp), "fn foo() -> i32");
+    }
+
+    #[test]
+    fn extract_hover_text_array_of_strings() {
+        let resp = json!({
+            "result": {
+                "contents": ["first part", "second part"]
+            }
+        });
+        let out = extract_hover_text(&resp);
+        assert!(out.contains("first part"), "got: {out}");
+        assert!(out.contains("second part"), "got: {out}");
+        assert!(out.contains("---"), "got: {out}");
+    }
+
+    #[test]
+    fn extract_hover_text_array_of_markup_objects() {
+        let resp = json!({
+            "result": {
+                "contents": [
+                    { "language": "rust", "value": "fn bar()" },
+                    { "kind": "markdown", "value": "docs here" }
+                ]
+            }
+        });
+        let out = extract_hover_text(&resp);
+        assert!(out.contains("fn bar()"), "got: {out}");
+        assert!(out.contains("docs here"), "got: {out}");
+    }
+
+    #[test]
+    fn extract_hover_text_null_contents() {
+        let resp = json!({ "result": { "contents": null } });
+        assert!(extract_hover_text(&resp).contains("No hover"));
+    }
+
+    // ── format_locations — LocationLink (targetUri / targetRange) form ────────
+
+    #[test]
+    fn format_locations_location_link_form() {
+        let resp = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": [{
+                "targetUri": "file:///home/user/bar.rs",
+                "targetRange": {
+                    "start": { "line": 19, "character": 7 },
+                    "end":   { "line": 19, "character": 14 }
+                }
+            }]
+        });
+        let out = format_locations(&resp);
+        assert!(out.contains("/home/user/bar.rs:20:8"), "got: {out}");
+    }
+
+    #[test]
+    fn format_locations_array_of_multiple() {
+        let resp = json!({
+            "result": [
+                {
+                    "uri": "file:///a.rs",
+                    "range": { "start": { "line": 0, "character": 0 } }
+                },
+                {
+                    "uri": "file:///b.rs",
+                    "range": { "start": { "line": 9, "character": 3 } }
+                }
+            ]
+        });
+        let out = format_locations(&resp);
+        assert!(out.contains("/a.rs:1:1"), "got: {out}");
+        assert!(out.contains("/b.rs:10:4"), "got: {out}");
+    }
+
+    // ── format_diagnostics — all severity variants ────────────────────────────
+
+    #[test]
+    fn format_diagnostics_warning() {
+        let notif = json!({
+            "params": {
+                "uri": "file:///foo.rs",
+                "diagnostics": [{
+                    "range": { "start": { "line": 1, "character": 0 } },
+                    "severity": 2,
+                    "message": "unused variable"
+                }]
+            }
+        });
+        let out = format_diagnostics(&notif, "/foo.rs");
+        assert!(out.contains("warning: unused variable"), "got: {out}");
+    }
+
+    #[test]
+    fn format_diagnostics_info_and_hint() {
+        let notif = json!({
+            "params": {
+                "uri": "file:///foo.rs",
+                "diagnostics": [
+                    {
+                        "range": { "start": { "line": 2, "character": 0 } },
+                        "severity": 3,
+                        "message": "consider using X"
+                    },
+                    {
+                        "range": { "start": { "line": 3, "character": 0 } },
+                        "severity": 4,
+                        "message": "rename suggestion"
+                    }
+                ]
+            }
+        });
+        let out = format_diagnostics(&notif, "/foo.rs");
+        assert!(out.contains("info: consider using X"), "got: {out}");
+        assert!(out.contains("hint: rename suggestion"), "got: {out}");
+    }
+
+    #[test]
+    fn format_diagnostics_unknown_severity() {
+        let notif = json!({
+            "params": {
+                "uri": "file:///foo.rs",
+                "diagnostics": [{
+                    "range": { "start": { "line": 0, "character": 0 } },
+                    "message": "something"
+                }]
+            }
+        });
+        let out = format_diagnostics(&notif, "/foo.rs");
+        assert!(out.contains("diagnostic: something"), "got: {out}");
+    }
+
+    // ── read_lsp_message — framing parser ────────────────────────────────────
+
+    #[test]
+    fn read_lsp_message_parses_valid_message() {
+        let body = r#"{"jsonrpc":"2.0","id":1,"result":null}"#;
+        let raw = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
+        let mut reader = std::io::BufReader::new(raw.as_bytes());
+        let msg = read_lsp_message(&mut reader).unwrap();
+        assert_eq!(msg["id"].as_i64(), Some(1));
+    }
+
+    #[test]
+    fn read_lsp_message_handles_extra_headers() {
+        let body = r#"{"jsonrpc":"2.0","method":"ping"}"#;
+        let raw = format!(
+            "Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let mut reader = std::io::BufReader::new(raw.as_bytes());
+        let msg = read_lsp_message(&mut reader).unwrap();
+        assert_eq!(msg["method"].as_str(), Some("ping"));
+    }
+
+    #[test]
+    fn read_lsp_message_missing_content_length_returns_error() {
+        let raw = "\r\n{\"jsonrpc\":\"2.0\"}";
+        let mut reader = std::io::BufReader::new(raw.as_bytes());
+        let err = read_lsp_message(&mut reader).unwrap_err();
+        assert!(
+            err.contains("Content-Length"),
+            "expected Content-Length error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn read_lsp_message_rejects_oversized_message() {
+        const MAX: usize = 10 * 1024 * 1024;
+        let raw = format!("Content-Length: {}\r\n\r\n", MAX + 1);
+        let mut reader = std::io::BufReader::new(raw.as_bytes());
+        let err = read_lsp_message(&mut reader).unwrap_err();
+        assert!(err.contains("too large"), "expected size error, got: {err}");
+    }
+
+    #[test]
+    fn read_lsp_message_eof_returns_error() {
+        let raw = "";
+        let mut reader = std::io::BufReader::new(raw.as_bytes());
+        let err = read_lsp_message(&mut reader).unwrap_err();
+        assert_eq!(err, "EOF");
+    }
 }
