@@ -27,7 +27,8 @@ SHIO_BIN="$SHIO_ROOT/bin"
 
 # ── Environment wiring (always runs, even when sourced) ───────────────────────
 
-# Add ./bin to PATH if not already present.
+# Add ./bin to PATH for llama-server (and its shared libraries).
+# The shio binary itself is installed to $HOME/.cargo/bin by `cargo install`.
 case ":${PATH}:" in
     *":${SHIO_BIN}:"*) ;;
     *) export PATH="${SHIO_BIN}:${PATH}" ;;
@@ -151,15 +152,15 @@ done
 step "Building shio"
 cd "$SHIO_ROOT"
 cargo install --path . --locked
-info "shio installed to $SHIO_BIN/shio"
+info "shio installed to $(command -v shio 2>/dev/null || echo '$HOME/.cargo/bin/shio')"
 
 # ── Smoke test ────────────────────────────────────────────────────────────────
 
 step "Smoke test"
-if "$SHIO_BIN/shio" --version &>/dev/null; then
-    info "shio --version: $("$SHIO_BIN/shio" --version)"
+if shio --version &>/dev/null; then
+    info "shio --version: $(shio --version)"
 else
-    warn "shio --version failed; run 'source envsetup.sh' and retry"
+    warn "shio not found in PATH; ensure \$HOME/.cargo/bin is in your PATH"
 fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────

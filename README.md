@@ -13,6 +13,7 @@ Runs entirely offline — no cloud API, no data leaving your machine.
 - **`edit`** — apply an AI-suggested edit to a file (shows diff, asks to confirm)
 - **`pull`** — download GGUF models from HuggingFace or a direct URL
 - **`doctor`** — check that all components are present and working
+- **`init`** — scaffold a `shio.toml` config file in the current directory
 - **`shio.toml`** — TOML config file; CLI flags always override it
 
 ---
@@ -32,14 +33,15 @@ Runs entirely offline — no cloud API, no data leaving your machine.
 git clone --recurse-submodules https://github.com/hiroshiyui/ShioRamen.git
 cd ShioRamen
 
-# Build llama.cpp and place binaries in ./bin/ (see below)
+# Build llama.cpp, copy binaries to ./bin/, and install shio in one step:
+bash envsetup.sh
 
-# Install the shio binary to ./bin/
-cargo install --path .
+# Install the git pre-commit hook (fmt → clippy → test):
+bash pre-commit.sh
 ```
 
-> `cargo install --path .` places `shio` in `./bin/` automatically
-> (configured via [`.cargo/config.toml`](.cargo/config.toml)).
+`cargo install --path .` installs `shio` to `$HOME/.cargo/bin`.
+`./bin/` is used only for `llama-server` and its shared libraries.
 
 ### Build llama.cpp
 
@@ -63,17 +65,21 @@ Omit `-DGGML_CUDA=ON` for CPU-only builds.
 
 ```bash
 # From HuggingFace (owner/repo/filename)
-./bin/shio pull bartowski/Qwen2.5-Coder-7B-Instruct-GGUF/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf
+shio pull bartowski/Qwen2.5-Coder-7B-Instruct-GGUF/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf
 
 # From a direct URL
-./bin/shio pull https://example.com/model.gguf
+shio pull https://example.com/model.gguf
 ```
 
 Models are saved to `./models/` by default.
 
 ### 2. Configure
 
-Edit `shio.toml` to set your model path and tuning parameters:
+Generate a starter config, then edit it to set your model path and tuning parameters:
+
+```bash
+shio init   # creates shio.toml in the current directory
+```
 
 ```toml
 [server]
@@ -102,11 +108,11 @@ models_dir = "./models"
 
 ```bash
 # Launch server + open chat in one step
-./bin/shio chat
+shio chat
 
 # Or run server and chat separately
-./bin/shio serve
-./bin/shio chat --no-spawn   # connects to the already-running server
+shio serve
+shio chat --no-spawn   # connects to the already-running server
 ```
 
 ---
@@ -251,6 +257,16 @@ shio doctor [OPTIONS]
       --port <PORT>          Server port to probe  [default: 8080]
 ```
 
+### `init`
+
+Create a `shio.toml` config file with all options documented and commented out.
+
+```
+shio init
+```
+
+Errors if `shio.toml` already exists in the current directory.
+
 Example output:
 
 ```
@@ -310,7 +326,7 @@ shio --config /path/to/other.toml serve
 cargo build            # debug build
 cargo test             # run tests
 cargo clippy           # lint
-cargo install --path . # install shio to ./bin/
+cargo install --path . # install shio to $HOME/.cargo/bin
 ```
 
 ---
