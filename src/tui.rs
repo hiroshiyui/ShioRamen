@@ -981,7 +981,7 @@ async fn run_agent_loop(
 
 fn needs_confirm(call: &ToolCallItem, exec: &ToolExecutor) -> bool {
     match call.function.name.as_str() {
-        "write_file" => exec.confirm_writes,
+        "write_file" | "patch_file" | "delete_file" | "move_file" => exec.confirm_writes,
         "run_shell" => exec.confirm_shell,
         _ => false,
     }
@@ -992,6 +992,13 @@ fn fmt_confirm_prompt(call: &ToolCallItem) -> String {
         serde_json::from_str(&call.function.arguments).unwrap_or_default();
     match call.function.name.as_str() {
         "write_file" => format!("Write to {}?", args["path"].as_str().unwrap_or("?")),
+        "patch_file" => format!("Patch {}?", args["path"].as_str().unwrap_or("?")),
+        "delete_file" => format!("Delete {}?", args["path"].as_str().unwrap_or("?")),
+        "move_file" => format!(
+            "Move {} → {}?",
+            args["src"].as_str().unwrap_or("?"),
+            args["dst"].as_str().unwrap_or("?"),
+        ),
         "run_shell" => format!("Run: {}?", args["command"].as_str().unwrap_or("?")),
         name => format!("Execute {name}?"),
     }
@@ -1015,5 +1022,125 @@ fn fmt_call(call: &ToolCallItem) -> String {
         format!("{name}({})", parts.join(", "))
     } else {
         name.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── char_start_before ─────────────────────────────────────────────────────
+
+    #[test]
+    fn char_start_before_ascii() {
+        let s = "hello";
+        assert_eq!(char_start_before(s, 3), 2);
+        assert_eq!(char_start_before(s, 1), 0);
+        assert_eq!(char_start_before(s, 0), 0);
+    }
+
+    #[test]
+    fn char_start_before_multibyte() {
+        // "é" is 2 bytes (0xC3 0xA9); cursor at byte 2 (past é) should land at 0
+        let s = "é";
+        assert_eq!(s.len(), 2);
+        assert_eq!(char_start_before(s, 2), 0);
+    }
+
+    // ── char_end_at ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn char_end_at_ascii() {
+        let s = "hello";
+        assert_eq!(char_end_at(s, 0), 1);
+        assert_eq!(char_end_at(s, 4), 5);
+        assert_eq!(char_end_at(s, 5), 5); // at end
+    }
+
+    #[test]
+    fn char_end_at_multibyte() {
+        let s = "é!"; // é = 2 bytes, ! = 1 byte
+        assert_eq!(char_end_at(s, 0), 2); // advances past 2-byte char
+        assert_eq!(char_end_at(s, 2), 3); // advances past !
+    }
+
+    // ── prev_word ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn prev_word_from_end_of_word() {
+        let s = "hello world";
+        assert_eq!(prev_word(s, 11), 6); // from end → start of "world"
+    }
+
+    #[test]
+    fn prev_word_skips_trailing_spaces() {
+        let s = "hello   ";
+        assert_eq!(prev_word(s, 8), 0); // skips spaces then word
+    }
+
+    #[test]
+    fn prev_word_at_start() {
+        assert_eq!(prev_word("hello", 0), 0);
+    }
+
+    // ── next_word ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn next_word_from_start_of_word() {
+        let s = "hello world";
+        assert_eq!(next_word(s, 0), 6); // skips "hello" then space → 6
+    }
+
+    #[test]
+    fn next_word_at_end() {
+        let s = "hello";
+        assert_eq!(next_word(s, 5), 5);
+    }
+
+    // ── split_path ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn split_path_with_slash() {
+        let (dir, prefix) = split_path("src/ma");
+        assert_eq!(dir, "src/");
+        assert_eq!(prefix, "ma");
+    }
+
+    #[test]
+    fn split_path_no_slash() {
+        let (dir, prefix) = split_path("main");
+        assert_eq!(dir, "");
+        assert_eq!(prefix, "main");
+    }
+
+    #[test]
+    fn split_path_trailing_slash() {
+        let (dir, prefix) = split_path("src/");
+        assert_eq!(dir, "src/");
+        assert_eq!(prefix, "");
+    }
+
+    // ── replace_latex ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn replace_latex_substitutes_known_symbols() {
+        assert_eq!(
+            replace_latex("use $\\rightarrow$ here".to_string()),
+            "use → here"
+        );
+        assert_eq!(replace_latex("$\\leq$ 5".to_string()), "≤ 5");
+        assert_eq!(replace_latex("$\\neq$ 0".to_string()), "≠ 0");
+    }
+
+    #[test]
+    fn replace_latex_leaves_unknown_alone() {
+        let s = "no latex here".to_string();
+        assert_eq!(replace_latex(s.clone()), s);
+    }
+
+    #[test]
+    fn replace_latex_handles_multiple_in_one_string() {
+        let out = replace_latex("$\\leq$ x $\\geq$ y".to_string());
+        assert_eq!(out, "≤ x ≥ y");
     }
 }
