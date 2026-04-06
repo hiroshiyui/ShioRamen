@@ -14,7 +14,7 @@ use futures_util::StreamExt;
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Layout},
+    layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
@@ -324,21 +324,55 @@ fn render(f: &mut Frame, app: &App) {
     let inner = input_block.inner(chunks[3]);
     f.render_widget(input_block, chunks[3]);
 
+    // Use display-column width (not byte offset) so CJK / wide characters are
+    // counted correctly.
+    use unicode_width::UnicodeWidthStr;
     let prefix = "> ";
-    f.render_widget(Paragraph::new(format!("{prefix}{}", app.input)), inner);
+    let prefix_cols = prefix.width() as u16; // 2
+
+    // How many columns of the input are left of the cursor.
+    let cursor_col = app.input[..app.cursor].width() as u16;
+
+    // Compute horizontal scroll so the cursor is always within the visible
+    // input area.  The prefix is rendered in a fixed left slice so it never
+    // scrolls out of view.
+    let input_area_cols = inner.width.saturating_sub(prefix_cols);
+    let scroll_x: u16 = if cursor_col >= input_area_cols {
+        cursor_col - input_area_cols + 1
+    } else {
+        0
+    };
+
+    // Render the ">" prefix in a fixed left rect.
+    f.render_widget(
+        Paragraph::new(prefix),
+        Rect {
+            x: inner.x,
+            y: inner.y,
+            width: prefix_cols.min(inner.width),
+            height: 1,
+        },
+    );
+
+    // Render the input text (horizontally scrolled) in the remaining rect.
+    if inner.width > prefix_cols {
+        f.render_widget(
+            Paragraph::new(app.input.as_str()).scroll((0, scroll_x)),
+            Rect {
+                x: inner.x + prefix_cols,
+                y: inner.y,
+                width: input_area_cols,
+                height: 1,
+            },
+        );
+    }
 
     // Draw cursor only while input is active.
-    // Use display-column width (not byte offset) so CJK and other wide
-    // characters — which are 2 terminal columns but 2–4 bytes — are handled
-    // correctly.
     if matches!(app.status, AppStatus::Idle) {
-        use unicode_width::UnicodeWidthStr;
-        let display_col = app.input[..app.cursor].width() as u16;
-        let cx = inner.x + prefix.len() as u16 + display_col;
+        // cursor_col - scroll_x is always < input_area_cols by construction.
+        let cx = inner.x + prefix_cols + cursor_col - scroll_x;
         let cy = inner.y;
-        if cx < inner.x + inner.width {
-            f.set_cursor_position((cx, cy));
-        }
+        f.set_cursor_position((cx, cy));
     }
 }
 
