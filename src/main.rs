@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+mod agents;
 mod ask;
 mod chat;
 mod client;
@@ -126,6 +127,35 @@ impl ServerArgs {
             cont_batching: self.cont_batching || cfg.cont_batching.unwrap_or(false),
         }
     }
+
+    /// Spawn a new `llama-server` or connect to an already-running one.
+    ///
+    /// When `no_spawn` is true the server is assumed to already be running and a
+    /// lightweight `ServerProcess::external` handle is returned.  Otherwise the
+    /// model path is resolved from `model` (CLI flag) then `cfg.chat.model`
+    /// (config file), and a new server process is spawned.
+    pub async fn spawn_or_connect(
+        &self,
+        no_spawn: bool,
+        model: Option<PathBuf>,
+        cfg: &ShioConfig,
+    ) -> Result<ServerProcess> {
+        let host = self
+            .host
+            .clone()
+            .or_else(|| cfg.server.host.clone())
+            .unwrap_or_else(|| DEFAULT_HOST.to_string());
+        let port = self.port.or(cfg.server.port).unwrap_or(DEFAULT_PORT);
+        if no_spawn {
+            Ok(ServerProcess::external(format!("http://{host}:{port}")))
+        } else {
+            let model = model.or_else(|| cfg.chat.model.clone()).ok_or_else(|| {
+                anyhow::anyhow!("--model <PATH> is required (or set chat.model in shio.toml)")
+            })?;
+            let config = self.to_config(model, &cfg.server);
+            ServerProcess::spawn(&config).await
+        }
+    }
 }
 
 #[derive(clap::Args, Debug)]
@@ -181,36 +211,15 @@ async fn main() -> Result<()> {
         }
 
         Commands::Chat(args) => {
-            let host = args
-                .server
-                .host
-                .clone()
-                .or_else(|| cfg.server.host.clone())
-                .unwrap_or_else(|| DEFAULT_HOST.to_string());
-            let port = args.server.port.or(cfg.server.port).unwrap_or(DEFAULT_PORT);
             let temp = args.temp.or(cfg.chat.temperature).unwrap_or(DEFAULT_TEMP);
-            let system_prompt = cfg
-                .chat
-                .system_prompt
-                .clone()
-                .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string());
-
-            let server = if args.no_spawn {
-                let url = format!("http://{host}:{port}");
-                eprintln!("Connecting to {url} ...");
-                ServerProcess::external(url)
-            } else {
-                let model = args
-                    .model
-                    .or_else(|| cfg.chat.model.clone())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "--model <PATH> is required (or set chat.model in shio.toml)"
-                        )
-                    })?;
-                let config = args.server.to_config(model, &cfg.server);
-                ServerProcess::spawn(&config).await?
-            };
+            let system_prompt = resolve_system_prompt(&cfg);
+            let server = args
+                .server
+                .spawn_or_connect(args.no_spawn, args.model, &cfg)
+                .await?;
+            if args.no_spawn {
+                eprintln!("Connecting to {} ...", server.url);
+            }
 
             println!();
             let tools_requested = !args.no_tools && cfg.tools.enabled.unwrap_or(true);
@@ -229,7 +238,8 @@ async fn main() -> Result<()> {
                 None
             };
             let client = LlamaClient::new(server.url.clone());
-            let session = ChatSession::new(client, temp, system_prompt, executor);
+            let session =
+                ChatSession::new(client, temp, system_prompt, executor, cfg.skills.clone());
             session.run().await?;
             drop(server);
         }
@@ -256,6 +266,20 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+// ── Shared helpers ────────────────────────────────────────────────────────────
+
+/// Resolve the effective system prompt: config file override → built-in default,
+/// then augmented with any AGENTS.md files found in the working directory tree.
+pub(crate) fn resolve_system_prompt(cfg: &ShioConfig) -> String {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let base = cfg
+        .chat
+        .system_prompt
+        .clone()
+        .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string());
+    agents::augment_system_prompt(&base, &cwd)
 }
 
 // ── Directory trust prompt ────────────────────────────────────────────────────

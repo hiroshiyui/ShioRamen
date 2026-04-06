@@ -61,6 +61,19 @@ const TEMPLATE: &str = r#"# shio.toml — ShioRamen configuration
 # rust   = "rust-analyzer"
 # python = "pylsp"
 # ts     = "typescript-language-server --stdio"
+
+# ── Custom skills ─────────────────────────────────────────────────────────────
+# Define named prompt templates invokable as /slash commands in `shio chat`.
+# Use {args} as a placeholder for any text typed after the skill name.
+# If the prompt has no {args} and the user supplies text, it is appended.
+#
+# [skills.commit]
+# description = "Write a conventional git commit message"
+# prompt      = "Write a conventional git commit message for the staged changes."
+#
+# [skills.review]
+# description = "Review code for correctness and style"
+# prompt      = "Review this for correctness, edge cases, and style: {args}"
 "#;
 
 pub fn run(_args: &InitArgs) -> Result<()> {
@@ -116,7 +129,14 @@ mod tests {
 
     #[test]
     fn template_covers_all_sections() {
-        for section in ["[server]", "[chat]", "[paths]", "[tools]", "[lsp.servers]"] {
+        for section in [
+            "[server]",
+            "[chat]",
+            "[paths]",
+            "[tools]",
+            "[lsp.servers]",
+            "[skills.",
+        ] {
             assert!(TEMPLATE.contains(section), "missing section: {section}");
         }
     }

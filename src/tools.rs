@@ -11,6 +11,34 @@ use crate::client::{FunctionSpec, ToolCallItem, ToolDef};
 /// Default character limit for `fetch_url` responses.
 const DEFAULT_MAX_CHARS: usize = 8_000;
 
+// ── Private helpers ───────────────────────────────────────────────────────────
+
+/// Extract a required `&str` field from a JSON args object.
+///
+/// Expands to an early `return` with an error message if the field is absent or
+/// not a string, so it must be used inside functions that return `String`.
+macro_rules! require_str {
+    ($args:expr, $field:literal) => {
+        match $args[$field].as_str() {
+            Some(v) => v,
+            None => return format!("Error: missing '{}' argument", $field),
+        }
+    };
+}
+
+/// Create all parent directories for `path` if they do not yet exist.
+///
+/// Returns `Err(message)` on I/O failure, `Ok(())` otherwise.
+fn ensure_parent_dirs(path: &str) -> Result<(), String> {
+    if let Some(parent) = Path::new(path).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Error creating directories for {path}: {e}"))?;
+    }
+    Ok(())
+}
+
 // ── Tool definitions (sent to the model) ─────────────────────────────────────
 
 pub fn all_tools() -> Vec<ToolDef> {
@@ -516,10 +544,7 @@ impl ToolExecutor {
     // ── Individual tools ──────────────────────────────────────────────────────
 
     fn read_file(&self, args: &Value) -> String {
-        let path = match args["path"].as_str() {
-            Some(p) => p,
-            None => return "Error: missing 'path' argument".into(),
-        };
+        let path = require_str!(args, "path");
         match std::fs::read_to_string(path) {
             Ok(content) => content,
             Err(e) => format!("Error reading {path}: {e}"),
@@ -527,24 +552,15 @@ impl ToolExecutor {
     }
 
     fn write_file(&self, args: &Value) -> String {
-        let path = match args["path"].as_str() {
-            Some(p) => p,
-            None => return "Error: missing 'path'".into(),
-        };
-        let content = match args["content"].as_str() {
-            Some(c) => c,
-            None => return "Error: missing 'content'".into(),
-        };
+        let path = require_str!(args, "path");
+        let content = require_str!(args, "content");
 
         if self.confirm_writes && !confirm(&format!("{YELLOW}Write to {path}?{RESET}")) {
             return "Aborted by user.".into();
         }
 
-        if let Some(parent) = Path::new(path).parent()
-            && !parent.as_os_str().is_empty()
-            && let Err(e) = std::fs::create_dir_all(parent)
-        {
-            return format!("Error creating directories: {e}");
+        if let Err(e) = ensure_parent_dirs(path) {
+            return e;
         }
 
         match std::fs::write(path, content) {
@@ -554,24 +570,15 @@ impl ToolExecutor {
     }
 
     fn append_file(&self, args: &Value) -> String {
-        let path = match args["path"].as_str() {
-            Some(p) => p,
-            None => return "Error: missing 'path'".into(),
-        };
-        let content = match args["content"].as_str() {
-            Some(c) => c,
-            None => return "Error: missing 'content'".into(),
-        };
+        let path = require_str!(args, "path");
+        let content = require_str!(args, "content");
 
         if self.confirm_writes && !confirm(&format!("{YELLOW}Append to {path}?{RESET}")) {
             return "Aborted by user.".into();
         }
 
-        if let Some(parent) = Path::new(path).parent()
-            && !parent.as_os_str().is_empty()
-            && let Err(e) = std::fs::create_dir_all(parent)
-        {
-            return format!("Error creating directories: {e}");
+        if let Err(e) = ensure_parent_dirs(path) {
+            return e;
         }
 
         use std::io::Write as _;
@@ -615,10 +622,7 @@ impl ToolExecutor {
     }
 
     fn run_shell(&self, args: &Value) -> String {
-        let command = match args["command"].as_str() {
-            Some(c) => c,
-            None => return "Error: missing 'command' argument".into(),
-        };
+        let command = require_str!(args, "command");
 
         if self.confirm_shell && !confirm(&format!("{YELLOW}Run: {command}?{RESET}")) {
             return "Aborted by user.".into();
@@ -656,10 +660,7 @@ impl ToolExecutor {
     }
 
     fn search_files(&self, args: &Value) -> String {
-        let pattern = match args["pattern"].as_str() {
-            Some(p) => p,
-            None => return "Error: missing 'pattern' argument".into(),
-        };
+        let pattern = require_str!(args, "pattern");
         let base = args["path"].as_str().unwrap_or(".");
         let full_pattern = if base == "." {
             pattern.to_string()
@@ -684,10 +685,7 @@ impl ToolExecutor {
     }
 
     fn grep_files(&self, args: &Value) -> String {
-        let pattern = match args["pattern"].as_str() {
-            Some(p) => p,
-            None => return "Error: missing 'pattern' argument".into(),
-        };
+        let pattern = require_str!(args, "pattern");
         let path = args["path"].as_str().unwrap_or(".");
         let case_insensitive = args["case_insensitive"].as_bool().unwrap_or(false);
 
@@ -710,10 +708,7 @@ impl ToolExecutor {
     }
 
     fn read_file_range(&self, args: &Value) -> String {
-        let path = match args["path"].as_str() {
-            Some(p) => p,
-            None => return "Error: missing 'path' argument".into(),
-        };
+        let path = require_str!(args, "path");
         let start = match args["start_line"].as_u64() {
             Some(n) if n >= 1 => n as usize,
             _ => return "Error: 'start_line' must be a positive integer".into(),
@@ -750,18 +745,9 @@ impl ToolExecutor {
     }
 
     fn patch_file(&self, args: &Value) -> String {
-        let path = match args["path"].as_str() {
-            Some(p) => p,
-            None => return "Error: missing 'path'".into(),
-        };
-        let old_str = match args["old_str"].as_str() {
-            Some(s) => s,
-            None => return "Error: missing 'old_str'".into(),
-        };
-        let new_str = match args["new_str"].as_str() {
-            Some(s) => s,
-            None => return "Error: missing 'new_str'".into(),
-        };
+        let path = require_str!(args, "path");
+        let old_str = require_str!(args, "old_str");
+        let new_str = require_str!(args, "new_str");
 
         if self.confirm_writes && !confirm(&format!("{YELLOW}Patch {path}?{RESET}")) {
             return "Aborted by user.".into();
@@ -796,10 +782,7 @@ impl ToolExecutor {
     }
 
     fn delete_file(&self, args: &Value) -> String {
-        let path = match args["path"].as_str() {
-            Some(p) => p,
-            None => return "Error: missing 'path'".into(),
-        };
+        let path = require_str!(args, "path");
 
         if self.confirm_writes && !confirm(&format!("{YELLOW}Delete {path}?{RESET}")) {
             return "Aborted by user.".into();
@@ -812,14 +795,8 @@ impl ToolExecutor {
     }
 
     fn move_file(&self, args: &Value) -> String {
-        let src = match args["src"].as_str() {
-            Some(s) => s,
-            None => return "Error: missing 'src'".into(),
-        };
-        let dst = match args["dst"].as_str() {
-            Some(d) => d,
-            None => return "Error: missing 'dst'".into(),
-        };
+        let src = require_str!(args, "src");
+        let dst = require_str!(args, "dst");
 
         let dst_exists = Path::new(dst).exists();
         let confirm_msg = if dst_exists {
@@ -833,12 +810,8 @@ impl ToolExecutor {
             return "Aborted by user.".into();
         }
 
-        // Create destination parent directories if needed.
-        if let Some(parent) = Path::new(dst).parent()
-            && !parent.as_os_str().is_empty()
-            && let Err(e) = std::fs::create_dir_all(parent)
-        {
-            return format!("Error creating destination directory: {e}");
+        if let Err(e) = ensure_parent_dirs(dst) {
+            return e;
         }
 
         match std::fs::rename(src, dst) {
@@ -848,10 +821,7 @@ impl ToolExecutor {
     }
 
     fn fetch_url(&self, args: &Value) -> String {
-        let url = match args["url"].as_str() {
-            Some(u) => u,
-            None => return "Error: missing 'url' argument".into(),
-        };
+        let url = require_str!(args, "url");
         let max_chars = args["max_chars"]
             .as_u64()
             .unwrap_or(DEFAULT_MAX_CHARS as u64) as usize;
@@ -927,10 +897,7 @@ impl ToolExecutor {
     }
 
     fn create_directory(&self, args: &Value) -> String {
-        let path = match args["path"].as_str() {
-            Some(p) => p,
-            None => return "Error: missing 'path' argument".into(),
-        };
+        let path = require_str!(args, "path");
         match std::fs::create_dir_all(path) {
             Ok(()) => format!("Created directory: {path}"),
             Err(e) => format!("Error creating {path}: {e}"),
@@ -949,10 +916,7 @@ impl ToolExecutor {
         static RE_SNIPPET: OnceLock<regex::Regex> = OnceLock::new();
         static RE_UDDG: OnceLock<regex::Regex> = OnceLock::new();
 
-        let query = match args["query"].as_str() {
-            Some(q) => q,
-            None => return "Error: missing 'query' argument".into(),
-        };
+        let query = require_str!(args, "query");
         let max_results = args["max_results"].as_u64().unwrap_or(5).min(20) as usize;
 
         // Percent-encode the query for use in a URL.
@@ -1048,10 +1012,7 @@ impl ToolExecutor {
     }
 
     fn save_memory(&self, args: &Value) -> String {
-        let memory = match args["memory"].as_str() {
-            Some(m) => m,
-            None => return "Error: missing 'memory' argument".into(),
-        };
+        let memory = require_str!(args, "memory");
 
         let memory_file = args["file"].as_str().unwrap_or("SHIO.md");
         let existing = std::fs::read_to_string(memory_file).unwrap_or_default();
@@ -1100,10 +1061,7 @@ impl ToolExecutor {
 
     fn lsp_query(&self, args: &Value) -> String {
         let operation = args["operation"].as_str().unwrap_or("hover");
-        let file = match args["file"].as_str() {
-            Some(f) => f,
-            None => return "Error: missing 'file' argument".into(),
-        };
+        let file = require_str!(args, "file");
         let line = args["line"].as_u64().unwrap_or(1) as u32;
         let column = args["column"].as_u64().unwrap_or(1) as u32;
         crate::lsp::query(operation, file, line, column, &self.lsp)
@@ -1127,6 +1085,10 @@ impl ToolExecutor {
                 _ => "[ ]",
             };
             content.push_str(&format!("- {checkbox} {task}\n"));
+        }
+
+        if let Err(e) = ensure_parent_dirs(file) {
+            return e;
         }
 
         match std::fs::write(file, &content) {
@@ -1240,10 +1202,16 @@ fn is_private_host(url: &str) -> bool {
         .unwrap_or(url);
 
     // Strip path, query, fragment — everything after the first '/', '?', '#'.
-    let host_with_port = without_scheme
+    let authority = without_scheme
         .split(['/', '?', '#'])
         .next()
         .unwrap_or(without_scheme);
+
+    // Strip userinfo (e.g. "user:pass@host" → "host").  Without this an
+    // attacker could bypass the private-host check with a URL like
+    // http://x@192.168.1.1/ whose authority parses as host "x@192.168.1.1",
+    // which fails the IPv4 parse and slips through.
+    let host_with_port = authority.rsplit('@').next().unwrap_or(authority);
 
     // Strip port.  IPv6 addresses are enclosed in brackets: [::1]:8080.
     let host = if host_with_port.starts_with('[') {
@@ -1973,14 +1941,14 @@ mod tests {
     fn append_file_missing_path_returns_error() {
         let ex = executor(false, false);
         let args = serde_json::json!({ "content": "data" });
-        assert_eq!(ex.append_file(&args), "Error: missing 'path'");
+        assert_eq!(ex.append_file(&args), "Error: missing 'path' argument");
     }
 
     #[test]
     fn append_file_missing_content_returns_error() {
         let ex = executor(false, false);
         let args = serde_json::json!({ "path": "/tmp/shio_whatever.txt" });
-        assert_eq!(ex.append_file(&args), "Error: missing 'content'");
+        assert_eq!(ex.append_file(&args), "Error: missing 'content' argument");
     }
 
     // ── execute_quiet: argument-unwrap edge cases ─────────────────────────────

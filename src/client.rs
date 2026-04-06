@@ -287,11 +287,24 @@ impl LlamaClient {
             .error_for_status()?;
 
         let mut byte_stream = response.bytes_stream();
+        let mut byte_buf: Vec<u8> = Vec::new();
         let mut line_buf = String::new();
         let mut full_text = String::new();
 
         while let Some(chunk) = byte_stream.next().await {
-            line_buf.push_str(&String::from_utf8_lossy(&chunk?));
+            byte_buf.extend_from_slice(&chunk?);
+            // Decode only up to the last newline so we never split a multi-byte
+            // UTF-8 sequence across chunks.
+            let split_at = byte_buf
+                .iter()
+                .rposition(|&b| b == b'\n')
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            if split_at == 0 {
+                continue;
+            }
+            let to_decode = byte_buf.drain(..split_at).collect::<Vec<_>>();
+            line_buf.push_str(&String::from_utf8_lossy(&to_decode));
             while let Some(pos) = line_buf.find('\n') {
                 let raw = line_buf[..pos].trim().to_string();
                 line_buf.drain(..=pos);

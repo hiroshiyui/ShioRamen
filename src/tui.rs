@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+use std::collections::HashMap;
 use std::io;
 
 use anyhow::Result;
@@ -23,6 +24,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::chat::ChatSession;
 use crate::client::{AgentTurn, LlamaClient, Message, ToolCallItem, ToolDef};
+use crate::config::SkillDef;
 use crate::context;
 use crate::tools::ToolExecutor;
 
@@ -117,11 +119,17 @@ struct App {
     event_tx: mpsc::UnboundedSender<TuiEvent>,
     event_rx: mpsc::UnboundedReceiver<TuiEvent>,
 
+    /// Custom skills loaded from shio.toml, keyed by name.
+    skills: HashMap<String, SkillDef>,
+
     status: AppStatus,
     anim_frame: u8,    // cycles 0-2 while Waiting, drives the thinking animation
     select_mode: bool, // when true, mouse capture is disabled so the terminal can select text
     plan_mode: bool,   // true when the model has entered plan/read-only mode
     quit: bool,
+
+    // Handle to the currently running model task; aborted on quit.
+    model_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 enum AppStatus {
@@ -175,6 +183,7 @@ async fn run_loop(
     let (event_tx, event_rx) = mpsc::unbounded_channel::<TuiEvent>();
 
     let has_tools = session.executor.is_some();
+    let has_skills = !session.skills.is_empty();
     let mut app = App {
         messages: session.messages,
         tools: session.tools,
@@ -194,17 +203,26 @@ async fn run_loop(
         comp_idx: 0,
         event_tx,
         event_rx,
+        skills: session.skills,
         status: AppStatus::Idle,
         anim_frame: 0,
         select_mode: false,
         plan_mode: false,
         quit: false,
+        model_task: None,
     };
 
-    let welcome = if has_tools {
-        "ShioRamen ready — tool use ON.  /reset /include <path> /tools /exit   PgUp/Dn to scroll"
-    } else {
-        "ShioRamen ready.  /reset /include <path> /exit   PgUp/Dn to scroll"
+    let welcome = match (has_tools, has_skills) {
+        (true, true) => {
+            "ShioRamen ready — tool use ON.  /reset /include <path> /tools /skills /exit   PgUp/Dn to scroll"
+        }
+        (true, false) => {
+            "ShioRamen ready — tool use ON.  /reset /include <path> /tools /exit   PgUp/Dn to scroll"
+        }
+        (false, true) => {
+            "ShioRamen ready.  /reset /include <path> /skills /exit   PgUp/Dn to scroll"
+        }
+        (false, false) => "ShioRamen ready.  /reset /include <path> /exit   PgUp/Dn to scroll",
     };
     app.push_info(welcome);
 
@@ -244,6 +262,10 @@ async fn run_loop(
         }
 
         term.draw(|f| render(f, &app))?;
+    }
+
+    if let Some(h) = app.model_task.take() {
+        h.abort();
     }
 
     Ok(())
@@ -574,7 +596,7 @@ fn hist_prev(app: &mut App) {
             *i -= 1;
         }
     }
-    let idx = app.hist_idx.unwrap();
+    let idx = app.hist_idx.expect("hist_idx set in match above");
     app.input = app.history[idx].clone();
     app.cursor = app.input.len();
 }
@@ -597,7 +619,7 @@ fn hist_next(app: &mut App) {
 }
 
 fn do_complete(app: &mut App) {
-    const SLASH_CMDS: &[&str] = &["/exit", "/quit", "/reset", "/include ", "/tools"];
+    const SLASH_CMDS: &[&str] = &["/exit", "/quit", "/reset", "/include ", "/tools", "/skills"];
 
     let typed = app.input[..app.cursor].to_string();
 
@@ -610,11 +632,21 @@ fn do_complete(app: &mut App) {
                 .map(|c| format!("/include {c}"))
                 .collect()
         } else if typed.starts_with('/') {
-            SLASH_CMDS
+            let mut all: Vec<String> = SLASH_CMDS
                 .iter()
                 .filter(|&&c| c.starts_with(typed.as_str()))
                 .map(|&c| c.to_string())
-                .collect()
+                .collect();
+            // Add dynamic skill names (e.g. "/commit", "/review").
+            for name in app.skills.keys() {
+                let slash_name = format!("/{name}");
+                if slash_name.starts_with(typed.as_str()) {
+                    all.push(slash_name);
+                }
+            }
+            all.sort();
+            all.dedup();
+            all
         } else {
             return;
         };
@@ -755,12 +787,39 @@ async fn submit(app: &mut App) {
             }
             return;
         }
+        "/skills" => {
+            if app.skills.is_empty() {
+                app.push_info(
+                    "No custom skills defined. Add [skills.<name>] sections to shio.toml.",
+                );
+            } else {
+                let mut names: Vec<&String> = app.skills.keys().collect();
+                names.sort();
+                let list = names
+                    .iter()
+                    .map(|name| format!("/{} — {}", name, app.skills[*name].description))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                app.push_info(&list);
+            }
+            return;
+        }
         _ if input.starts_with("/include ") => {
             let path_str = input["/include ".len()..].trim();
             cmd_include(app, path_str);
             return;
         }
         _ => {}
+    }
+
+    // Custom skill dispatch (built-in commands take precedence above).
+    if let Some(expanded) = try_expand_skill(app, &input) {
+        app.push_entry(EntryKind::User, &input);
+        app.messages.push(Message::user(&expanded));
+        app.status = AppStatus::Waiting;
+        app.anim_frame = 0;
+        dispatch_turn(app);
+        return;
     }
 
     // Regular user message.
@@ -802,6 +861,32 @@ fn cmd_include(app: &mut App, path_str: &str) {
     }
 }
 
+/// Expand a skill prompt template with the given args string.
+/// `{args}` is replaced by `args`; if the placeholder is absent and `args` is
+/// non-empty, they are appended after the prompt. The result is trimmed.
+fn expand_skill_prompt(prompt: &str, args: &str) -> String {
+    if prompt.contains("{args}") {
+        prompt.replace("{args}", args).trim().to_string()
+    } else if !args.is_empty() {
+        format!("{} {}", prompt.trim_end(), args)
+    } else {
+        prompt.to_string()
+    }
+}
+
+/// If `input` is a skill invocation (`/<name> [args]`), return the expanded
+/// prompt. Returns `None` for unknown skill names or non-slash input.
+/// Built-in commands are checked by the caller before this is reached.
+fn try_expand_skill(app: &App, input: &str) -> Option<String> {
+    let rest = input.strip_prefix('/')?;
+    let (skill_name, raw_args) = match rest.find(char::is_whitespace) {
+        Some(pos) => (&rest[..pos], rest[pos + 1..].trim()),
+        None => (rest, ""),
+    };
+    let skill = app.skills.get(skill_name)?;
+    Some(expand_skill_prompt(&skill.prompt, raw_args))
+}
+
 fn dispatch_turn(app: &mut App) {
     let client = app.client.clone();
     let msgs = app.messages.clone();
@@ -810,9 +895,9 @@ fn dispatch_turn(app: &mut App) {
     let executor = app.executor.clone();
     let tx = app.event_tx.clone();
 
-    tokio::spawn(async move {
+    app.model_task = Some(tokio::spawn(async move {
         run_model_task(client, msgs, temp, tools, executor, tx).await;
-    });
+    }));
 }
 
 // ── Model event handling ──────────────────────────────────────────────────────
@@ -1286,6 +1371,39 @@ mod tests {
         let (dir, prefix) = split_path("src/");
         assert_eq!(dir, "src/");
         assert_eq!(prefix, "");
+    }
+
+    // ── expand_skill_prompt ───────────────────────────────────────────────────
+
+    #[test]
+    fn expand_skill_prompt_replaces_args_placeholder() {
+        let out = expand_skill_prompt("Review: {args}", "src/main.rs");
+        assert_eq!(out, "Review: src/main.rs");
+    }
+
+    #[test]
+    fn expand_skill_prompt_appends_args_when_no_placeholder() {
+        let out = expand_skill_prompt("Write a commit message.", "for auth module");
+        assert_eq!(out, "Write a commit message. for auth module");
+    }
+
+    #[test]
+    fn expand_skill_prompt_no_args_no_placeholder() {
+        let out = expand_skill_prompt("Write a commit message.", "");
+        assert_eq!(out, "Write a commit message.");
+    }
+
+    #[test]
+    fn expand_skill_prompt_trims_result_when_args_empty() {
+        // {args} replaced by "" leaves trailing whitespace; trim cleans it.
+        let out = expand_skill_prompt("Review: {args}", "");
+        assert_eq!(out, "Review:");
+    }
+
+    #[test]
+    fn expand_skill_prompt_multiple_placeholders() {
+        let out = expand_skill_prompt("Do {args} then do {args}", "foo");
+        assert_eq!(out, "Do foo then do foo");
     }
 
     // ── replace_latex ─────────────────────────────────────────────────────────

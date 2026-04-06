@@ -88,7 +88,9 @@ impl ServerProcess {
 
         // Kill the child before bailing — std::process::Child::drop() does NOT
         // terminate the process, only closes stdio handles, so we must kill explicitly.
+        // wait() after kill() reaps the zombie so the OS can reclaim its entry.
         let _ = child.kill();
+        let _ = child.wait();
         anyhow::bail!("llama-server did not become healthy within 120 seconds")
     }
 }

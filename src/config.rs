@@ -18,6 +18,8 @@ pub struct ShioConfig {
     pub tools: ToolsSection,
     #[serde(default)]
     pub lsp: LspSection,
+    #[serde(default)]
+    pub skills: HashMap<String, SkillDef>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -74,6 +76,20 @@ pub struct ToolsSection {
 pub struct LspSection {
     #[serde(default)]
     pub servers: HashMap<String, String>,
+}
+
+/// One entry under `[skills.<name>]` in shio.toml.
+///
+/// Example:
+/// ```toml
+/// [skills.commit]
+/// description = "Write a conventional git commit message"
+/// prompt      = "Write a conventional git commit message for the staged changes."
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct SkillDef {
+    pub description: String,
+    pub prompt: String,
 }
 
 impl ShioConfig {
@@ -277,5 +293,48 @@ mod tests {
     fn parse_empty_lsp_section_gives_empty_map() {
         let cfg: ShioConfig = toml::from_str("").unwrap();
         assert!(cfg.lsp.servers.is_empty());
+    }
+
+    // ── Skills section ───────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_skills_section() {
+        let src = r#"
+            [skills.commit]
+            description = "Write a conventional git commit message"
+            prompt = "Write a conventional git commit message for the staged changes."
+
+            [skills.review]
+            description = "Review code for correctness and style"
+            prompt = "Review this for correctness, edge cases, and style: {args}"
+        "#;
+        let cfg: ShioConfig = toml::from_str(src).unwrap();
+        assert_eq!(cfg.skills.len(), 2);
+        let commit = cfg.skills.get("commit").unwrap();
+        assert_eq!(
+            commit.description,
+            "Write a conventional git commit message"
+        );
+        assert!(!commit.prompt.contains("{args}"));
+        let review = cfg.skills.get("review").unwrap();
+        assert!(review.prompt.contains("{args}"));
+    }
+
+    #[test]
+    fn parse_empty_skills_gives_empty_map() {
+        let cfg: ShioConfig = toml::from_str("").unwrap();
+        assert!(cfg.skills.is_empty());
+    }
+
+    #[test]
+    fn skills_missing_description_is_error() {
+        let src = "[skills.bad]\nprompt = \"do something\"\n";
+        assert!(toml::from_str::<ShioConfig>(src).is_err());
+    }
+
+    #[test]
+    fn skills_missing_prompt_is_error() {
+        let src = "[skills.bad]\ndescription = \"something\"\n";
+        assert!(toml::from_str::<ShioConfig>(src).is_err());
     }
 }

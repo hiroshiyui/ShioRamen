@@ -175,6 +175,8 @@ Options:
 | `/reset` | Clear conversation history (keeps system prompt) |
 | `/include <path>` | Load a file or directory into context |
 | `/tools` | List available tools |
+| `/skills` | List defined custom skills |
+| `/<skill-name> [args]` | Invoke a custom skill (defined in `shio.toml`) |
 | `/exit` / `/quit` | Quit |
 
 When the model requests a destructive action (writing a file or running a shell command), the status bar shows a `[y/N]` prompt. Press `y` to allow, or `n` / `Esc` / `Enter` to deny.
@@ -257,16 +259,6 @@ shio doctor [OPTIONS]
       --port <PORT>          Server port to probe  [default: 8080]
 ```
 
-### `init`
-
-Create a `shio.toml` config file with all options documented and commented out.
-
-```
-shio init
-```
-
-Errors if `shio.toml` already exists in the current directory.
-
 Example output:
 
 ```
@@ -279,6 +271,16 @@ Example output:
 
 🎉  All checks passed.
 ```
+
+### `init`
+
+Create a `shio.toml` config file with all options documented and commented out.
+
+```
+shio init
+```
+
+Errors if `shio.toml` already exists in the current directory.
 
 ---
 
@@ -310,6 +312,19 @@ models_dir    = "./models"             # default download directory for `shio pu
 enabled        = true   # let the model read/write files and run commands
 confirm_writes = true   # ask [y/N] before the model writes files
 confirm_shell  = true   # ask [y/N] before the model runs shell commands
+
+[lsp.servers]
+rust   = "rust-analyzer"                        # language name → LSP server command
+python = "pylsp"
+ts     = "typescript-language-server --stdio"
+
+[skills.commit]
+description = "Write a conventional git commit message"   # shown by /skills
+prompt      = "Write a conventional git commit message for the staged changes."
+
+[skills.review]
+description = "Review code for correctness and style"
+prompt      = "Review this for correctness, edge cases, and style: {args}"   # {args} = text after skill name
 ```
 
 A custom config file can be specified with the global `--config` flag:

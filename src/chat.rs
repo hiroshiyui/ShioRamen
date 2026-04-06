@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use anyhow::Result;
+use std::collections::HashMap;
 
 use crate::client::{LlamaClient, Message, ToolDef};
+use crate::config::SkillDef;
 use crate::tools::{ToolExecutor, all_tools};
 
 pub const DEFAULT_SYSTEM_PROMPT: &str = "\
@@ -51,6 +53,8 @@ pub struct ChatSession {
     pub(crate) executor: Option<ToolExecutor>,
     /// Tool definitions, computed once and reused across turns.
     pub(crate) tools: Vec<ToolDef>,
+    /// Custom skills loaded from `[skills.*]` in shio.toml.
+    pub(crate) skills: HashMap<String, SkillDef>,
 }
 
 impl ChatSession {
@@ -59,6 +63,7 @@ impl ChatSession {
         temperature: f32,
         system_prompt: String,
         executor: Option<ToolExecutor>,
+        skills: HashMap<String, SkillDef>,
     ) -> Self {
         Self {
             client,
@@ -66,6 +71,7 @@ impl ChatSession {
             temperature,
             executor,
             tools: all_tools(),
+            skills,
         }
     }
 
@@ -82,7 +88,13 @@ mod tests {
 
     fn make_session(executor: Option<ToolExecutor>) -> ChatSession {
         let client = LlamaClient::new("http://127.0.0.1:1".to_string());
-        ChatSession::new(client, 0.7, "be helpful".to_string(), executor)
+        ChatSession::new(
+            client,
+            0.7,
+            "be helpful".to_string(),
+            executor,
+            HashMap::new(),
+        )
     }
 
     // ── ChatSession::new ──────────────────────────────────────────────────────
@@ -112,5 +124,29 @@ mod tests {
         };
         let session = make_session(Some(exec));
         assert!(session.executor.is_some());
+    }
+
+    // ── Skills ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn new_session_with_no_skills_has_empty_map() {
+        let session = make_session(None);
+        assert!(session.skills.is_empty());
+    }
+
+    #[test]
+    fn new_session_with_skills_retains_them() {
+        let mut skills = HashMap::new();
+        skills.insert(
+            "commit".to_string(),
+            SkillDef {
+                description: "desc".to_string(),
+                prompt: "prompt".to_string(),
+            },
+        );
+        let client = LlamaClient::new("http://127.0.0.1:1".to_string());
+        let session = ChatSession::new(client, 0.7, "sys".to_string(), None, skills);
+        assert_eq!(session.skills.len(), 1);
+        assert!(session.skills.contains_key("commit"));
     }
 }

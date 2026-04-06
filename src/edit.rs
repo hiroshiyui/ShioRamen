@@ -5,9 +5,9 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 use crate::ServerArgs;
+use crate::agents;
 use crate::client::{LlamaClient, Message};
-use crate::config::{DEFAULT_HOST, DEFAULT_PORT, DEFAULT_TEMP, ShioConfig};
-use crate::server::ServerProcess;
+use crate::config::{DEFAULT_TEMP, ShioConfig};
 
 const EDIT_SYSTEM_PROMPT: &str = "\
 You are a precise code editor. When given a file and an instruction, output ONLY \
@@ -44,31 +44,25 @@ pub struct EditArgs {
 }
 
 pub async fn run(args: &EditArgs, cfg: &ShioConfig) -> Result<()> {
-    let host = args
-        .server
-        .host
-        .clone()
-        .or_else(|| cfg.server.host.clone())
-        .unwrap_or_else(|| DEFAULT_HOST.to_string());
-    let port = args.server.port.or(cfg.server.port).unwrap_or(DEFAULT_PORT);
     let temp = args.temp.or(cfg.chat.temperature).unwrap_or(DEFAULT_TEMP);
 
     let original = tokio::fs::read_to_string(&args.file)
         .await
         .with_context(|| format!("Cannot read file: {}", args.file.display()))?;
 
-    let server = if args.no_spawn {
-        ServerProcess::external(format!("http://{host}:{port}"))
-    } else {
-        let model = args
-            .model
-            .clone()
-            .or_else(|| cfg.chat.model.clone())
-            .ok_or_else(|| {
-                anyhow::anyhow!("--model <PATH> is required (or set chat.model in shio.toml)")
-            })?;
-        let config = args.server.to_config(model, &cfg.server);
-        ServerProcess::spawn(&config).await?
+    let server = args
+        .server
+        .spawn_or_connect(args.no_spawn, args.model.clone(), cfg)
+        .await?;
+
+    // Build system prompt: fixed raw-output instruction, optionally extended
+    // with project conventions from AGENTS.md.
+    let edit_dir = args.file.parent().unwrap_or(std::path::Path::new("."));
+    let system_prompt = match agents::load(edit_dir) {
+        Some(content) => {
+            format!("{EDIT_SYSTEM_PROMPT}\n\nProject conventions (from AGENTS.md):\n\n{content}")
+        }
+        None => EDIT_SYSTEM_PROMPT.to_string(),
     };
 
     let lang = args.file.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -78,10 +72,7 @@ pub async fn run(args: &EditArgs, cfg: &ShioConfig) -> Result<()> {
         args.instruction,
     );
 
-    let messages = vec![
-        Message::system(EDIT_SYSTEM_PROMPT),
-        Message::user(user_content),
-    ];
+    let messages = vec![Message::system(system_prompt), Message::user(user_content)];
 
     eprint!("Generating...");
     io::stderr().flush().ok();

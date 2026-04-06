@@ -81,7 +81,9 @@ pub fn query(
     }
 
     // Ensure the file is open in this session.
-    let content_for_open = if !map[&server_cmd].opened_files.contains(&abs_file) {
+    let sess = map.get_mut(&server_cmd).expect("inserted above");
+
+    let content_for_open = if !sess.opened_files.contains(&abs_file) {
         match std::fs::read_to_string(&abs_file) {
             Ok(c) => Some(c),
             Err(e) => return format!("Error reading '{abs_file}': {e}"),
@@ -89,8 +91,6 @@ pub fn query(
     } else {
         None
     };
-
-    let sess = map.get_mut(&server_cmd).unwrap();
 
     if let Some(content) = content_for_open
         && let Err(e) = did_open(sess, &abs_file, &content)
