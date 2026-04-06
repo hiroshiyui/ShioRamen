@@ -1,6 +1,11 @@
 # Rust build output
 /target
 
+# Cargo install registry (only present if cargo was previously configured to
+# install into the project root via `.cargo/config.toml`; no longer generated)
+/.crates.toml
+/.crates2.json
+
 
 # Compiled llama.cpp binaries
 /bin
