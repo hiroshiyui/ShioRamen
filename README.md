@@ -8,7 +8,7 @@ Runs entirely offline — no cloud API, no data leaving your machine.
 ## Features
 
 - **`serve`** — launch `llama-server` and keep it running
-- **`chat`** — full-screen TUI chat session (spawns the server automatically); tool use lets the model read/write files, run commands, and fetch URLs
+- **`chat`** — full-screen TUI chat session (spawns the server automatically); tool use lets the model read/write files, run shell commands, search the web, save memory, and more
 - **`ask`** — one-shot question with optional file context; streams answer to stdout
 - **`edit`** — apply an AI-suggested edit to a file (shows diff, asks to confirm)
 - **`pull`** — download GGUF models from HuggingFace or a direct URL
@@ -164,7 +164,7 @@ Options:
 | `F2` | Toggle select mode — disables mouse capture so you can drag-select and copy output text |
 | `Ctrl+A` | Move cursor to beginning of line |
 | `Ctrl+E` | Move cursor to end of line |
-| `Ctrl+U` | Erase from cursor to beginning of line |
+| `Ctrl+U` | Erase entire input line |
 | `Ctrl+W` | Erase word before cursor |
 | `/reset` | Clear conversation history (keeps system prompt) |
 | `/include <path>` | Load a file or directory into context |

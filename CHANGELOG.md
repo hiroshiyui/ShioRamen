@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Tools: `web_search` (DuckDuckGo Lite, no API key required), `save_memory` (persists facts to `SHIO.md`), `read_many_files`, `write_todos`
+- `DEFAULT_SYSTEM_PROMPT` updated with guidance for the four new tools
+
 ## [v0.0.1] — 2026-04-05
 
 ### Added
