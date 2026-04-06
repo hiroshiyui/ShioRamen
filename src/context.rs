@@ -164,4 +164,48 @@ mod tests {
         assert!(out.contains("```rs"));
         assert!(out.contains("fn f() {}"));
     }
+
+    #[test]
+    fn collect_single_file_over_limit_returns_error() {
+        let path = std::env::temp_dir().join("shio_ctx_big.rs");
+        // Write just over the 100 KB limit.
+        fs::write(&path, vec![b'x'; (MAX_FILE_BYTES + 1) as usize]).unwrap();
+        let result = collect(&path);
+        assert!(result.is_err(), "expected error for oversized file");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn collect_dir_silently_skips_oversized_files() {
+        let dir = std::env::temp_dir().join("shio_ctx_big_dir");
+        fs::create_dir_all(&dir).unwrap();
+        let small = dir.join("small.rs");
+        let big = dir.join("big.rs");
+        fs::write(&small, "fn small() {}").unwrap();
+        fs::write(&big, vec![b'x'; (MAX_FILE_BYTES + 1) as usize]).unwrap();
+        let files = collect(&dir).unwrap();
+        let names: Vec<&str> = files
+            .iter()
+            .map(|(p, _)| p.file_name().unwrap().to_str().unwrap())
+            .collect();
+        assert!(names.contains(&"small.rs"), "small file should be included");
+        assert!(
+            !names.contains(&"big.rs"),
+            "oversized file should be skipped"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn collect_empty_directory_returns_empty_vec() {
+        let dir = std::env::temp_dir().join("shio_ctx_empty_dir");
+        fs::create_dir_all(&dir).unwrap();
+        // Make sure it's empty.
+        for entry in fs::read_dir(&dir).unwrap() {
+            let _ = fs::remove_file(entry.unwrap().path());
+        }
+        let files = collect(&dir).unwrap();
+        assert!(files.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

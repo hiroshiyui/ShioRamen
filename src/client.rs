@@ -494,4 +494,30 @@ mod tests {
         let calls = extract_embedded_tool_calls("Just a plain assistant reply.");
         assert!(calls.is_empty());
     }
+
+    #[test]
+    fn extract_embedded_tool_calls_handles_pipe_delimited_markers() {
+        // Some templates use <|tool_call|> / <|/tool_call|> instead of <tool_call>.
+        let text =
+            r#"<|tool_call|>{"name":"list_directory","arguments":{"path":"."}}<|/tool_call|>"#;
+        let calls = extract_embedded_tool_calls(text);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.name, "list_directory");
+        let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
+        assert_eq!(args["path"], ".");
+    }
+
+    #[test]
+    fn extract_embedded_tool_calls_extracts_multiple_calls() {
+        let text = concat!(
+            r#"<tool_call>{"name":"read_file","arguments":{"path":"a.txt"}}</tool_call>"#,
+            r#"<tool_call>{"name":"read_file","arguments":{"path":"b.txt"}}</tool_call>"#,
+        );
+        let calls = extract_embedded_tool_calls(text);
+        assert_eq!(calls.len(), 2);
+        let args0: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
+        let args1: serde_json::Value = serde_json::from_str(&calls[1].function.arguments).unwrap();
+        assert_eq!(args0["path"], "a.txt");
+        assert_eq!(args1["path"], "b.txt");
+    }
 }

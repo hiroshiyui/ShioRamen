@@ -1932,4 +1932,95 @@ mod tests {
             "got: {out}"
         );
     }
+
+    // ── append_file ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn append_file_creates_new_file() {
+        let path = std::env::temp_dir().join("shio_append_new.txt");
+        let _ = fs::remove_file(&path);
+        let ex = executor(false, false);
+        let args = serde_json::json!({ "path": path.to_str().unwrap(), "content": "hello" });
+        let out = ex.append_file(&args);
+        assert!(out.contains("Appended"), "{out}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "hello");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn append_file_preserves_existing_content() {
+        let path = std::env::temp_dir().join("shio_append_existing.txt");
+        fs::write(&path, "line1\n").unwrap();
+        let ex = executor(false, false);
+        let args = serde_json::json!({ "path": path.to_str().unwrap(), "content": "line2\n" });
+        ex.append_file(&args);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "line1\nline2\n");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn append_file_creates_parent_directories() {
+        let dir = std::env::temp_dir().join("shio_append_dir_test");
+        let path = dir.join("sub").join("file.txt");
+        let _ = fs::remove_dir_all(&dir);
+        let ex = executor(false, false);
+        let args = serde_json::json!({ "path": path.to_str().unwrap(), "content": "data" });
+        let out = ex.append_file(&args);
+        assert!(out.contains("Appended"), "{out}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "data");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn append_file_missing_path_returns_error() {
+        let ex = executor(false, false);
+        let args = serde_json::json!({ "content": "data" });
+        assert_eq!(ex.append_file(&args), "Error: missing 'path'");
+    }
+
+    #[test]
+    fn append_file_missing_content_returns_error() {
+        let ex = executor(false, false);
+        let args = serde_json::json!({ "path": "/tmp/shio_whatever.txt" });
+        assert_eq!(ex.append_file(&args), "Error: missing 'content'");
+    }
+
+    // ── execute_quiet: argument-unwrap edge cases ─────────────────────────────
+
+    #[test]
+    fn execute_quiet_does_not_unwrap_non_matching_single_key() {
+        // A single-key object whose key does NOT match the function name must
+        // not be unwrapped — it should go to dispatch as-is (and produce an
+        // error about the missing argument, not a panic or wrong behaviour).
+        use crate::client::{ToolCallFunction, ToolCallItem};
+        let ex = executor(false, false);
+        let call = ToolCallItem {
+            id: "x".into(),
+            kind: "function".into(),
+            function: ToolCallFunction {
+                name: "get_working_directory".into(),
+                // Single key but named "other", not "get_working_directory".
+                arguments: serde_json::json!({ "other": {} }).to_string(),
+            },
+        };
+        // get_working_directory ignores args entirely, so it must still succeed.
+        let out = ex.execute_quiet(&call);
+        assert!(!out.starts_with("Error"), "{out}");
+    }
+
+    #[test]
+    fn execute_quiet_invalid_json_returns_error() {
+        use crate::client::{ToolCallFunction, ToolCallItem};
+        let ex = executor(false, false);
+        let call = ToolCallItem {
+            id: "x".into(),
+            kind: "function".into(),
+            function: ToolCallFunction {
+                name: "read_file".into(),
+                arguments: "not json at all".into(),
+            },
+        };
+        let out = ex.execute_quiet(&call);
+        assert!(out.starts_with("Error parsing arguments"), "{out}");
+    }
 }

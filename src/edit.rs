@@ -196,6 +196,26 @@ mod tests {
         assert_eq!(strip_fences(input), "code");
     }
 
+    #[test]
+    fn strip_fences_no_closing_fence_returns_original() {
+        // Model forgot the closing ``` — must not mangle the content.
+        let input = "```rust\nfn main() {}";
+        assert_eq!(strip_fences(input), input);
+    }
+
+    #[test]
+    fn strip_fences_trailing_text_after_closing_fence_is_stripped() {
+        // Model appended an explanation after the closing fence.
+        let input = "```rust\nfn main() {}\n```\nThis completes the edit.";
+        assert_eq!(strip_fences(input), "fn main() {}");
+    }
+
+    #[test]
+    fn strip_fences_empty_body_between_fences() {
+        let input = "```\n```";
+        assert_eq!(strip_fences(input), "");
+    }
+
     // ── build_diff ───────────────────────────────────────────────────────────
 
     #[test]
