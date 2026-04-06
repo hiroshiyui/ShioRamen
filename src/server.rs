@@ -67,7 +67,6 @@ impl ServerProcess {
         if config.cont_batching {
             cmd.arg("--cont-batching");
         }
-
         let mut child = cmd
             .stdout(Stdio::null()) // HTTP request logs — keep silent during chat
             .stderr(Stdio::inherit()) // model loading, GPU layers, startup progress
