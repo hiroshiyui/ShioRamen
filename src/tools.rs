@@ -248,6 +248,112 @@ pub fn all_tools() -> Vec<ToolDef> {
                 }),
             },
         },
+        ToolDef {
+            kind: "function",
+            function: FunctionSpec {
+                name: "web_search",
+                description: "Search the web using DuckDuckGo and return a list of results \
+                    with titles, URLs, and snippets. Use this when you need current \
+                    information, documentation, or examples that may not be in your \
+                    training data.",
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query"
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "description": "Maximum number of results to return (default: 5, max: 20)"
+                        }
+                    },
+                    "required": ["query"]
+                }),
+            },
+        },
+        ToolDef {
+            kind: "function",
+            function: FunctionSpec {
+                name: "save_memory",
+                description: "Append a fact or note to SHIO.md for future reference. \
+                    Use this to persist important information across sessions: \
+                    user preferences, project conventions, architectural decisions, \
+                    or anything you want to remember.",
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "memory": {
+                            "type": "string",
+                            "description": "The fact or note to remember"
+                        },
+                        "file": {
+                            "type": "string",
+                            "description": "Memory file path (default: SHIO.md)"
+                        }
+                    },
+                    "required": ["memory"]
+                }),
+            },
+        },
+        ToolDef {
+            kind: "function",
+            function: FunctionSpec {
+                name: "read_many_files",
+                description: "Read the contents of multiple files in a single call. \
+                    Returns each file's content separated by a header showing its path. \
+                    More efficient than calling read_file repeatedly when you need \
+                    several related files at once.",
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "paths": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "List of file paths to read"
+                        }
+                    },
+                    "required": ["paths"]
+                }),
+            },
+        },
+        ToolDef {
+            kind: "function",
+            function: FunctionSpec {
+                name: "write_todos",
+                description: "Write a task list to TODO.md, replacing the file's entire contents. \
+                    Useful for tracking multi-step plans or progress on complex tasks.",
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "todos": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "task": {
+                                        "type": "string",
+                                        "description": "Task description"
+                                    },
+                                    "status": {
+                                        "type": "string",
+                                        "enum": ["pending", "in_progress", "completed"],
+                                        "description": "Task status (default: pending)"
+                                    }
+                                },
+                                "required": ["task"]
+                            },
+                            "description": "List of tasks to write"
+                        },
+                        "file": {
+                            "type": "string",
+                            "description": "Path to the todo file (default: TODO.md)"
+                        }
+                    },
+                    "required": ["todos"]
+                }),
+            },
+        },
     ]
 }
 
@@ -289,6 +395,10 @@ impl ToolExecutor {
             "fetch_url" => self.fetch_url(args),
             "create_directory" => self.create_directory(args),
             "get_working_directory" => self.get_working_directory(),
+            "web_search" => self.web_search(args),
+            "save_memory" => self.save_memory(args),
+            "read_many_files" => self.read_many_files(args),
+            "write_todos" => self.write_todos(args),
             _ => format!("Unknown tool: {name}"),
         }
     }
@@ -613,14 +723,14 @@ impl ToolExecutor {
             );
         }
 
-        let client = match reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .user_agent("ShioRamen/0.1 (local AI assistant)")
-            .build()
-        {
-            Ok(c) => c,
-            Err(e) => return format!("Error building HTTP client: {e}"),
-        };
+        static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
+        let client = CLIENT.get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .user_agent("ShioRamen/0.1 (local AI assistant)")
+                .build()
+                .expect("failed to build reqwest blocking client")
+        });
 
         let response = match client.get(url).send() {
             Ok(r) => r,
@@ -688,9 +798,216 @@ impl ToolExecutor {
             Err(e) => format!("Error getting working directory: {e}"),
         }
     }
+
+    fn web_search(&self, args: &Value) -> String {
+        static RE_RESULT: OnceLock<regex::Regex> = OnceLock::new();
+        static RE_SNIPPET: OnceLock<regex::Regex> = OnceLock::new();
+        static RE_UDDG: OnceLock<regex::Regex> = OnceLock::new();
+
+        let query = match args["query"].as_str() {
+            Some(q) => q,
+            None => return "Error: missing 'query' argument".into(),
+        };
+        let max_results = args["max_results"].as_u64().unwrap_or(5).min(20) as usize;
+
+        // Percent-encode the query for use in a URL.
+        let mut encoded = String::new();
+        for c in query.chars() {
+            if c == ' ' {
+                encoded.push('+');
+            } else if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {
+                encoded.push(c);
+            } else {
+                for byte in c.encode_utf8(&mut [0u8; 4]).as_bytes() {
+                    encoded.push_str(&format!("%{byte:02X}"));
+                }
+            }
+        }
+
+        let search_url = format!("https://lite.duckduckgo.com/lite/?q={encoded}");
+
+        static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
+        let client = CLIENT.get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .user_agent("Mozilla/5.0 (compatible; ShioRamen/0.1)")
+                .build()
+                .expect("failed to build reqwest blocking client")
+        });
+
+        let body = match client.get(&search_url).send().and_then(|r| r.text()) {
+            Ok(b) => b,
+            Err(e) => return format!("Error fetching search results: {e}"),
+        };
+
+        // DDG lite wraps result links in <a href="...uddg=REAL_URL...">Title</a>.
+        let re_result = RE_RESULT.get_or_init(|| {
+            regex::Regex::new(r#"(?s)<a[^>]+href="[^"]*uddg=[^"]*"[^>]*>(.*?)</a>"#).unwrap()
+        });
+        // Snippets appear in <td class="result-snippet">…</td>.
+        let re_snippet = RE_SNIPPET.get_or_init(|| {
+            regex::Regex::new(r#"(?s)<td[^>]*class="result-snippet"[^>]*>(.*?)</td>"#).unwrap()
+        });
+        // Extract the real URL from the uddg= redirect parameter.
+        let re_uddg = RE_UDDG.get_or_init(|| regex::Regex::new(r"uddg=([^&\s]+)").unwrap());
+
+        let results: Vec<(String, String)> = re_result
+            .captures_iter(&body)
+            .filter_map(|cap| {
+                let full = cap.get(0)?.as_str();
+                let title = strip_html(cap.get(1)?.as_str()).trim().to_string();
+                if title.is_empty() {
+                    return None;
+                }
+                let real_url = re_uddg
+                    .captures(full)
+                    .and_then(|c| c.get(1))
+                    .map(|m| percent_decode(m.as_str()))
+                    .unwrap_or_default();
+                if real_url.is_empty() {
+                    return None;
+                }
+                Some((title, real_url))
+            })
+            .take(max_results)
+            .collect();
+
+        if results.is_empty() {
+            return format!(
+                "No results found for: {query}\n\
+                 (try rephrasing or use fetch_url with a known URL)"
+            );
+        }
+
+        let snippets: Vec<String> = re_snippet
+            .captures_iter(&body)
+            .map(|cap| {
+                strip_html(cap.get(1).map_or("", |m| m.as_str()))
+                    .trim()
+                    .to_string()
+            })
+            .take(max_results)
+            .collect();
+
+        let mut out = format!("Web search results for \"{query}\":\n\n");
+        for (i, (title, url)) in results.iter().enumerate() {
+            out.push_str(&format!("{}. {title}\n   {url}\n", i + 1));
+            if let Some(snippet) = snippets.get(i)
+                && !snippet.is_empty()
+            {
+                out.push_str(&format!("   {snippet}\n"));
+            }
+            out.push('\n');
+        }
+        out.trim_end().to_string()
+    }
+
+    fn save_memory(&self, args: &Value) -> String {
+        let memory = match args["memory"].as_str() {
+            Some(m) => m,
+            None => return "Error: missing 'memory' argument".into(),
+        };
+
+        let memory_file = args["file"].as_str().unwrap_or("SHIO.md");
+        let existing = std::fs::read_to_string(memory_file).unwrap_or_default();
+
+        // Skip exact duplicates.
+        if existing.contains(memory) {
+            return format!("Already in {memory_file} (skipped duplicate)");
+        }
+
+        let new_content = if existing.is_empty() {
+            format!("# Shio Memory\n\n- {memory}\n")
+        } else {
+            format!("{}\n- {memory}\n", existing.trim_end())
+        };
+
+        match std::fs::write(memory_file, &new_content) {
+            Ok(()) => format!("Saved to {memory_file}: {memory}"),
+            Err(e) => format!("Error saving memory: {e}"),
+        }
+    }
+
+    fn read_many_files(&self, args: &Value) -> String {
+        let paths = match args["paths"].as_array() {
+            Some(p) => p,
+            None => return "Error: missing 'paths' array".into(),
+        };
+        if paths.is_empty() {
+            return "Error: 'paths' array is empty".into();
+        }
+
+        let mut out = String::new();
+        for path_val in paths {
+            let path = match path_val.as_str() {
+                Some(p) => p,
+                None => continue,
+            };
+            out.push_str(&format!("=== {path} ===\n"));
+            match std::fs::read_to_string(path) {
+                Ok(content) => out.push_str(&content),
+                Err(e) => out.push_str(&format!("[Error: {e}]")),
+            }
+            out.push_str("\n\n");
+        }
+        out.trim_end().to_string()
+    }
+
+    fn write_todos(&self, args: &Value) -> String {
+        let todos = match args["todos"].as_array() {
+            Some(t) => t,
+            None => return "Error: missing 'todos' array".into(),
+        };
+
+        let file = args["file"].as_str().unwrap_or("TODO.md");
+
+        let mut content = String::from("# TODO\n\n");
+        for todo in todos {
+            let task = todo["task"].as_str().unwrap_or("(unnamed task)");
+            let status = todo["status"].as_str().unwrap_or("pending");
+            let checkbox = match status {
+                "completed" => "[x]",
+                "in_progress" => "[-]",
+                _ => "[ ]",
+            };
+            content.push_str(&format!("- {checkbox} {task}\n"));
+        }
+
+        match std::fs::write(file, &content) {
+            Ok(()) => format!("Wrote {} todo(s) to {file}", todos.len()),
+            Err(e) => format!("Error writing {file}: {e}"),
+        }
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Decode a percent-encoded URL string (e.g. `%2F` → `/`, `+` → space).
+/// Handles multi-byte UTF-8 sequences correctly.
+fn percent_decode(s: &str) -> String {
+    let input = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        if input[i] == b'%'
+            && i + 2 < input.len()
+            && input[i + 1].is_ascii_hexdigit()
+            && input[i + 2].is_ascii_hexdigit()
+        {
+            let hi = (input[i + 1] as char).to_digit(16).unwrap() as u8;
+            let lo = (input[i + 2] as char).to_digit(16).unwrap() as u8;
+            out.push(hi << 4 | lo);
+            i += 3;
+        } else if input[i] == b'+' {
+            out.push(b' ');
+            i += 1;
+        } else {
+            out.push(input[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
 
 /// Strip HTML markup from a page, returning readable plain text.
 ///
@@ -1078,8 +1395,8 @@ mod tests {
     // ── all_tools ─────────────────────────────────────────────────────────────
 
     #[test]
-    fn all_tools_has_thirteen_entries() {
-        assert_eq!(all_tools().len(), 13);
+    fn all_tools_has_seventeen_entries() {
+        assert_eq!(all_tools().len(), 17);
     }
 
     // ── strip_html ────────────────────────────────────────────────────────────
@@ -1156,5 +1473,122 @@ mod tests {
         let result = ex.get_working_directory();
         assert!(!result.is_empty());
         assert!(!result.starts_with("Error"), "{result}");
+    }
+
+    // ── web_search ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn web_search_requires_query() {
+        let ex = executor(false, false);
+        let result = ex.web_search(&serde_json::json!({}));
+        assert!(result.starts_with("Error"), "{result}");
+    }
+
+    // ── save_memory ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn save_memory_appends_to_file() {
+        let path = std::env::temp_dir().join("shio_test_memory.md");
+        let _ = fs::remove_file(&path);
+        let path_str = path.to_str().unwrap();
+        let ex = executor(false, false);
+
+        let result =
+            ex.save_memory(&serde_json::json!({ "memory": "prefer snake_case", "file": path_str }));
+        assert!(result.contains("Saved"), "{result}");
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("prefer snake_case"), "{content}");
+
+        // Duplicate is skipped.
+        let result2 =
+            ex.save_memory(&serde_json::json!({ "memory": "prefer snake_case", "file": path_str }));
+        assert!(result2.contains("skipped"), "{result2}");
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn save_memory_requires_memory_arg() {
+        let ex = executor(false, false);
+        let result = ex.save_memory(&serde_json::json!({}));
+        assert!(result.starts_with("Error"), "{result}");
+    }
+
+    // ── read_many_files ───────────────────────────────────────────────────────
+
+    #[test]
+    fn read_many_files_returns_all_contents() {
+        let a = std::env::temp_dir().join("shio_rmf_a.txt");
+        let b = std::env::temp_dir().join("shio_rmf_b.txt");
+        fs::write(&a, "content_a").unwrap();
+        fs::write(&b, "content_b").unwrap();
+        let ex = executor(false, false);
+        let result = ex.read_many_files(&serde_json::json!({
+            "paths": [a.to_str().unwrap(), b.to_str().unwrap()]
+        }));
+        assert!(result.contains("content_a"), "{result}");
+        assert!(result.contains("content_b"), "{result}");
+        let _ = fs::remove_file(&a);
+        let _ = fs::remove_file(&b);
+    }
+
+    #[test]
+    fn read_many_files_reports_missing_file_inline() {
+        let ex = executor(false, false);
+        let result = ex.read_many_files(&serde_json::json!({
+            "paths": ["/nonexistent/shio_rmf_missing.txt"]
+        }));
+        assert!(result.contains("Error"), "{result}");
+    }
+
+    #[test]
+    fn read_many_files_requires_paths() {
+        let ex = executor(false, false);
+        let result = ex.read_many_files(&serde_json::json!({}));
+        assert!(result.starts_with("Error"), "{result}");
+    }
+
+    // ── write_todos ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn write_todos_creates_file_with_checkboxes() {
+        let path = std::env::temp_dir().join("shio_todos_test.md");
+        let ex = executor(false, false);
+        let result = ex.write_todos(&serde_json::json!({
+            "todos": [
+                { "task": "first task", "status": "completed" },
+                { "task": "second task", "status": "in_progress" },
+                { "task": "third task" }
+            ],
+            "file": path.to_str().unwrap()
+        }));
+        assert!(result.contains("3"), "{result}");
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("[x] first task"), "{content}");
+        assert!(content.contains("[-] second task"), "{content}");
+        assert!(content.contains("[ ] third task"), "{content}");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn write_todos_requires_todos() {
+        let ex = executor(false, false);
+        let result = ex.write_todos(&serde_json::json!({}));
+        assert!(result.starts_with("Error"), "{result}");
+    }
+
+    // ── percent_decode ────────────────────────────────────────────────────────
+
+    #[test]
+    fn percent_decode_handles_basic_encoding() {
+        assert_eq!(percent_decode("hello+world"), "hello world");
+        assert_eq!(percent_decode("foo%2Fbar"), "foo/bar");
+        assert_eq!(percent_decode("a%20b"), "a b");
+    }
+
+    #[test]
+    fn percent_decode_handles_utf8_sequences() {
+        // "é" encodes as %C3%A9 in UTF-8
+        assert_eq!(percent_decode("%C3%A9"), "é");
     }
 }
