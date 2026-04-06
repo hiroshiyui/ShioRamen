@@ -5,11 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v0.0.2] — 2026-04-06
 
 ### Added
 - Tools: `web_search` (DuckDuckGo Lite, no API key required), `save_memory` (persists facts to `SHIO.md`), `read_many_files`, `write_todos`
-- `DEFAULT_SYSTEM_PROMPT` updated with guidance for the four new tools
+- System prompt updated with guidance for the four new tools (both the compile-time default and the example `shio.toml`)
+- 15 new unit tests covering TUI helper functions (`char_start_before`, `char_end_at`, `prev_word`, `next_word`, `split_path`, `replace_latex`)
+
+### Fixed
+- (tui): `patch_file`, `delete_file`, and `move_file` now trigger the `[y/N]` confirmation prompt when `confirm_writes = true`; previously they bypassed the gate silently
+- (server): `--system-prompt` flag removed from `llama-server` invocation (flag not supported by the binary)
+- Blocking filesystem I/O in `ask` and `edit` commands moved to `spawn_blocking` / `tokio::fs` to avoid stalling the async executor
+
+### Performance
+- HTTP clients in `fetch_url`, `web_search`, and `health_check` cached via `OnceLock` instead of being rebuilt on every call
+- SSE line-buffer trimming changed from `to_string()` (allocation per line) to `drain()` (in-place)
+
+### Documentation
+- README: chat feature line updated to mention web search and memory; Ctrl+U description corrected
+- CHANGELOG: `[Unreleased]` section added and now promoted to `[v0.0.2]`
+
+### Maintenance
+- Test count: 109 → 124
 
 ## [v0.0.1] — 2026-04-05
 
