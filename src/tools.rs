@@ -354,15 +354,91 @@ pub fn all_tools() -> Vec<ToolDef> {
                 }),
             },
         },
+        ToolDef {
+            kind: "function",
+            function: FunctionSpec {
+                name: "lsp",
+                description: "Query a Language Server Protocol (LSP) server for semantic \
+                    information about source code: type signatures, documentation (hover), \
+                    jump-to-definition, find-all-references, and diagnostics (errors/warnings). \
+                    The server is started and cached automatically; no setup required.",
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["hover", "definition", "references", "diagnostics"],
+                            "description": "What to query: \
+                                hover = type/doc at position; \
+                                definition = where a symbol is declared; \
+                                references = all usages of a symbol; \
+                                diagnostics = errors and warnings in the file"
+                        },
+                        "file": {
+                            "type": "string",
+                            "description": "Path to the source file"
+                        },
+                        "line": {
+                            "type": "integer",
+                            "description": "1-indexed line number (required for hover, definition, references)"
+                        },
+                        "column": {
+                            "type": "integer",
+                            "description": "1-indexed column number (default: 1)"
+                        }
+                    },
+                    "required": ["operation", "file"]
+                }),
+            },
+        },
+        ToolDef {
+            kind: "function",
+            function: FunctionSpec {
+                name: "enter_plan_mode",
+                description: "Switch to plan mode, restricting tool access to read-only operations \
+                    (read_file, search_files, grep_files, lsp, fetch_url, web_search, etc.). \
+                    Use this before making changes: explore the codebase, understand the structure, \
+                    draft a plan, then call exit_plan_mode to restore full tool access.",
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "reason": {
+                            "type": "string",
+                            "description": "Optional: why you are entering plan mode"
+                        }
+                    }
+                }),
+            },
+        },
+        ToolDef {
+            kind: "function",
+            function: FunctionSpec {
+                name: "exit_plan_mode",
+                description: "Exit plan mode and restore access to all tools \
+                    (write_file, patch_file, run_shell, etc.). \
+                    Call this when you have finished exploring and are ready to make changes.",
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "plan": {
+                            "type": "string",
+                            "description": "Optional: brief summary of the plan before exiting"
+                        }
+                    }
+                }),
+            },
+        },
     ]
 }
 
 // ── Executor ─────────────────────────────────────────────────────────────────
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ToolExecutor {
     pub confirm_writes: bool,
     pub confirm_shell: bool,
+    /// LSP server overrides from `[lsp.servers]` in `shio.toml`.
+    pub lsp: std::collections::HashMap<String, String>,
 }
 
 const YELLOW: &str = "\x1b[33m";
@@ -399,6 +475,11 @@ impl ToolExecutor {
             "save_memory" => self.save_memory(args),
             "read_many_files" => self.read_many_files(args),
             "write_todos" => self.write_todos(args),
+            "lsp" => self.lsp_query(args),
+            // Plan mode control is handled by the TUI agent loop, not here.
+            "enter_plan_mode" | "exit_plan_mode" => {
+                "Plan mode control is handled by the agent loop.".to_string()
+            }
             _ => format!("Unknown tool: {name}"),
         }
     }
@@ -953,6 +1034,17 @@ impl ToolExecutor {
         out.trim_end().to_string()
     }
 
+    fn lsp_query(&self, args: &Value) -> String {
+        let operation = args["operation"].as_str().unwrap_or("hover");
+        let file = match args["file"].as_str() {
+            Some(f) => f,
+            None => return "Error: missing 'file' argument".into(),
+        };
+        let line = args["line"].as_u64().unwrap_or(1) as u32;
+        let column = args["column"].as_u64().unwrap_or(1) as u32;
+        crate::lsp::query(operation, file, line, column, &self.lsp)
+    }
+
     fn write_todos(&self, args: &Value) -> String {
         let todos = match args["todos"].as_array() {
             Some(t) => t,
@@ -1180,6 +1272,7 @@ mod tests {
         ToolExecutor {
             confirm_writes,
             confirm_shell,
+            ..Default::default()
         }
     }
 
@@ -1395,8 +1488,53 @@ mod tests {
     // ── all_tools ─────────────────────────────────────────────────────────────
 
     #[test]
-    fn all_tools_has_seventeen_entries() {
-        assert_eq!(all_tools().len(), 17);
+    fn all_tools_has_twenty_entries() {
+        assert_eq!(all_tools().len(), 20);
+    }
+
+    // ── lsp_query ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn lsp_query_unsupported_extension_returns_error_message() {
+        // .xyz is not a known language; no server will be found without an install.
+        // This exercises lsp_query dispatch all the way through lsp::query without
+        // needing a real LSP server.
+        let ex = executor(false, false);
+        let args = serde_json::json!({
+            "operation": "hover",
+            "file": "test.xyz",
+            "line": 1,
+            "column": 1
+        });
+        let result = ex.lsp_query(&args);
+        assert!(
+            result.contains("No LSP server found") || result.contains("Error"),
+            "expected error message, got: {result}"
+        );
+    }
+
+    #[test]
+    fn lsp_query_missing_file_argument() {
+        let ex = executor(false, false);
+        let args = serde_json::json!({ "operation": "hover" });
+        let result = ex.lsp_query(&args);
+        assert!(result.contains("missing 'file'"), "got: {result}");
+    }
+
+    #[test]
+    fn lsp_query_dispatched_via_execute_quiet() {
+        let ex = executor(false, false);
+        let call = crate::client::ToolCallItem {
+            id: "call1".to_string(),
+            kind: "function".to_string(),
+            function: crate::client::ToolCallFunction {
+                name: "lsp".to_string(),
+                arguments: r#"{"operation":"hover","file":"test.xyz","line":1}"#.to_string(),
+            },
+        };
+        let result = ex.execute_quiet(&call);
+        // Should not return "Unknown tool" — the dispatch must reach lsp_query.
+        assert!(!result.contains("Unknown tool"), "got: {result}");
     }
 
     // ── strip_html ────────────────────────────────────────────────────────────

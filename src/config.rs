@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 // ── TOML config file (`shio.toml`) ───────────────────────────────────────────
@@ -15,6 +16,8 @@ pub struct ShioConfig {
     pub paths: PathsSection,
     #[serde(default)]
     pub tools: ToolsSection,
+    #[serde(default)]
+    pub lsp: LspSection,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -54,6 +57,23 @@ pub struct ToolsSection {
     pub confirm_writes: Option<bool>,
     /// Ask for confirmation before running shell commands. Default: true.
     pub confirm_shell: Option<bool>,
+}
+
+/// `[lsp]` section — override which LSP server to use per language or extension.
+///
+/// Keys are language names (`rust`, `python`, `typescript`, …) or file extensions
+/// (`rs`, `py`, `ts`, …).  Values are the command to run (binary + args).
+///
+/// Example:
+/// ```toml
+/// [lsp.servers]
+/// rust = "rust-analyzer"
+/// python = "pylsp"
+/// ```
+#[derive(Debug, Deserialize, Default)]
+pub struct LspSection {
+    #[serde(default)]
+    pub servers: HashMap<String, String>,
 }
 
 impl ShioConfig {
@@ -228,5 +248,34 @@ mod tests {
         std::fs::write(&path, "[[not valid toml").unwrap();
         assert!(ShioConfig::load(&path).is_err());
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn parse_lsp_servers_section() {
+        let src = r#"
+            [lsp.servers]
+            rust = "rust-analyzer"
+            python = "pylsp"
+            ts = "typescript-language-server --stdio"
+        "#;
+        let cfg: ShioConfig = toml::from_str(src).unwrap();
+        assert_eq!(
+            cfg.lsp.servers.get("rust").map(String::as_str),
+            Some("rust-analyzer")
+        );
+        assert_eq!(
+            cfg.lsp.servers.get("python").map(String::as_str),
+            Some("pylsp")
+        );
+        assert_eq!(
+            cfg.lsp.servers.get("ts").map(String::as_str),
+            Some("typescript-language-server --stdio")
+        );
+    }
+
+    #[test]
+    fn parse_empty_lsp_section_gives_empty_map() {
+        let cfg: ShioConfig = toml::from_str("").unwrap();
+        assert!(cfg.lsp.servers.is_empty());
     }
 }

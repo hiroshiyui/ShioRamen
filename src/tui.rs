@@ -46,6 +46,8 @@ enum TuiEvent {
     TurnDone(Vec<Message>),
     /// The turn failed.
     TurnError(String),
+    /// Plan mode was toggled by the model.
+    PlanModeChanged(bool),
 }
 
 // ── Chat display ──────────────────────────────────────────────────────────────
@@ -118,6 +120,7 @@ struct App {
     status: AppStatus,
     anim_frame: u8,    // cycles 0-2 while Waiting, drives the thinking animation
     select_mode: bool, // when true, mouse capture is disabled so the terminal can select text
+    plan_mode: bool,   // true when the model has entered plan/read-only mode
     quit: bool,
 }
 
@@ -194,6 +197,7 @@ async fn run_loop(
         status: AppStatus::Idle,
         anim_frame: 0,
         select_mode: false,
+        plan_mode: false,
         quit: false,
     };
 
@@ -259,10 +263,10 @@ fn render(f: &mut Frame, app: &App) {
     .split(area);
 
     // ── Title bar ──────────────────────────────────────────────────────────────
-    let mode = if app.executor.is_some() {
-        "tools:ON"
-    } else {
-        "tools:OFF"
+    let mode = match (app.executor.is_some(), app.plan_mode) {
+        (true, true) => "plan:ON  tools:RO",
+        (true, false) => "tools:ON",
+        (false, _) => "tools:OFF",
     };
     let title_str = format!(
         " ShioRamen  [{mode}]  [Tab] complete  [PgUp/Dn] scroll  [F2] select  [Ctrl+C] quit"
@@ -809,6 +813,9 @@ fn handle_model_event(app: &mut App, ev: TuiEvent) {
             app.messages = new_msgs;
             app.status = AppStatus::Idle;
             app.auto_scroll = true;
+            // Plan mode is local to each agent turn; reset the display so the
+            // next turn starts with the correct title bar.
+            app.plan_mode = false;
         }
         TuiEvent::TurnError(err) => {
             app.streaming = None;
@@ -824,6 +831,15 @@ fn handle_model_event(app: &mut App, ev: TuiEvent) {
             }
             app.push_entry(EntryKind::Error, &err);
             app.status = AppStatus::Idle;
+        }
+        TuiEvent::PlanModeChanged(on) => {
+            app.plan_mode = on;
+            let msg = if on {
+                "Plan mode ON — tools restricted to read-only."
+            } else {
+                "Plan mode OFF — all tools available."
+            };
+            app.push_info(msg);
         }
     }
 }
@@ -876,6 +892,21 @@ fn finalize_streaming(app: &mut App) {
 
 const MAX_AGENT_ITERATIONS: usize = 20;
 
+/// Tools allowed when plan mode is active (read-only subset).
+const PLAN_MODE_ALLOWED: &[&str] = &[
+    "read_file",
+    "read_file_range",
+    "read_many_files",
+    "search_files",
+    "grep_files",
+    "list_directory",
+    "get_working_directory",
+    "fetch_url",
+    "web_search",
+    "lsp",
+    "exit_plan_mode",
+];
+
 async fn run_model_task(
     client: LlamaClient,
     mut msgs: Vec<Message>,
@@ -921,8 +952,26 @@ async fn run_agent_loop(
     executor: &ToolExecutor,
     tx: &mpsc::UnboundedSender<TuiEvent>,
 ) -> Result<()> {
+    let mut planning_mode = false;
+    // Built lazily on first enter_plan_mode; reused for all subsequent iterations.
+    let mut plan_mode_tools: Option<Vec<ToolDef>> = None;
+
     for _ in 0..MAX_AGENT_ITERATIONS {
-        match client.chat_agent(msgs, temp, tools).await? {
+        // In plan mode, filter the tool list to read-only operations only.
+        // `plan_mode_tools` is computed at most once per session.
+        let tools_for_call: &[ToolDef] = if planning_mode {
+            plan_mode_tools.get_or_insert_with(|| {
+                tools
+                    .iter()
+                    .filter(|t| PLAN_MODE_ALLOWED.contains(&t.function.name))
+                    .cloned()
+                    .collect()
+            })
+        } else {
+            tools
+        };
+
+        match client.chat_agent(msgs, temp, tools_for_call).await? {
             AgentTurn::Text(text) => {
                 let _ = tx.send(TuiEvent::AssistantText(text.clone()));
                 msgs.push(Message::assistant(&text));
@@ -935,6 +984,42 @@ async fn run_agent_loop(
                     // Display the call.
                     let label = fmt_call(call);
                     let _ = tx.send(TuiEvent::ToolStart(label));
+
+                    // Handle plan mode control calls without going through the executor.
+                    if call.function.name == "enter_plan_mode" {
+                        planning_mode = true;
+                        let _ = tx.send(TuiEvent::PlanModeChanged(true));
+                        let _ = tx.send(TuiEvent::ToolDone("Plan mode activated.".to_string()));
+                        msgs.push(Message::tool_result(
+                            &call.id,
+                            "Plan mode activated. You can now read files and explore the \
+                             codebase. Write tools are disabled until you call exit_plan_mode.",
+                        ));
+                        continue;
+                    }
+                    if call.function.name == "exit_plan_mode" {
+                        planning_mode = false;
+                        let _ = tx.send(TuiEvent::PlanModeChanged(false));
+                        let _ = tx.send(TuiEvent::ToolDone("Plan mode deactivated.".to_string()));
+                        msgs.push(Message::tool_result(
+                            &call.id,
+                            "Plan mode deactivated. All tools are now available.",
+                        ));
+                        continue;
+                    }
+
+                    // In plan mode, block any write tools the model might try to call.
+                    if planning_mode && !PLAN_MODE_ALLOWED.contains(&call.function.name.as_str()) {
+                        let _ = tx.send(TuiEvent::ToolDone(
+                            "Blocked — write tools disabled in plan mode.".to_string(),
+                        ));
+                        msgs.push(Message::tool_result(
+                            &call.id,
+                            "Error: write tools are disabled in plan mode. \
+                             Call exit_plan_mode first.",
+                        ));
+                        continue;
+                    }
 
                     // Confirm if needed.
                     let should_run = if needs_confirm(call, executor) {
@@ -951,6 +1036,7 @@ async fn run_agent_loop(
                         let exec = ToolExecutor {
                             confirm_writes: false,
                             confirm_shell: false,
+                            lsp: executor.lsp.clone(),
                         };
                         let call2 = call.clone();
                         tokio::task::spawn_blocking(move || exec.execute_quiet(&call2))

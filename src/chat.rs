@@ -30,6 +30,15 @@ When handling a complex multi-step task, use write_todos to maintain a visible t
 list so the user can track progress. \
 Use read_many_files when you need to inspect several related files at once (e.g. a \
 whole module) rather than calling read_file repeatedly.\n\n\
+Use lsp to get accurate semantic information from the language server: call it with \
+operation=\"hover\" to see a symbol's type and documentation, \"definition\" to find \
+where it is declared, \"references\" to list all usages, or \"diagnostics\" to get \
+current compiler errors and warnings for a file. Prefer lsp over guessing from source \
+text for these queries.\n\n\
+Before making changes that span multiple files, call enter_plan_mode to switch to \
+read-only exploration. In plan mode you can read files, search, and query the LSP \
+without being able to write anything. When you have a clear plan, call exit_plan_mode \
+to restore write access and then apply the changes.\n\n\
 Use plain Unicode symbols (→, ←, ⇒, ×, ≤, ≥, ≠, ≈, …) instead of \
 LaTeX math notation ($\\rightarrow$, $\\leq$, etc.). Output is rendered in a \
 plain terminal, not a LaTeX or Markdown renderer.";
@@ -99,6 +108,7 @@ mod tests {
         let exec = ToolExecutor {
             confirm_writes: true,
             confirm_shell: true,
+            ..Default::default()
         };
         let session = make_session(Some(exec));
         assert!(session.executor.is_some());

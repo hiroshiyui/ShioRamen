@@ -6,6 +6,7 @@ mod config;
 mod context;
 mod doctor;
 mod edit;
+mod lsp;
 mod pull;
 mod server;
 mod tools;
@@ -215,6 +216,7 @@ async fn main() -> Result<()> {
                     Some(tools::ToolExecutor {
                         confirm_writes: cfg.tools.confirm_writes.unwrap_or(true),
                         confirm_shell: cfg.tools.confirm_shell.unwrap_or(true),
+                        lsp: cfg.lsp.servers.clone(),
                     })
                 } else {
                     eprintln!("  Tools disabled for this session.\n");
