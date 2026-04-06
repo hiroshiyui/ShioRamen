@@ -326,6 +326,7 @@ impl LlamaClient {
 /// those tokens and parses every embedded call it finds.
 ///
 /// Expected payload shape: `{"name": "fn_name", "arguments": { … }}`
+/// Also accepts `"parameters"` in place of `"arguments"` (used by some models).
 fn extract_embedded_tool_calls(text: &str) -> Vec<ToolCallItem> {
     // Normalise the special quote token so JSON parsing works.
     let normalised = text.replace("<|\"|>", "\"").replace("<|\"|\u{3e}", "\"");
@@ -357,18 +358,24 @@ fn extract_embedded_tool_calls(text: &str) -> Vec<ToolCallItem> {
         let Some(name) = v["name"].as_str() else {
             continue;
         };
-        let args = &v["arguments"];
-        let args_str = if args.is_null() {
-            "{}".to_string()
-        } else {
-            args.to_string()
-        };
+        // Try "arguments" (OpenAI standard) then "parameters" (used by some models).
+        let args = ["arguments", "parameters"]
+            .iter()
+            .find_map(|k| {
+                let val = &v[k];
+                if val.is_object() || val.is_array() {
+                    Some(val.to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "{}".to_string());
         calls.push(ToolCallItem {
             id: format!("embedded_{i}"),
             kind: "function".to_string(),
             function: ToolCallFunction {
                 name: name.to_string(),
-                arguments: args_str,
+                arguments: args,
             },
         });
     }
@@ -469,6 +476,18 @@ mod tests {
         let calls = extract_embedded_tool_calls(text);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].function.name, "read_file");
+    }
+
+    #[test]
+    fn extract_embedded_tool_calls_accepts_parameters_key() {
+        // Some models use "parameters" instead of "arguments".
+        let text = r#"<tool_call>{"name":"read_file","parameters":{"path":"a.txt"}}</tool_call>"#;
+        let calls = extract_embedded_tool_calls(text);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.name, "read_file");
+        let args: serde_json::Value =
+            serde_json::from_str(&calls[0].function.arguments).unwrap();
+        assert_eq!(args["path"], "a.txt");
     }
 
     #[test]

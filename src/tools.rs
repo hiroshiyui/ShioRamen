@@ -467,10 +467,22 @@ impl ToolExecutor {
     /// Confirmation must be handled externally before calling this.
     /// Used by the TUI agent loop where stderr would corrupt the display.
     pub fn execute_quiet(&self, call: &ToolCallItem) -> String {
-        let args: Value = match serde_json::from_str(&call.function.arguments) {
+        let mut args: Value = match serde_json::from_str(&call.function.arguments) {
             Ok(v) => v,
             Err(e) => return format!("Error parsing arguments: {e}"),
         };
+        // Some local models wrap all arguments under the function name, e.g.
+        // {"patch_file": {"path": "…"}} instead of {"path": "…"}.  Unwrap one
+        // level when that pattern is detected.
+        if let Value::Object(ref map) = args.clone() {
+            if map.len() == 1 {
+                if let Some(inner) = map.get(call.function.name.as_str()) {
+                    if inner.is_object() {
+                        args = inner.clone();
+                    }
+                }
+            }
+        }
         self.dispatch(call.function.name.as_str(), &args)
     }
 
@@ -1495,6 +1507,33 @@ mod tests {
         });
         let out = ex.patch_file(&args);
         assert!(out.starts_with("Error"), "{out}");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn execute_quiet_unwraps_function_name_wrapped_args() {
+        // Some local models send {"patch_file": {"path": …}} instead of {"path": …}.
+        use crate::client::{ToolCallFunction, ToolCallItem};
+        let path = std::env::temp_dir().join("shio_wrap_args.txt");
+        fs::write(&path, "hello world").unwrap();
+        let ex = executor(false, false);
+        let call = ToolCallItem {
+            id: "x".into(),
+            kind: "function".into(),
+            function: ToolCallFunction {
+                name: "patch_file".into(),
+                arguments: serde_json::json!({
+                    "patch_file": {
+                        "path": path.to_str().unwrap(),
+                        "old_str": "hello",
+                        "new_str": "goodbye"
+                    }
+                })
+                .to_string(),
+            },
+        };
+        let out = ex.execute_quiet(&call);
+        assert!(out.contains("Patched"), "{out}");
         let _ = fs::remove_file(&path);
     }
 
