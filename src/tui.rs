@@ -1005,6 +1005,25 @@ async fn run_agent_loop(
             tools
         };
 
+        // Some local models (e.g. Gemma4 with peg-gemma4 template) emit EOS
+        // immediately when the last message has role "tool".  Append a temporary
+        // user nudge to the outgoing slice so the model understands it should
+        // produce a response.  We do NOT push it into `msgs` so it never
+        // appears in the persistent conversation history.
+        let nudged: Vec<Message>;
+        let msgs_to_send: &[Message] = if msgs.last().map(|m| m.role.as_str()) == Some("tool") {
+            nudged = {
+                let mut v = msgs.to_vec();
+                v.push(Message::user(
+                    "Tool result received. Continue the task; call more tools if needed.",
+                ));
+                v
+            };
+            &nudged
+        } else {
+            msgs
+        };
+
         // Some local models occasionally return an empty response (no content,
         // no tool calls).  Retry a few times before surfacing the error.
         let turn = {
@@ -1012,7 +1031,7 @@ async fn run_agent_loop(
             let mut last_err = anyhow::anyhow!("unreachable");
             let mut turn_opt = None;
             for attempt in 0..MAX_EMPTY_RETRIES {
-                match client.chat_agent(msgs, temp, tools_for_call).await {
+                match client.chat_agent(msgs_to_send, temp, tools_for_call).await {
                     Ok(t) => {
                         turn_opt = Some(t);
                         break;
