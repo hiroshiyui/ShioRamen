@@ -21,3 +21,6 @@
 .idea/
 *.swp
 *.swo
+
+# User defined configuration file(s)
+shio.toml.*
