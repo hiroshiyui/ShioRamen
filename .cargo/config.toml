@@ -1,2 +1,1 @@
-[install]
-root = "."
+# intentionally empty — cargo install uses the default $HOME/.cargo/bin
