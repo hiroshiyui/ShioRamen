@@ -207,6 +207,16 @@ impl LlamaClient {
             .content
             .filter(|s| !s.is_empty())
             .ok_or_else(|| anyhow!("model returned no content and no tool calls"))?;
+
+        // Some local models (e.g. peg-gemma4 template) embed tool calls directly
+        // in the text content using template markers instead of the tool_calls
+        // field.  Special tokens like <|"|> stand in for `"` to avoid escaping
+        // issues.  Try to extract those before treating the response as plain text.
+        let embedded = extract_embedded_tool_calls(&text);
+        if !embedded.is_empty() {
+            return Ok(AgentTurn::ToolCalls(embedded));
+        }
+
         Ok(AgentTurn::Text(text))
     }
 
@@ -307,6 +317,64 @@ impl LlamaClient {
     }
 }
 
+/// Extract tool calls that a local model embedded in the content field instead
+/// of in the structured `tool_calls` field.
+///
+/// Some templates (e.g. peg-gemma4) wrap JSON payloads in `<tool_call>` /
+/// `</tool_call>` (or `<|tool_call|>` / `<|/tool_call|>`) markers and replace
+/// the `"` character with the special token `<|"|>`.  This function normalises
+/// those tokens and parses every embedded call it finds.
+///
+/// Expected payload shape: `{"name": "fn_name", "arguments": { … }}`
+fn extract_embedded_tool_calls(text: &str) -> Vec<ToolCallItem> {
+    // Normalise the special quote token so JSON parsing works.
+    let normalised = text.replace("<|\"|>", "\"").replace("<|\"|\u{3e}", "\"");
+
+    // Collect all blocks between supported delimiters.
+    let mut raw_blocks: Vec<&str> = Vec::new();
+    for (open, close) in [
+        ("<tool_call>", "</tool_call>"),
+        ("<|tool_call|>", "<|/tool_call|>"),
+    ] {
+        let mut haystack = normalised.as_str();
+        while let Some(start) = haystack.find(open) {
+            let after_open = &haystack[start + open.len()..];
+            if let Some(end) = after_open.find(close) {
+                raw_blocks.push(&after_open[..end]);
+                haystack = &after_open[end + close.len()..];
+            } else {
+                break;
+            }
+        }
+    }
+
+    let mut calls = Vec::new();
+    for (i, block) in raw_blocks.iter().enumerate() {
+        let trimmed = block.trim();
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+        let Some(name) = v["name"].as_str() else {
+            continue;
+        };
+        let args = &v["arguments"];
+        let args_str = if args.is_null() {
+            "{}".to_string()
+        } else {
+            args.to_string()
+        };
+        calls.push(ToolCallItem {
+            id: format!("embedded_{i}"),
+            kind: "function".to_string(),
+            function: ToolCallFunction {
+                name: name.to_string(),
+                arguments: args_str,
+            },
+        });
+    }
+    calls
+}
+
 fn print_flush(s: &str) {
     use std::io::Write;
     print!("{s}");
@@ -382,5 +450,30 @@ mod tests {
         let json = serde_json::to_string(&m).unwrap();
         assert!(json.contains("call_abc"));
         assert!(json.contains("result"));
+    }
+
+    #[test]
+    fn extract_embedded_tool_calls_parses_tool_call_markers() {
+        let text = r#"<tool_call>{"name":"write_file","arguments":{"path":"a.txt","content":"hi"}}</tool_call>"#;
+        let calls = extract_embedded_tool_calls(text);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.name, "write_file");
+        let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
+        assert_eq!(args["path"], "a.txt");
+    }
+
+    #[test]
+    fn extract_embedded_tool_calls_normalises_special_quote_token() {
+        // peg-gemma4 replaces `"` with `<|"|>` in the JSON payload.
+        let text = "<tool_call>{<|\"|>name<|\"|>:<|\"|>read_file<|\"|>,<|\"|>arguments<|\"|>:{<|\"|>path<|\"|>:<|\"|>story.md<|\"|>}}</tool_call>";
+        let calls = extract_embedded_tool_calls(text);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.name, "read_file");
+    }
+
+    #[test]
+    fn extract_embedded_tool_calls_returns_empty_for_plain_text() {
+        let calls = extract_embedded_tool_calls("Just a plain assistant reply.");
+        assert!(calls.is_empty());
     }
 }
