@@ -43,6 +43,11 @@ case ":${_shio_ldp}:" in
 esac
 unset _shio_ldp
 
+# ── Git hooks ────────────────────────────────────────────────────────────────
+# Point git at the committed hook directory so pre-commit runs for every
+# developer without any manual installation step.
+git -C "$SHIO_ROOT" config core.hooksPath .githooks
+
 # When sourced, stop here — env is wired, nothing else needed.
 if [[ "${BASH_SOURCE[0]:-}" != "${0}" ]]; then
     echo "[shio] PATH and LD_LIBRARY_PATH updated (root: ${SHIO_ROOT})"

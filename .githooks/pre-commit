@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Pre-commit hook: mirrors the CI gates (fmt → clippy → test).
+# Auto-fixes formatting so the commit can proceed without manual intervention.
+set -euo pipefail
+
+echo "▶ cargo fmt"
+cargo fmt
+# Stage any files that rustfmt just changed so the commit includes them.
+git diff --name-only | xargs -r git add
+
+echo "▶ cargo clippy"
+cargo clippy -- -D warnings
+
+echo "▶ cargo test"
+cargo test
