@@ -474,14 +474,12 @@ impl ToolExecutor {
         // Some local models wrap all arguments under the function name, e.g.
         // {"patch_file": {"path": "…"}} instead of {"path": "…"}.  Unwrap one
         // level when that pattern is detected.
-        if let Value::Object(ref map) = args.clone() {
-            if map.len() == 1 {
-                if let Some(inner) = map.get(call.function.name.as_str()) {
-                    if inner.is_object() {
-                        args = inner.clone();
-                    }
-                }
-            }
+        if let Value::Object(ref map) = args.clone()
+            && map.len() == 1
+            && let Some(inner) = map.get(call.function.name.as_str())
+            && inner.is_object()
+        {
+            args = inner.clone();
         }
         self.dispatch(call.function.name.as_str(), &args)
     }
