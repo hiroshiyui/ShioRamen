@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.1.0] — 2026-04-06
+
+### Added
+- Custom skills: define named prompt templates under `[skills.<name>]` in `shio.toml` and invoke them as `/slash-commands` in TUI chat; `/skills` lists all defined skills; tab completion includes skill names dynamically
+- AGENTS.md support: project-specific AI instructions loaded by walking the directory tree upward to the nearest `.git` root, then prepended to the system prompt automatically in `chat`, `ask`, and `edit`
+- `shio init`: scaffold a fully-commented `shio.toml` config file in the current directory
+- LSP client tool (`lsp`): hover, go-to-definition, find-references, and diagnostics from any language server configured in `[lsp.servers]`
+- Plan mode: `enter_plan_mode` / `exit_plan_mode` tools switch the model to read-only exploration before applying multi-file changes
+- Tools: `append_file` for non-destructive file extension
+- TUI: horizontal input scrolling so lines longer than the box width stay fully visible
+
+### Fixed
+- (tui): retry on empty model response instead of hard-failing the turn
+- (tui): nudge local models that emit EOS immediately after a tool result
+- (tui): model task now stored as a `JoinHandle` and aborted on quit, preventing background tasks from outliving the session
+- (client): tool calls embedded in model content (peg-gemma4 template) correctly extracted
+- (tools): local-model argument-wrapper quirks handled in tool dispatch
+- (server): zombie process reaped with `child.wait()` after `kill()` on startup timeout
+- (client): raw bytes accumulated and decoded only up to the last newline, preventing multi-byte UTF-8 sequences from being split across HTTP chunks
+- (tools): SSRF bypass via userinfo in URL authority (`user@192.168.1.1`) closed in `is_private_host`
+- (tools): `write_todos` now creates parent directories before writing
+
+### Changed
+- `ServerArgs::spawn_or_connect` helper centralises server setup across `chat`, `ask`, and `edit`, removing ~36 lines of duplicated host/port/model resolution
+- `require_str!` macro replaces 15 identical 4-line argument-extraction blocks in `tools.rs`
+- `ensure_parent_dirs` helper replaces 4 duplicate `create_dir_all` guard blocks
+- LSP session map uses a single `get_mut` lookup instead of a double lookup
+
+### Documentation
+- README: `/skills`, `/<skill-name>`, `shio init`, LSP config, and skills config reference added
+- `shio.toml`: system prompt synced with the compile-time default (LSP and plan-mode paragraphs were missing)
+
+### Maintenance
+- Test count: 124 → 230
+- `envsetup.sh` added for one-shot llama.cpp build and binary wiring
+- Pre-commit hook committed to `.githooks/` and activated via `core.hooksPath`
+
 ## [v0.0.2] — 2026-04-06
 
 ### Added
