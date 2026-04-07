@@ -166,7 +166,10 @@ pub fn all_tools() -> Vec<ToolDef> {
                 name: "read_file_range",
                 description: "Read a specific range of lines from a file. \
                     Prefer this over read_file for large files when you already \
-                    know which section you need (e.g. from grep_files results).",
+                    know which section you need (e.g. from grep_files results). \
+                    Output lines are prefixed with \"<n> | \" for reference only — \
+                    do NOT include those prefixes in old_str or new_str when \
+                    calling patch_file; use only the raw line content.",
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
