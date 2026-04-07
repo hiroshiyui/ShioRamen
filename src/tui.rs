@@ -1242,6 +1242,12 @@ fn try_expand_skill(app: &App, input: &str) -> Option<String> {
     Some(expand_skill_prompt(&skill.prompt, raw_args))
 }
 
+/// Estimate the serialized byte size of a message, including any tool_calls
+/// JSON that content-only counting would miss.
+fn msg_size(m: &Message) -> usize {
+    serde_json::to_string(m).map_or(0, |s| s.len())
+}
+
 /// Drop the oldest non-system messages from `msgs` until the total content
 /// length in bytes fits within `budget`.  The system prompt (index 0) is
 /// always kept.  Returns the number of messages removed.
@@ -1260,10 +1266,7 @@ fn trim_to_budget_before(
 ) -> usize {
     let mut dropped = 0;
     loop {
-        let total: usize = msgs
-            .iter()
-            .map(|m| m.content.as_deref().map_or(0, str::len))
-            .sum();
+        let total: usize = msgs.iter().map(msg_size).sum();
         // Stop if within budget or no pre-turn messages left to drop (index 0 is
         // always the system prompt; earliest droppable index is 1).
         if total <= budget || protected_from <= 1 {
@@ -1278,9 +1281,11 @@ fn trim_to_budget_before(
 
 fn dispatch_turn(app: &mut App) {
     // Trim conversation history if approaching the context window limit.
-    // Budget: 80 % of ctx_size tokens, estimated at 4 bytes per token.
+    // Budget: 80 % of ctx_size tokens, estimated at 4 bytes per token,
+    // minus the serialized size of tool definitions (fixed per-request overhead).
     if app.ctx_size > 0 {
-        let budget = app.ctx_size as usize * 4 * 80 / 100;
+        let tools_overhead = serde_json::to_string(&app.tools).map_or(0, |s| s.len());
+        let budget = (app.ctx_size as usize * 4 * 80 / 100).saturating_sub(tools_overhead);
         let dropped = trim_to_budget(&mut app.messages, budget);
         if dropped > 0 {
             app.push_info(&format!(
@@ -1510,9 +1515,11 @@ async fn run_agent_loop(
         // ceiling, trim only the pre-turn cross-turn history.  This preserves
         // every tool result from the current turn so the model can keep reasoning
         // over them, while still making room to avoid truncated responses.
-        // Budget: 85 % of ctx, estimated at 4 bytes per token.
+        // Budget: 85 % of ctx, estimated at 4 bytes per token,
+        // minus serialized tool definitions (fixed per-request overhead).
         if ctx_size > 0 {
-            let budget = ctx_size as usize * 4 * 85 / 100;
+            let tools_overhead = serde_json::to_string(tools).map_or(0, |s| s.len());
+            let budget = (ctx_size as usize * 4 * 85 / 100).saturating_sub(tools_overhead);
             trim_to_budget_before(msgs, budget, turn_start);
         }
         // In plan mode, filter the tool list to read-only operations only.
@@ -2149,17 +2156,25 @@ mod tests {
 
     #[test]
     fn trim_to_budget_returns_correct_count() {
-        let mut msgs = vec![sys(), usr("aa"), ast("bb"), usr("cc")];
-        // Total = 13 (sys) + 2 + 2 + 2 = 19 bytes.
-        // Budget = 15: drop usr("aa") → 17, drop ast("bb") → 15 ≤ 15, stop.
-        let dropped = trim_to_budget(&mut msgs, 15);
+        let m0 = sys();
+        let m1 = usr("aa");
+        let m2 = ast("bb");
+        let m3 = usr("cc");
+        // Budget: fits exactly sys + usr("cc") but not sys + ast("bb") + usr("cc").
+        // So two messages must be dropped.
+        let budget = msg_size(&m0) + msg_size(&m3);
+        let mut msgs = vec![m0, m1, m2, m3];
+        let dropped = trim_to_budget(&mut msgs, budget);
         assert_eq!(dropped, 2);
         assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, "system");
+        assert_eq!(msgs[1].content.as_deref(), Some("cc"));
     }
 
     #[test]
-    fn trim_to_budget_skips_messages_with_no_content() {
-        // tool_call messages have content = None; their byte cost is 0.
+    fn trim_to_budget_counts_tool_call_messages() {
+        // tool_call messages have content = None but their JSON is still counted.
+        // With a large budget everything fits and nothing is dropped.
         let no_content = Message {
             role: "assistant".into(),
             content: None,

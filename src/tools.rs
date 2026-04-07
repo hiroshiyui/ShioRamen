@@ -645,9 +645,14 @@ impl ToolExecutor {
 
     fn insert_after_line(&self, args: &Value) -> String {
         let path = require_str!(args, "path");
-        let line_num = match args["line"].as_u64() {
+        let line_num = match args["line"]
+            .as_u64()
+            .or_else(|| args["line"].as_str().and_then(|s| s.parse::<u64>().ok()))
+        {
             Some(n) => n as usize,
-            None => return "Error: missing or invalid 'line' argument".to_string(),
+            None => {
+                return "Error: missing or invalid 'line' argument (expected integer)".to_string();
+            }
         };
         let content = require_str!(args, "content");
         // Ensure inserted content ends with a newline.
@@ -1581,6 +1586,26 @@ mod tests {
         });
         let out = ex.insert_after_line(&args);
         assert!(out.starts_with("Error"), "{out}");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn insert_after_line_accepts_string_line_number() {
+        // Local models sometimes stringify numbers; must tolerate "42" as well as 42.
+        let path = std::env::temp_dir().join("shio_insert_strnum.txt");
+        fs::write(&path, "line1\nline2\n").unwrap();
+        let ex = executor(false, false);
+        let args = serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "line": "1",
+            "content": "inserted"
+        });
+        let out = ex.insert_after_line(&args);
+        assert!(!out.starts_with("Error"), "{out}");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "line1\ninserted\nline2\n"
+        );
         let _ = fs::remove_file(&path);
     }
 
