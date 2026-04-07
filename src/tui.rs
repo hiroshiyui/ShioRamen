@@ -1673,9 +1673,23 @@ async fn run_agent_loop(
                         .collect::<String>();
                     let _ = tx.send(TuiEvent::ToolDone(preview));
 
+                    // Cap the result to the remaining context budget so a single
+                    // large tool result cannot push the total over the limit.
+                    // Always leave at least 512 chars so error messages come through.
+                    let result_cap = if ctx_size > 0 {
+                        let tools_overhead = serde_json::to_string(tools).map_or(0, |s| s.len());
+                        let current_size: usize = msgs.iter().map(msg_size).sum();
+                        let budget =
+                            (ctx_size as usize * 4 * 85 / 100).saturating_sub(tools_overhead);
+                        budget.saturating_sub(current_size).max(512)
+                    } else {
+                        executor.max_tool_result_chars
+                    }
+                    .min(executor.max_tool_result_chars);
+
                     msgs.push(Message::tool_result(
                         &call.id,
-                        cap_tool_result(result, executor.max_tool_result_chars),
+                        cap_tool_result(result, result_cap),
                     ));
                 }
             }
