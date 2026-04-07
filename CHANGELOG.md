@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.3.0] — 2026-04-07
+
+### Added
+- (tui): display thinking blocks from extended thinking models in a collapsible panel
+- (tui): Esc to abort agent turn, `/clear` to reset history, `/stats` to show context usage
+- (tools): `insert_after_line` tool for positional line insertion
+
+### Fixed
+- (tools): strip box-drawing `│` prefix from `new_str` in patch operations; preserve plain `|`
+- (tools): strip line-number prefixes in `write_file`, `append_file`, and `patch_file`; restore them only in `read_file_range` output
+- (tools): preserve verbatim content in `write`/`append`/`insert`; strip prefixes only in patch `old_str`
+- (tools): `patch_file` fallback tolerates trailing whitespace and rejects whitespace-only `old_str`
+- (tui): dynamic tool-result cap scaled to configured context window size
+- (tui): accurate context budget tracking; trim only pre-turn history mid-loop to prevent overflow
+- (tui): remove mid-turn history trim from agent loop that caused incorrect trimming
+- (client): correct `SlotInfo` schema deserialization
+
+### Changed
+- (tools): `read_file_range` outputs raw lines without embedded line-number prefixes
+
+### Maintenance
+- (prompt): warn model not to include line-number prefixes in `patch_file` arguments
+- (prompt): forbid `append_file` for in-place edits; steer to `patch_file`
+- (prompt): instruct model to call tools immediately without preamble
+
 ## [v0.2.0] — 2026-04-07
 
 ### Added
