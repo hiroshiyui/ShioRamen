@@ -572,7 +572,8 @@ impl ToolExecutor {
 
     fn write_file(&self, args: &Value) -> String {
         let path = require_str!(args, "path");
-        let content = require_str!(args, "content");
+        let content = strip_line_number_prefix(require_str!(args, "content"));
+        let content = content.as_str();
 
         if self.confirm_writes && !confirm(&format!("{YELLOW}Write to {path}?{RESET}")) {
             return "Aborted by user.".into();
@@ -590,7 +591,8 @@ impl ToolExecutor {
 
     fn append_file(&self, args: &Value) -> String {
         let path = require_str!(args, "path");
-        let content = require_str!(args, "content");
+        let content = strip_line_number_prefix(require_str!(args, "content"));
+        let content = content.as_str();
 
         if self.confirm_writes && !confirm(&format!("{YELLOW}Append to {path}?{RESET}")) {
             return "Aborted by user.".into();
@@ -812,6 +814,7 @@ fn strip_line_number_prefix(s: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+        + if s.ends_with('\n') { "\n" } else { "" }
 }
 
 impl ToolExecutor {
@@ -1414,6 +1417,20 @@ mod tests {
             "{result}"
         );
         assert_eq!(fs::read_to_string(&path).unwrap(), "written");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn write_file_strips_line_number_prefix() {
+        let path = std::env::temp_dir().join("shio_write_strip.txt");
+        let _ = fs::remove_file(&path);
+        let ex = executor(false, false);
+        let args = serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "content": "    1 │ first\n    2 │ second"
+        });
+        ex.write_file(&args);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "first\nsecond");
         let _ = fs::remove_file(&path);
     }
 
@@ -2076,6 +2093,20 @@ mod tests {
         let ex = executor(false, false);
         let args = serde_json::json!({ "path": "/tmp/shio_whatever.txt" });
         assert_eq!(ex.append_file(&args), "Error: missing 'content' argument");
+    }
+
+    #[test]
+    fn append_file_strips_line_number_prefix() {
+        let path = std::env::temp_dir().join("shio_append_strip.txt");
+        let _ = fs::remove_file(&path);
+        let ex = executor(false, false);
+        let args = serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "content": "    1 │ appended"
+        });
+        ex.append_file(&args);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "appended");
+        let _ = fs::remove_file(&path);
     }
 
     // ── execute_quiet: argument-unwrap edge cases ─────────────────────────────
