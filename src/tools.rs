@@ -166,10 +166,7 @@ pub fn all_tools() -> Vec<ToolDef> {
                 name: "read_file_range",
                 description: "Read a specific range of lines from a file. \
                     Prefer this over read_file for large files when you already \
-                    know which section you need (e.g. from grep_files results). \
-                    Output lines are prefixed with \"<n> | \" for reference only — \
-                    do NOT include those prefixes in old_str or new_str when \
-                    calling patch_file; use only the raw line content.",
+                    know which section you need (e.g. from grep_files results).",
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -749,14 +746,14 @@ impl ToolExecutor {
             return format!("Error: start_line ({start}) is after end_line ({end})");
         }
 
-        let lines: Vec<String> = content
+        let lines: Vec<&str> = content
             .lines()
             .enumerate()
             .filter(|(i, _)| {
                 let lineno = i + 1;
                 lineno >= start && lineno <= end
             })
-            .map(|(i, line)| format!("{:>5} │ {line}", i + 1))
+            .map(|(_, line)| line)
             .collect();
 
         if lines.is_empty() {
@@ -1417,7 +1414,7 @@ mod tests {
     // ── read_file_range ───────────────────────────────────────────────────────
 
     #[test]
-    fn read_file_range_returns_numbered_lines() {
+    fn read_file_range_returns_lines_without_prefix() {
         let path = std::env::temp_dir().join("shio_range.txt");
         fs::write(&path, "line1\nline2\nline3\nline4\nline5\n").unwrap();
         let ex = executor(false, false);
@@ -1431,6 +1428,11 @@ mod tests {
         assert!(out.contains("line4"), "{out}");
         assert!(!out.contains("line1"), "{out}");
         assert!(!out.contains("line5"), "{out}");
+        // Output must be raw content — no "N │" line-number prefixes.
+        assert!(
+            !out.contains('│'),
+            "unexpected line-number prefix in output: {out}"
+        );
         let _ = fs::remove_file(&path);
     }
 
