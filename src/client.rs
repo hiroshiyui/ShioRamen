@@ -330,6 +330,33 @@ impl LlamaClient {
     }
 }
 
+// ── Slot info ────────────────────────────────────────────────────────────────
+
+/// A single KV-cache slot as returned by `GET /slots`.
+#[derive(Debug, Deserialize)]
+pub struct SlotInfo {
+    pub id: u32,
+    /// 0 = idle, 1 = processing
+    pub state: u8,
+    pub n_ctx: u32,
+    pub n_past: u32,
+}
+
+impl LlamaClient {
+    /// Fetch the list of KV-cache slots from the server.
+    pub async fn slots(&self) -> Result<Vec<SlotInfo>> {
+        let resp = self
+            .http
+            .get(format!("{}/slots", self.base_url))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Vec<SlotInfo>>()
+            .await?;
+        Ok(resp)
+    }
+}
+
 /// Extract tool calls that a local model embedded in the content field instead
 /// of in the structured `tool_calls` field.
 ///
@@ -532,5 +559,49 @@ mod tests {
         let args1: serde_json::Value = serde_json::from_str(&calls[1].function.arguments).unwrap();
         assert_eq!(args0["path"], "a.txt");
         assert_eq!(args1["path"], "b.txt");
+    }
+
+    // ── SlotInfo ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn slot_info_deserialises_idle_slot() {
+        let json = r#"{"id":0,"state":0,"n_ctx":8192,"n_past":512}"#;
+        let slot: SlotInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(slot.id, 0);
+        assert_eq!(slot.state, 0);
+        assert_eq!(slot.n_ctx, 8192);
+        assert_eq!(slot.n_past, 512);
+    }
+
+    #[test]
+    fn slot_info_deserialises_busy_slot() {
+        let json = r#"{"id":3,"state":1,"n_ctx":32768,"n_past":32665}"#;
+        let slot: SlotInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(slot.id, 3);
+        assert_eq!(slot.state, 1);
+        assert_eq!(slot.n_ctx, 32768);
+        assert_eq!(slot.n_past, 32665);
+    }
+
+    #[test]
+    fn slot_info_deserialises_array() {
+        let json = r#"[
+            {"id":0,"state":0,"n_ctx":8192,"n_past":0},
+            {"id":1,"state":1,"n_ctx":8192,"n_past":4096}
+        ]"#;
+        let slots: Vec<SlotInfo> = serde_json::from_str(json).unwrap();
+        assert_eq!(slots.len(), 2);
+        assert_eq!(slots[0].n_past, 0);
+        assert_eq!(slots[1].n_past, 4096);
+    }
+
+    #[test]
+    fn slot_info_ignores_extra_fields() {
+        // llama-server returns many more fields; we only care about our four.
+        let json =
+            r#"{"id":0,"state":0,"n_ctx":4096,"n_past":100,"n_predict":200,"is_processing":false}"#;
+        let slot: SlotInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(slot.n_ctx, 4096);
+        assert_eq!(slot.n_past, 100);
     }
 }

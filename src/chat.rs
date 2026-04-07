@@ -55,6 +55,8 @@ pub struct ChatSession {
     pub(crate) tools: Vec<ToolDef>,
     /// Custom skills loaded from `[skills.*]` in shio.toml.
     pub(crate) skills: HashMap<String, SkillDef>,
+    /// Context window size in tokens (0 = unknown).
+    pub(crate) ctx_size: u32,
 }
 
 impl ChatSession {
@@ -64,6 +66,7 @@ impl ChatSession {
         system_prompt: String,
         executor: Option<ToolExecutor>,
         skills: HashMap<String, SkillDef>,
+        ctx_size: u32,
     ) -> Self {
         Self {
             client,
@@ -72,6 +75,7 @@ impl ChatSession {
             executor,
             tools: all_tools(),
             skills,
+            ctx_size,
         }
     }
 
@@ -94,6 +98,7 @@ mod tests {
             "be helpful".to_string(),
             executor,
             HashMap::new(),
+            0,
         )
     }
 
@@ -145,7 +150,7 @@ mod tests {
             },
         );
         let client = LlamaClient::new("http://127.0.0.1:1".to_string());
-        let session = ChatSession::new(client, 0.7, "sys".to_string(), None, skills);
+        let session = ChatSession::new(client, 0.7, "sys".to_string(), None, skills, 0);
         assert_eq!(session.skills.len(), 1);
         assert!(session.skills.contains_key("commit"));
     }

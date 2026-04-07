@@ -237,9 +237,16 @@ async fn main() -> Result<()> {
             } else {
                 None
             };
+            let ctx_size = args.server.ctx.or(cfg.server.ctx).unwrap_or(DEFAULT_CTX);
             let client = LlamaClient::new(server.url.clone());
-            let session =
-                ChatSession::new(client, temp, system_prompt, executor, cfg.skills.clone());
+            let session = ChatSession::new(
+                client,
+                temp,
+                system_prompt,
+                executor,
+                cfg.skills.clone(),
+                ctx_size,
+            );
             session.run().await?;
             drop(server);
         }

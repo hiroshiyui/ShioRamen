@@ -141,6 +141,10 @@ struct App {
 
     // Handle to the currently running model task; aborted on quit.
     model_task: Option<tokio::task::JoinHandle<()>>,
+
+    /// Context window size in tokens (0 = unknown).  Used to trim history
+    /// before dispatch so we never send more than ~80 % of the context.
+    ctx_size: u32,
 }
 
 enum AppStatus {
@@ -222,19 +226,22 @@ async fn run_loop(
         plan_mode: false,
         quit: false,
         model_task: None,
+        ctx_size: session.ctx_size,
     };
 
     let welcome = match (has_tools, has_skills) {
         (true, true) => {
-            "ShioRamen ready — tool use ON.  /reset /include <path> /tools /skills /exit   PgUp/Dn to scroll"
+            "ShioRamen ready — tool use ON.  /clear /stats /include <path> /tools /skills /exit   PgUp/Dn to scroll"
         }
         (true, false) => {
-            "ShioRamen ready — tool use ON.  /reset /include <path> /tools /exit   PgUp/Dn to scroll"
+            "ShioRamen ready — tool use ON.  /clear /stats /include <path> /tools /exit   PgUp/Dn to scroll"
         }
         (false, true) => {
-            "ShioRamen ready.  /reset /include <path> /skills /exit   PgUp/Dn to scroll"
+            "ShioRamen ready.  /clear /stats /include <path> /skills /exit   PgUp/Dn to scroll"
         }
-        (false, false) => "ShioRamen ready.  /reset /include <path> /exit   PgUp/Dn to scroll",
+        (false, false) => {
+            "ShioRamen ready.  /clear /stats /include <path> /exit   PgUp/Dn to scroll"
+        }
     };
     app.push_info(welcome);
 
@@ -694,10 +701,20 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         return false;
     }
 
-    // While waiting for model: only Ctrl+C quits.
+    // While waiting for model: Esc aborts the turn; Ctrl+C quits.
     if matches!(app.status, AppStatus::Waiting) {
-        if key.code == Char('c') && key.modifiers.contains(Mods::CONTROL) {
-            return true;
+        match key.code {
+            Esc => {
+                if let Some(h) = app.model_task.take() {
+                    h.abort();
+                }
+                finalize_streaming(app);
+                app.status = AppStatus::Idle;
+                app.plan_mode = false;
+                app.push_info("Interrupted.");
+            }
+            Char('c') if key.modifiers.contains(Mods::CONTROL) => return true,
+            _ => {}
         }
         return false;
     }
@@ -906,7 +923,16 @@ fn hist_next(app: &mut App) {
 }
 
 fn do_complete(app: &mut App) {
-    const SLASH_CMDS: &[&str] = &["/exit", "/quit", "/reset", "/include ", "/tools", "/skills"];
+    const SLASH_CMDS: &[&str] = &[
+        "/exit",
+        "/quit",
+        "/reset",
+        "/clear",
+        "/stats",
+        "/include ",
+        "/tools",
+        "/skills",
+    ];
 
     let typed = app.input[..app.cursor].to_string();
 
@@ -1071,11 +1097,35 @@ async fn submit(app: &mut App) {
             app.status = AppStatus::ConfirmExit;
             return;
         }
-        "/reset" => {
+        "/reset" | "/clear" => {
             app.messages.truncate(1);
             app.entries.clear();
             app.streaming = None;
             app.push_info("History cleared.");
+            return;
+        }
+        "/stats" => {
+            match app.client.slots().await {
+                Ok(slots) => {
+                    let lines: Vec<String> = slots
+                        .iter()
+                        .map(|s| {
+                            let state = if s.state == 0 { "idle" } else { "busy" };
+                            let pct = if s.n_ctx > 0 {
+                                s.n_past * 100 / s.n_ctx
+                            } else {
+                                0
+                            };
+                            format!(
+                                "slot {}: {state}  {}/{} tokens used ({}%)",
+                                s.id, s.n_past, s.n_ctx, pct
+                            )
+                        })
+                        .collect();
+                    app.push_info(&lines.join("\n"));
+                }
+                Err(e) => app.push_entry(EntryKind::Error, &format!("stats: {e}")),
+            }
             return;
         }
         "/tools" => {
@@ -1192,7 +1242,38 @@ fn try_expand_skill(app: &App, input: &str) -> Option<String> {
     Some(expand_skill_prompt(&skill.prompt, raw_args))
 }
 
+/// Drop the oldest non-system messages from `msgs` until the total content
+/// length in bytes fits within `budget`.  The system prompt (index 0) is
+/// always kept.  Returns the number of messages removed.
+fn trim_to_budget(msgs: &mut Vec<Message>, budget: usize) -> usize {
+    let mut dropped = 0;
+    loop {
+        let total: usize = msgs
+            .iter()
+            .map(|m| m.content.as_deref().map_or(0, str::len))
+            .sum();
+        if total <= budget || msgs.len() <= 1 {
+            break;
+        }
+        msgs.remove(1);
+        dropped += 1;
+    }
+    dropped
+}
+
 fn dispatch_turn(app: &mut App) {
+    // Trim conversation history if approaching the context window limit.
+    // Budget: 80 % of ctx_size tokens, estimated at 4 bytes per token.
+    if app.ctx_size > 0 {
+        let budget = app.ctx_size as usize * 4 * 80 / 100;
+        let dropped = trim_to_budget(&mut app.messages, budget);
+        if dropped > 0 {
+            app.push_info(&format!(
+                "Context limit approaching — dropped {dropped} old message(s) from history."
+            ));
+        }
+    }
+
     let client = app.client.clone();
     let msgs = app.messages.clone();
     let temp = app.temperature;
@@ -1953,5 +2034,81 @@ mod tests {
     fn replace_latex_handles_multiple_in_one_string() {
         let out = replace_latex("$\\leq$ x $\\geq$ y".to_string());
         assert_eq!(out, "≤ x ≥ y");
+    }
+
+    // ── trim_to_budget ────────────────────────────────────────────────────────
+
+    fn sys() -> Message {
+        Message::system("system prompt")
+    }
+    fn usr(s: &str) -> Message {
+        Message::user(s)
+    }
+    fn ast(s: &str) -> Message {
+        Message::assistant(s)
+    }
+
+    #[test]
+    fn trim_to_budget_no_op_when_within_budget() {
+        let mut msgs = vec![sys(), usr("hello"), ast("hi")];
+        let dropped = trim_to_budget(&mut msgs, 1000);
+        assert_eq!(dropped, 0);
+        assert_eq!(msgs.len(), 3);
+    }
+
+    #[test]
+    fn trim_to_budget_drops_oldest_non_system_first() {
+        // "hello" (5 bytes) + "world" (5 bytes) = 10 total content bytes.
+        // Budget of 6 forces one drop; the system prompt content "system prompt"
+        // (13 bytes) alone already exceeds 6, but msgs.len() stops at 1.
+        let mut msgs = vec![sys(), usr("hello"), ast("world")];
+        // Budget that fits "world" but not "hello" + "world".
+        let dropped = trim_to_budget(&mut msgs, 5);
+        // Should drop usr("hello") first (index 1).
+        assert!(dropped >= 1);
+        assert!(!msgs.iter().any(|m| m.content.as_deref() == Some("hello")));
+    }
+
+    #[test]
+    fn trim_to_budget_always_keeps_system_prompt() {
+        let mut msgs = vec![sys()];
+        let dropped = trim_to_budget(&mut msgs, 0);
+        assert_eq!(dropped, 0);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].role, "system");
+    }
+
+    #[test]
+    fn trim_to_budget_drops_multiple_messages() {
+        let mut msgs = vec![sys(), usr("aaaa"), ast("bbbb"), usr("cccc"), ast("dddd")];
+        // Budget of 4 bytes: only one message's content fits; drop until we
+        // can't drop any more (len == 1) since system prompt alone is 13 bytes.
+        let dropped = trim_to_budget(&mut msgs, 4);
+        assert_eq!(dropped, 4);
+        assert_eq!(msgs.len(), 1);
+    }
+
+    #[test]
+    fn trim_to_budget_returns_correct_count() {
+        let mut msgs = vec![sys(), usr("aa"), ast("bb"), usr("cc")];
+        // Total = 13 (sys) + 2 + 2 + 2 = 19 bytes.
+        // Budget = 15: drop usr("aa") → 17, drop ast("bb") → 15 ≤ 15, stop.
+        let dropped = trim_to_budget(&mut msgs, 15);
+        assert_eq!(dropped, 2);
+        assert_eq!(msgs.len(), 2);
+    }
+
+    #[test]
+    fn trim_to_budget_skips_messages_with_no_content() {
+        // tool_call messages have content = None; their byte cost is 0.
+        let no_content = Message {
+            role: "assistant".into(),
+            content: None,
+            tool_calls: Some(vec![]),
+            tool_call_id: None,
+        };
+        let mut msgs = vec![sys(), no_content, usr("hello")];
+        let dropped = trim_to_budget(&mut msgs, 1000);
+        assert_eq!(dropped, 0);
     }
 }

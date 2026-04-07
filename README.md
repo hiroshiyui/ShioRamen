@@ -159,6 +159,8 @@ Options:
 | Key / Command | Action |
 |---------------|--------|
 | `Enter` | Send message |
+| `Alt+Enter` | Insert a literal newline (multi-line input) |
+| `Esc` | Abort the current model turn (while model is thinking) |
 | `Ctrl+C` / `Ctrl+D` | Quit |
 | `PgUp` / `PgDn` | Scroll chat history up / down (10 lines) |
 | `Up` / `Down` | Browse input history |
@@ -172,7 +174,8 @@ Options:
 | `Ctrl+E` | Move cursor to end of line |
 | `Ctrl+U` | Erase entire input line |
 | `Ctrl+W` | Erase word before cursor |
-| `/reset` | Clear conversation history (keeps system prompt) |
+| `/clear` / `/reset` | Clear conversation history (keeps system prompt) |
+| `/stats` | Show server context usage (tokens used / available per slot) |
 | `/include <path>` | Load a file or directory into context |
 | `/tools` | List available tools |
 | `/skills` | List defined custom skills |
