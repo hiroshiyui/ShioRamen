@@ -746,14 +746,14 @@ impl ToolExecutor {
             return format!("Error: start_line ({start}) is after end_line ({end})");
         }
 
-        let lines: Vec<&str> = content
+        let lines: Vec<String> = content
             .lines()
             .enumerate()
             .filter(|(i, _)| {
                 let lineno = i + 1;
                 lineno >= start && lineno <= end
             })
-            .map(|(_, line)| line)
+            .map(|(i, line)| format!("{:>5} │ {line}", i + 1))
             .collect();
 
         if lines.is_empty() {
@@ -762,11 +762,65 @@ impl ToolExecutor {
             lines.join("\n")
         }
     }
+}
 
+/// Strip the `  N │ ` line-number prefix that `read_file_range` adds to each
+/// line.  If the model copies output from `read_file_range` verbatim into
+/// `old_str` or `new_str`, this prevents the prefix from breaking the match.
+/// Lines that do not start with the prefix are returned unchanged.
+fn strip_line_number_prefix(s: &str) -> String {
+    s.lines()
+        .map(|line| {
+            // Match: optional spaces, digits, optional spaces, │ or |, optional space.
+            let mut chars = line.char_indices().peekable();
+            // skip leading spaces
+            while chars.peek().map(|(_, c)| *c == ' ').unwrap_or(false) {
+                chars.next();
+            }
+            // must have at least one digit
+            let digit_start = chars.peek().map(|(i, _)| *i).unwrap_or(line.len());
+            let mut has_digit = false;
+            while chars
+                .peek()
+                .map(|(_, c)| c.is_ascii_digit())
+                .unwrap_or(false)
+            {
+                has_digit = true;
+                chars.next();
+            }
+            if !has_digit {
+                return line;
+            }
+            // skip spaces between digits and separator
+            while chars.peek().map(|(_, c)| *c == ' ').unwrap_or(false) {
+                chars.next();
+            }
+            // must have │ (U+2502) or | separator
+            match chars.peek() {
+                Some((_, '│')) | Some((_, '|')) => {
+                    chars.next();
+                }
+                _ => return line,
+            }
+            // skip one optional space after separator
+            if chars.peek().map(|(_, c)| *c == ' ').unwrap_or(false) {
+                chars.next();
+            }
+            let content_start = chars.peek().map(|(i, _)| *i).unwrap_or(line.len());
+            let _ = digit_start; // suppress unused warning
+            &line[content_start..]
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+impl ToolExecutor {
     fn patch_file(&self, args: &Value) -> String {
         let path = require_str!(args, "path");
-        let old_str = require_str!(args, "old_str");
-        let new_str = require_str!(args, "new_str");
+        let old_str = strip_line_number_prefix(require_str!(args, "old_str"));
+        let new_str = strip_line_number_prefix(require_str!(args, "new_str"));
+        let old_str = old_str.as_str();
+        let new_str = new_str.as_str();
 
         if self.confirm_writes && !confirm(&format!("{YELLOW}Patch {path}?{RESET}")) {
             return "Aborted by user.".into();
@@ -1414,7 +1468,7 @@ mod tests {
     // ── read_file_range ───────────────────────────────────────────────────────
 
     #[test]
-    fn read_file_range_returns_lines_without_prefix() {
+    fn read_file_range_returns_numbered_lines() {
         let path = std::env::temp_dir().join("shio_range.txt");
         fs::write(&path, "line1\nline2\nline3\nline4\nline5\n").unwrap();
         let ex = executor(false, false);
@@ -1428,10 +1482,10 @@ mod tests {
         assert!(out.contains("line4"), "{out}");
         assert!(!out.contains("line1"), "{out}");
         assert!(!out.contains("line5"), "{out}");
-        // Output must be raw content — no "N │" line-number prefixes.
+        // Line numbers must be present so the model knows where it is.
         assert!(
-            !out.contains('│'),
-            "unexpected line-number prefix in output: {out}"
+            out.contains('│'),
+            "expected line-number prefix in output: {out}"
         );
         let _ = fs::remove_file(&path);
     }
@@ -1446,6 +1500,55 @@ mod tests {
         assert!(out.contains('b'), "{out}");
         assert!(out.contains('c'), "{out}");
         assert!(!out.contains('a'), "{out}");
+        let _ = fs::remove_file(&path);
+    }
+
+    // ── strip_line_number_prefix ──────────────────────────────────────────────
+
+    #[test]
+    fn strip_prefix_removes_box_drawing_prefix() {
+        // read_file_range format: "    2 │ content"
+        assert_eq!(strip_line_number_prefix("    2 │ hello"), "hello");
+    }
+
+    #[test]
+    fn strip_prefix_removes_pipe_prefix() {
+        // Some models may copy with | instead of │
+        assert_eq!(
+            strip_line_number_prefix("   21 | content here"),
+            "content here"
+        );
+    }
+
+    #[test]
+    fn strip_prefix_leaves_plain_lines_unchanged() {
+        assert_eq!(
+            strip_line_number_prefix("no prefix at all"),
+            "no prefix at all"
+        );
+    }
+
+    #[test]
+    fn strip_prefix_handles_multiline_mixed() {
+        let input = "    1 │ first\nsecond line\n    3 │ third";
+        let out = strip_line_number_prefix(input);
+        assert_eq!(out, "first\nsecond line\nthird");
+    }
+
+    #[test]
+    fn patch_file_tolerates_line_number_prefix_in_old_str() {
+        let path = std::env::temp_dir().join("shio_patch_prefix.txt");
+        fs::write(&path, "hello world\n").unwrap();
+        let ex = executor(false, false);
+        // Simulate model passing read_file_range output verbatim as old_str.
+        let args = serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "old_str": "    1 │ hello world",
+            "new_str": "    1 │ goodbye world",
+        });
+        let out = ex.patch_file(&args);
+        assert!(out.contains("Patched") || out.contains("bytes"), "{out}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "goodbye world\n");
         let _ = fs::remove_file(&path);
     }
 
