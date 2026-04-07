@@ -1281,9 +1281,8 @@ fn dispatch_turn(app: &mut App) {
     let executor = app.executor.clone();
     let tx = app.event_tx.clone();
 
-    let ctx_size = app.ctx_size;
     app.model_task = Some(tokio::spawn(async move {
-        run_model_task(client, msgs, temp, tools, executor, tx, ctx_size).await;
+        run_model_task(client, msgs, temp, tools, executor, tx).await;
     }));
 }
 
@@ -1420,10 +1419,9 @@ async fn run_model_task(
     tools: Vec<ToolDef>,
     executor: Option<ToolExecutor>,
     tx: mpsc::UnboundedSender<TuiEvent>,
-    ctx_size: u32,
 ) {
     let result = if let Some(exec) = &executor {
-        run_agent_loop(&client, &mut msgs, temp, &tools, exec, &tx, ctx_size).await
+        run_agent_loop(&client, &mut msgs, temp, &tools, exec, &tx).await
     } else {
         run_stream_turn(&client, &mut msgs, temp, &tx).await
     };
@@ -1484,7 +1482,6 @@ async fn run_agent_loop(
     tools: &[ToolDef],
     executor: &ToolExecutor,
     tx: &mpsc::UnboundedSender<TuiEvent>,
-    ctx_size: u32,
 ) -> Result<()> {
     let mut planning_mode = false;
     // Built lazily on first enter_plan_mode; reused for all subsequent iterations.
@@ -1504,13 +1501,6 @@ async fn run_agent_loop(
         } else {
             tools
         };
-
-        // Trim history before every API call so accumulated tool results
-        // don't push the request past the context window.
-        if ctx_size > 0 {
-            let budget = ctx_size as usize * 4 * 80 / 100;
-            trim_to_budget(msgs, budget);
-        }
 
         // Some local models (e.g. Gemma4 with peg-gemma4 template) emit EOS
         // immediately when the last message has role "tool".  Append a temporary
