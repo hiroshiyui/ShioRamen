@@ -43,7 +43,11 @@ without being able to write anything. When you have a clear plan, call exit_plan
 to restore write access and then apply the changes.\n\n\
 Use plain Unicode symbols (→, ←, ⇒, ×, ≤, ≥, ≠, ≈, …) instead of \
 LaTeX math notation ($\\rightarrow$, $\\leq$, etc.). Output is rendered in a \
-plain terminal, not a LaTeX or Markdown renderer.";
+plain terminal, not a LaTeX or Markdown renderer.\n\n\
+When you decide to call a tool, call it immediately — do not emit a \
+\"please wait\" or \"I will now…\" message before making the call. \
+Announcing an action without performing it forces the user to prompt \
+you again to actually do it.";
 
 pub struct ChatSession {
     pub(crate) client: LlamaClient,
