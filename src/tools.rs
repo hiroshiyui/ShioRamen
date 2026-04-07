@@ -77,9 +77,9 @@ pub fn all_tools() -> Vec<ToolDef> {
             function: FunctionSpec {
                 name: "append_file",
                 description: "Append content to the end of a file, creating it if it does not \
-                    exist. The existing content is always preserved. No need to read the file \
-                    first — use this instead of read_file + write_file when you only need to add \
-                    content at the end.",
+                    exist. Use this ONLY to add new content at the end of a file. \
+                    Do NOT use this to replace, rewrite, or refactor existing lines — \
+                    use patch_file for in-place edits. The existing content is always preserved.",
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -191,8 +191,9 @@ pub fn all_tools() -> Vec<ToolDef> {
                 name: "patch_file",
                 description: "Apply a targeted find-and-replace edit to a file. \
                     Finds the exact string old_str (must appear exactly once) and \
-                    replaces it with new_str. Safer than write_file for small edits \
-                    because the rest of the file is untouched.",
+                    replaces it with new_str. Use this for ALL in-place edits: \
+                    modifying, refactoring, or rewriting existing lines. \
+                    Safer than write_file for focused edits because the rest of the file is untouched.",
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {

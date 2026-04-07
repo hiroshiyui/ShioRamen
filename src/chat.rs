@@ -17,6 +17,8 @@ actual source rather than guessing. For large files, use read_file_range to read
 only the relevant section. Always read a file before editing it. \
 Prefer patch_file for targeted edits over full rewrites with write_file — \
 patch_file is safer because it only modifies the matched region. \
+Never use append_file to modify or refactor existing lines; append_file is \
+strictly for adding new content at the end of a file. \
 Use get_working_directory to orient yourself before constructing file paths, and \
 create_directory (not run_shell) when you need to make new directories. \
 If a task would touch more than 3 files, summarize your plan and ask for \
