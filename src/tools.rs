@@ -850,10 +850,17 @@ impl ToolExecutor {
 /// line.  If the model copies output from `read_file_range` verbatim into
 /// `old_str` or `new_str`, this prevents the prefix from breaking the match.
 /// Lines that do not start with the prefix are returned unchanged.
-fn strip_line_number_prefix(s: &str) -> String {
+///
+/// When `box_drawing_only` is `true`, only the `│` (U+2502 box-drawing)
+/// separator is recognised.  Plain `|` (U+007C) is left alone so that
+/// Markdown tables and similar document content are never mangled.
+/// Use `box_drawing_only = false` only for `old_str` matching where the
+/// model may have substituted `|` for `│`.
+fn strip_line_number_prefix(s: &str, box_drawing_only: bool) -> String {
     s.lines()
         .map(|line| {
-            // Match: optional spaces, digits, optional spaces, │ or |, optional space.
+            // Match: optional spaces, digits, optional spaces, │ (or | if not
+            // box_drawing_only), optional space.
             let mut chars = line.char_indices().peekable();
             // skip leading spaces
             while chars.peek().map(|(_, c)| *c == ' ').unwrap_or(false) {
@@ -877,9 +884,12 @@ fn strip_line_number_prefix(s: &str) -> String {
             while chars.peek().map(|(_, c)| *c == ' ').unwrap_or(false) {
                 chars.next();
             }
-            // must have │ (U+2502) or | separator
+            // must have │ (U+2502) — or plain | when not in box_drawing_only mode
             match chars.peek() {
-                Some((_, '│')) | Some((_, '|')) => {
+                Some((_, '│')) => {
+                    chars.next();
+                }
+                Some((_, '|')) if !box_drawing_only => {
                     chars.next();
                 }
                 _ => return line,
@@ -900,9 +910,13 @@ fn strip_line_number_prefix(s: &str) -> String {
 impl ToolExecutor {
     fn patch_file(&self, args: &Value) -> String {
         let path = require_str!(args, "path");
-        let old_str = strip_line_number_prefix(require_str!(args, "old_str"));
+        // old_str: strip both │ and | so matching tolerates either separator.
+        let old_str = strip_line_number_prefix(require_str!(args, "old_str"), false);
         let old_str = old_str.as_str();
-        let new_str = require_str!(args, "new_str");
+        // new_str: strip only │ (U+2502, our tool's signature).  Plain | is kept
+        // so Markdown tables and similar document content are never mangled.
+        let new_str_owned = strip_line_number_prefix(require_str!(args, "new_str"), true);
+        let new_str = new_str_owned.as_str();
 
         if self.confirm_writes && !confirm(&format!("{YELLOW}Patch {path}?{RESET}")) {
             return "Aborted by user.".into();
@@ -1718,23 +1732,37 @@ mod tests {
 
     #[test]
     fn strip_prefix_removes_box_drawing_prefix() {
-        // read_file_range format: "    2 │ content"
-        assert_eq!(strip_line_number_prefix("    2 │ hello"), "hello");
+        // read_file_range format: "    2 │ content" — stripped in both modes.
+        assert_eq!(strip_line_number_prefix("    2 │ hello", false), "hello");
+        assert_eq!(strip_line_number_prefix("    2 │ hello", true), "hello");
     }
 
     #[test]
-    fn strip_prefix_removes_pipe_prefix() {
-        // Some models may copy with | instead of │
+    fn strip_prefix_removes_pipe_prefix_in_full_mode() {
+        // plain | is stripped when box_drawing_only=false (old_str matching).
         assert_eq!(
-            strip_line_number_prefix("   21 | content here"),
+            strip_line_number_prefix("   21 | content here", false),
             "content here"
+        );
+    }
+
+    #[test]
+    fn strip_prefix_preserves_pipe_prefix_in_box_drawing_only_mode() {
+        // plain | is preserved when box_drawing_only=true (write paths).
+        assert_eq!(
+            strip_line_number_prefix("   21 | content here", true),
+            "   21 | content here"
         );
     }
 
     #[test]
     fn strip_prefix_leaves_plain_lines_unchanged() {
         assert_eq!(
-            strip_line_number_prefix("no prefix at all"),
+            strip_line_number_prefix("no prefix at all", false),
+            "no prefix at all"
+        );
+        assert_eq!(
+            strip_line_number_prefix("no prefix at all", true),
             "no prefix at all"
         );
     }
@@ -1742,7 +1770,7 @@ mod tests {
     #[test]
     fn strip_prefix_handles_multiline_mixed() {
         let input = "    1 │ first\nsecond line\n    3 │ third";
-        let out = strip_line_number_prefix(input);
+        let out = strip_line_number_prefix(input, false);
         assert_eq!(out, "first\nsecond line\nthird");
     }
 
@@ -1751,16 +1779,33 @@ mod tests {
         let path = std::env::temp_dir().join("shio_patch_prefix.txt");
         fs::write(&path, "hello world\n").unwrap();
         let ex = executor(false, false);
-        // old_str with read_file_range prefix is stripped for matching.
-        // new_str is written verbatim — model must not include prefixes there.
+        // old_str: │ prefix stripped for matching (both separators).
+        // new_str: │ prefix also stripped (box-drawing only); plain | preserved.
         let args = serde_json::json!({
             "path": path.to_str().unwrap(),
             "old_str": "    1 │ hello world",
-            "new_str": "goodbye world",
+            "new_str": "    1 │ goodbye world",
         });
         let out = ex.patch_file(&args);
         assert!(out.contains("Patched") || out.contains("bytes"), "{out}");
+        // │ prefix stripped from new_str, so file contains clean content.
         assert_eq!(fs::read_to_string(&path).unwrap(), "goodbye world\n");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn patch_file_new_str_preserves_plain_pipe() {
+        let path = std::env::temp_dir().join("shio_patch_pipe.txt");
+        fs::write(&path, "old content\n").unwrap();
+        let ex = executor(false, false);
+        // Plain | in new_str must be kept (Markdown table content).
+        let args = serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "old_str": "old content",
+            "new_str": "  3 | table value",
+        });
+        ex.patch_file(&args);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "  3 | table value\n");
         let _ = fs::remove_file(&path);
     }
 
