@@ -1494,17 +1494,22 @@ async fn run_agent_loop(
                     }
 
                     // Confirm if needed.
-                    let should_run = if needs_confirm(call, executor) {
+                    if needs_confirm(call, executor) {
                         let prompt = fmt_confirm_prompt(call);
                         let (reply_tx, reply_rx) = oneshot::channel::<bool>();
                         let _ = tx.send(TuiEvent::NeedsConfirm { prompt, reply_tx });
-                        reply_rx.await.unwrap_or(false)
-                    } else {
-                        true
-                    };
+                        let allowed = reply_rx.await.unwrap_or(false);
+                        if !allowed {
+                            // User denied — abort the entire turn so the model
+                            // cannot loop back and retry the same operation.
+                            let _ = tx.send(TuiEvent::ToolDone("Denied by user.".to_string()));
+                            let _ = tx.send(TuiEvent::TurnDone(msgs.clone()));
+                            return Ok(());
+                        }
+                    }
 
                     // Execute the tool (use spawn_blocking to avoid blocking the async runtime).
-                    let result = if should_run {
+                    let result = {
                         let exec = ToolExecutor {
                             confirm_writes: false,
                             confirm_shell: false,
@@ -1514,8 +1519,6 @@ async fn run_agent_loop(
                         tokio::task::spawn_blocking(move || exec.execute_quiet(&call2))
                             .await
                             .unwrap_or_else(|e| format!("internal error: {e}"))
-                    } else {
-                        "Aborted by user.".to_string()
                     };
 
                     // Show a one-line preview of the result.
