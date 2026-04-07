@@ -1246,16 +1246,31 @@ fn try_expand_skill(app: &App, input: &str) -> Option<String> {
 /// length in bytes fits within `budget`.  The system prompt (index 0) is
 /// always kept.  Returns the number of messages removed.
 fn trim_to_budget(msgs: &mut Vec<Message>, budget: usize) -> usize {
+    trim_to_budget_before(msgs, budget, msgs.len())
+}
+
+/// Like [`trim_to_budget`] but only removes messages before index
+/// `protected_from`.  Messages at or after that index are never touched,
+/// preserving the current agent turn's tool results.
+/// Returns the number of messages removed.
+fn trim_to_budget_before(
+    msgs: &mut Vec<Message>,
+    budget: usize,
+    mut protected_from: usize,
+) -> usize {
     let mut dropped = 0;
     loop {
         let total: usize = msgs
             .iter()
             .map(|m| m.content.as_deref().map_or(0, str::len))
             .sum();
-        if total <= budget || msgs.len() <= 1 {
+        // Stop if within budget or no pre-turn messages left to drop (index 0 is
+        // always the system prompt; earliest droppable index is 1).
+        if total <= budget || protected_from <= 1 {
             break;
         }
         msgs.remove(1);
+        protected_from -= 1;
         dropped += 1;
     }
     dropped
@@ -1281,8 +1296,9 @@ fn dispatch_turn(app: &mut App) {
     let executor = app.executor.clone();
     let tx = app.event_tx.clone();
 
+    let ctx_size = app.ctx_size;
     app.model_task = Some(tokio::spawn(async move {
-        run_model_task(client, msgs, temp, tools, executor, tx).await;
+        run_model_task(client, msgs, temp, tools, executor, tx, ctx_size).await;
     }));
 }
 
@@ -1419,9 +1435,10 @@ async fn run_model_task(
     tools: Vec<ToolDef>,
     executor: Option<ToolExecutor>,
     tx: mpsc::UnboundedSender<TuiEvent>,
+    ctx_size: u32,
 ) {
     let result = if let Some(exec) = &executor {
-        run_agent_loop(&client, &mut msgs, temp, &tools, exec, &tx).await
+        run_agent_loop(&client, &mut msgs, temp, &tools, exec, &tx, ctx_size).await
     } else {
         run_stream_turn(&client, &mut msgs, temp, &tx).await
     };
@@ -1477,12 +1494,27 @@ async fn run_agent_loop(
     tools: &[ToolDef],
     executor: &ToolExecutor,
     tx: &mpsc::UnboundedSender<TuiEvent>,
+    ctx_size: u32,
 ) -> Result<()> {
     let mut planning_mode = false;
     // Built lazily on first enter_plan_mode; reused for all subsequent iterations.
     let mut plan_mode_tools: Option<Vec<ToolDef>> = None;
 
+    // Index of the first message that belongs to this agent turn.
+    // Messages before this point are cross-turn history that may be trimmed
+    // if the context fills up; messages at or after it are never touched.
+    let turn_start = msgs.len();
+
     for _ in 0..MAX_AGENT_ITERATIONS {
+        // If accumulated tool results are pushing the history toward the context
+        // ceiling, trim only the pre-turn cross-turn history.  This preserves
+        // every tool result from the current turn so the model can keep reasoning
+        // over them, while still making room to avoid truncated responses.
+        // Budget: 85 % of ctx, estimated at 4 bytes per token.
+        if ctx_size > 0 {
+            let budget = ctx_size as usize * 4 * 85 / 100;
+            trim_to_budget_before(msgs, budget, turn_start);
+        }
         // In plan mode, filter the tool list to read-only operations only.
         // `plan_mode_tools` is computed at most once per session.
         let tools_for_call: &[ToolDef] = if planning_mode {
@@ -2137,6 +2169,46 @@ mod tests {
         let mut msgs = vec![sys(), no_content, usr("hello")];
         let dropped = trim_to_budget(&mut msgs, 1000);
         assert_eq!(dropped, 0);
+    }
+
+    // ── trim_to_budget_before — protected region ─────────────────────────────
+
+    #[test]
+    fn trim_to_budget_before_never_removes_protected_messages() {
+        // sys + 3 history messages + 2 "current turn" messages.
+        // protected_from = 4 means indices 4..5 are off-limits.
+        let mut msgs = vec![sys(), usr("h1"), ast("h2"), usr("h3"), ast("turn-result")];
+        let budget = 0; // force maximum trimming
+        let dropped = trim_to_budget_before(&mut msgs, budget, 4);
+        // h1, h2, h3 can be dropped (indices 1-3), but "turn-result" must survive.
+        assert!(dropped <= 3);
+        assert!(
+            msgs.iter()
+                .any(|m| m.content.as_deref() == Some("turn-result")),
+            "current-turn message must not be removed"
+        );
+    }
+
+    #[test]
+    fn trim_to_budget_before_protected_from_zero_drops_nothing() {
+        let mut msgs = vec![sys(), usr("hello"), ast("world")];
+        // protected_from = 0 means nothing is safe to drop (protected_from <= 1 stops the loop).
+        let dropped = trim_to_budget_before(&mut msgs, 0, 0);
+        assert_eq!(dropped, 0);
+        assert_eq!(msgs.len(), 3);
+    }
+
+    #[test]
+    fn trim_to_budget_before_drops_only_pre_turn_messages() {
+        // sys + 2 pre-turn messages + 1 current-turn message.
+        let mut msgs = vec![sys(), usr("old1"), usr("old2"), usr("current")];
+        // Budget too small to hold everything; protected_from = 3 protects "current".
+        let dropped = trim_to_budget_before(&mut msgs, 5, 3);
+        assert!(dropped >= 1);
+        assert!(
+            msgs.iter().any(|m| m.content.as_deref() == Some("current")),
+            "current-turn message must survive"
+        );
     }
 
     // ── cap_tool_result ───────────────────────────────────────────────────────
