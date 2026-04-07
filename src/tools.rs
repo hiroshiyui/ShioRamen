@@ -217,7 +217,10 @@ pub fn all_tools() -> Vec<ToolDef> {
                     Finds the exact string old_str (must appear exactly once) and \
                     replaces it with new_str. Use this for ALL in-place edits: \
                     modifying, refactoring, or rewriting existing lines. \
-                    Safer than write_file for focused edits because the rest of the file is untouched.",
+                    Safer than write_file for focused edits because the rest of the file is untouched. \
+                    old_str may include read_file_range line-number prefixes (they are stripped \
+                    automatically for matching). new_str is written verbatim — do NOT include \
+                    line-number prefixes in new_str.",
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -598,8 +601,7 @@ impl ToolExecutor {
 
     fn write_file(&self, args: &Value) -> String {
         let path = require_str!(args, "path");
-        let content = strip_line_number_prefix(require_str!(args, "content"));
-        let content = content.as_str();
+        let content = require_str!(args, "content");
 
         if self.confirm_writes && !confirm(&format!("{YELLOW}Write to {path}?{RESET}")) {
             return "Aborted by user.".into();
@@ -617,8 +619,7 @@ impl ToolExecutor {
 
     fn append_file(&self, args: &Value) -> String {
         let path = require_str!(args, "path");
-        let content = strip_line_number_prefix(require_str!(args, "content"));
-        let content = content.as_str();
+        let content = require_str!(args, "content");
 
         if self.confirm_writes && !confirm(&format!("{YELLOW}Append to {path}?{RESET}")) {
             return "Aborted by user.".into();
@@ -648,12 +649,12 @@ impl ToolExecutor {
             Some(n) => n as usize,
             None => return "Error: missing or invalid 'line' argument".to_string(),
         };
-        let content = strip_line_number_prefix(require_str!(args, "content"));
+        let content = require_str!(args, "content");
         // Ensure inserted content ends with a newline.
         let content = if content.ends_with('\n') {
-            content
+            content.to_string()
         } else {
-            content + "\n"
+            format!("{content}\n")
         };
 
         if self.confirm_writes
@@ -895,9 +896,8 @@ impl ToolExecutor {
     fn patch_file(&self, args: &Value) -> String {
         let path = require_str!(args, "path");
         let old_str = strip_line_number_prefix(require_str!(args, "old_str"));
-        let new_str = strip_line_number_prefix(require_str!(args, "new_str"));
         let old_str = old_str.as_str();
-        let new_str = new_str.as_str();
+        let new_str = require_str!(args, "new_str");
 
         if self.confirm_writes && !confirm(&format!("{YELLOW}Patch {path}?{RESET}")) {
             return "Aborted by user.".into();
@@ -1494,16 +1494,21 @@ mod tests {
     }
 
     #[test]
-    fn write_file_strips_line_number_prefix() {
-        let path = std::env::temp_dir().join("shio_write_strip.txt");
+    fn write_file_preserves_pipe_table_content() {
+        // write_file must NOT strip "  N | text" patterns — users may write
+        // loose documents with pipe-separated tables or similar structure.
+        let path = std::env::temp_dir().join("shio_write_preserve.txt");
         let _ = fs::remove_file(&path);
         let ex = executor(false, false);
         let args = serde_json::json!({
             "path": path.to_str().unwrap(),
-            "content": "    1 │ first\n    2 │ second"
+            "content": "  3 | value\n| col | col |"
         });
         ex.write_file(&args);
-        assert_eq!(fs::read_to_string(&path).unwrap(), "first\nsecond");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "  3 | value\n| col | col |"
+        );
         let _ = fs::remove_file(&path);
     }
 
@@ -1580,19 +1585,20 @@ mod tests {
     }
 
     #[test]
-    fn insert_after_line_strips_line_number_prefix() {
-        let path = std::env::temp_dir().join("shio_insert_strip.txt");
+    fn insert_after_line_preserves_pipe_table_content() {
+        // insert_after_line must NOT strip "  N | text" — same reason as write_file.
+        let path = std::env::temp_dir().join("shio_insert_preserve.txt");
         fs::write(&path, "line1\nline2\n").unwrap();
         let ex = executor(false, false);
         let args = serde_json::json!({
             "path": path.to_str().unwrap(),
             "line": 1,
-            "content": "    3 │ inserted"
+            "content": "  3 | value"
         });
         ex.insert_after_line(&args);
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
-            "line1\ninserted\nline2\n"
+            "line1\n  3 | value\nline2\n"
         );
         let _ = fs::remove_file(&path);
     }
@@ -1720,11 +1726,12 @@ mod tests {
         let path = std::env::temp_dir().join("shio_patch_prefix.txt");
         fs::write(&path, "hello world\n").unwrap();
         let ex = executor(false, false);
-        // Simulate model passing read_file_range output verbatim as old_str.
+        // old_str with read_file_range prefix is stripped for matching.
+        // new_str is written verbatim — model must not include prefixes there.
         let args = serde_json::json!({
             "path": path.to_str().unwrap(),
             "old_str": "    1 │ hello world",
-            "new_str": "    1 │ goodbye world",
+            "new_str": "goodbye world",
         });
         let out = ex.patch_file(&args);
         assert!(out.contains("Patched") || out.contains("bytes"), "{out}");
@@ -2259,16 +2266,17 @@ mod tests {
     }
 
     #[test]
-    fn append_file_strips_line_number_prefix() {
-        let path = std::env::temp_dir().join("shio_append_strip.txt");
+    fn append_file_preserves_pipe_table_content() {
+        // append_file must NOT strip "  N | text" — same reason as write_file.
+        let path = std::env::temp_dir().join("shio_append_preserve.txt");
         let _ = fs::remove_file(&path);
         let ex = executor(false, false);
         let args = serde_json::json!({
             "path": path.to_str().unwrap(),
-            "content": "    1 │ appended"
+            "content": "  3 | value"
         });
         ex.append_file(&args);
-        assert_eq!(fs::read_to_string(&path).unwrap(), "appended");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "  3 | value");
         let _ = fs::remove_file(&path);
     }
 

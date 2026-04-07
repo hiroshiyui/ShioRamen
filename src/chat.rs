@@ -23,6 +23,10 @@ the range — do not use append_file, which always goes to EOF. \
 patch_file replaces old_str with new_str atomically — after a successful \
 patch_file the new content is already written; never follow it with \
 append_file or write_file for the same change. \
+old_str may be copied verbatim from read_file_range output (line-number \
+prefixes are stripped automatically for matching); new_str, write_file \
+content, append_file content, and insert_after_line content are written \
+verbatim — never include line-number prefixes there. \
 Use get_working_directory to orient yourself before constructing file paths, and \
 create_directory (not run_shell) when you need to make new directories. \
 If a task would touch more than 3 files, summarize your plan and ask for \
