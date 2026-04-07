@@ -75,11 +75,35 @@ pub fn all_tools() -> Vec<ToolDef> {
         ToolDef {
             kind: "function",
             function: FunctionSpec {
+                name: "insert_after_line",
+                description: "Insert new content immediately after a specific line number in a \
+                    file. Use this when you need to add lines at a precise position — for \
+                    example, right after a range you read with read_file_range. \
+                    Lines are 1-indexed. The content is inserted after the given line; \
+                    existing lines below that point are shifted down. \
+                    Do NOT use append_file when you know the insertion point — use this instead.",
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path":    { "type": "string" },
+                        "line":    { "type": "integer", "description": "1-indexed line number after which to insert" },
+                        "content": { "type": "string", "description": "Text to insert. A trailing newline is added automatically if absent." }
+                    },
+                    "required": ["path", "line", "content"]
+                }),
+            },
+        },
+        ToolDef {
+            kind: "function",
+            function: FunctionSpec {
                 name: "append_file",
                 description: "Append content to the end of a file, creating it if it does not \
-                    exist. Use this ONLY to add new content at the end of a file. \
+                    exist. Use this ONLY when you need to add content at the very end and \
+                    do not know or care about the insertion line number. \
+                    If you know which line to insert after (e.g. from read_file_range), \
+                    use insert_after_line instead. \
                     Do NOT use this to replace, rewrite, or refactor existing lines — \
-                    use patch_file for in-place edits. The existing content is always preserved.",
+                    use patch_file for in-place edits.",
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -537,6 +561,7 @@ impl ToolExecutor {
             "read_file" => self.read_file(args),
             "write_file" => self.write_file(args),
             "append_file" => self.append_file(args),
+            "insert_after_line" => self.insert_after_line(args),
             "list_directory" => self.list_directory(args),
             "run_shell" => self.run_shell(args),
             "search_files" => self.search_files(args),
@@ -614,6 +639,54 @@ impl ToolExecutor {
                 Ok(()) => format!("Appended {} bytes to {path}", content.len()),
                 Err(e) => format!("Error appending to {path}: {e}"),
             },
+        }
+    }
+
+    fn insert_after_line(&self, args: &Value) -> String {
+        let path = require_str!(args, "path");
+        let line_num = match args["line"].as_u64() {
+            Some(n) => n as usize,
+            None => return "Error: missing or invalid 'line' argument".to_string(),
+        };
+        let content = strip_line_number_prefix(require_str!(args, "content"));
+        // Ensure inserted content ends with a newline.
+        let content = if content.ends_with('\n') {
+            content
+        } else {
+            content + "\n"
+        };
+
+        if self.confirm_writes
+            && !confirm(&format!(
+                "{YELLOW}Insert after line {line_num} in {path}?{RESET}"
+            ))
+        {
+            return "Aborted by user.".into();
+        }
+
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) => return format!("Error reading {path}: {e}"),
+        };
+
+        let mut lines: Vec<&str> = text.lines().collect();
+        let total = lines.len();
+        if line_num > total {
+            return format!("Error: line {line_num} is out of range (file has {total} lines)");
+        }
+
+        lines.insert(line_num, content.trim_end_matches('\n'));
+        let mut result = lines.join("\n");
+        if text.ends_with('\n') || line_num == total {
+            result.push('\n');
+        }
+
+        match std::fs::write(path, &result) {
+            Ok(()) => format!(
+                "Inserted {} bytes after line {line_num} in {path}",
+                content.len()
+            ),
+            Err(e) => format!("Error writing {path}: {e}"),
         }
     }
 
@@ -1434,6 +1507,96 @@ mod tests {
         let _ = fs::remove_file(&path);
     }
 
+    // ── insert_after_line ─────────────────────────────────────────────────────
+
+    #[test]
+    fn insert_after_line_inserts_in_middle() {
+        let path = std::env::temp_dir().join("shio_insert_mid.txt");
+        fs::write(&path, "line1\nline2\nline3\n").unwrap();
+        let ex = executor(false, false);
+        let args = serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "line": 2,
+            "content": "inserted"
+        });
+        let out = ex.insert_after_line(&args);
+        assert!(out.contains("Inserted"), "{out}");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "line1\nline2\ninserted\nline3\n"
+        );
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn insert_after_line_at_end_appends() {
+        let path = std::env::temp_dir().join("shio_insert_end.txt");
+        fs::write(&path, "line1\nline2\n").unwrap();
+        let ex = executor(false, false);
+        let args = serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "line": 2,
+            "content": "appended"
+        });
+        ex.insert_after_line(&args);
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "line1\nline2\nappended\n"
+        );
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn insert_after_line_after_line_zero_prepends() {
+        let path = std::env::temp_dir().join("shio_insert_zero.txt");
+        fs::write(&path, "line1\nline2\n").unwrap();
+        let ex = executor(false, false);
+        let args = serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "line": 0,
+            "content": "prepended"
+        });
+        ex.insert_after_line(&args);
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "prepended\nline1\nline2\n"
+        );
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn insert_after_line_out_of_range_returns_error() {
+        let path = std::env::temp_dir().join("shio_insert_oor.txt");
+        fs::write(&path, "line1\n").unwrap();
+        let ex = executor(false, false);
+        let args = serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "line": 99,
+            "content": "x"
+        });
+        let out = ex.insert_after_line(&args);
+        assert!(out.starts_with("Error"), "{out}");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn insert_after_line_strips_line_number_prefix() {
+        let path = std::env::temp_dir().join("shio_insert_strip.txt");
+        fs::write(&path, "line1\nline2\n").unwrap();
+        let ex = executor(false, false);
+        let args = serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "line": 1,
+            "content": "    3 │ inserted"
+        });
+        ex.insert_after_line(&args);
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "line1\ninserted\nline2\n"
+        );
+        let _ = fs::remove_file(&path);
+    }
+
     // ── list_directory ────────────────────────────────────────────────────────
 
     #[test]
@@ -1691,8 +1854,8 @@ mod tests {
     // ── all_tools ─────────────────────────────────────────────────────────────
 
     #[test]
-    fn all_tools_has_twenty_one_entries() {
-        assert_eq!(all_tools().len(), 21);
+    fn all_tools_has_twenty_two_entries() {
+        assert_eq!(all_tools().len(), 22);
     }
 
     // ── lsp_query ─────────────────────────────────────────────────────────────

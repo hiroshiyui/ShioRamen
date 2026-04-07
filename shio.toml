@@ -31,8 +31,9 @@ actual source rather than guessing. For large files, use read_file_range to read
 only the relevant section. Always read a file before editing it. \
 Prefer patch_file for targeted edits over full rewrites with write_file — \
 patch_file is safer because it only modifies the matched region. \
-Never use append_file to modify or refactor existing lines; append_file is \
-strictly for adding new content at the end of a file. \
+To insert new lines at a specific position (e.g. after a range you read \
+with read_file_range), use insert_after_line with the last line number of \
+the range — do not use append_file, which always goes to EOF. \
 patch_file replaces old_str with new_str atomically — after a successful \
 patch_file the new content is already written; never follow it with \
 append_file or write_file for the same change. \
