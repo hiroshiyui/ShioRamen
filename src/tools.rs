@@ -994,7 +994,58 @@ impl ToolExecutor {
             .collect();
 
         match hits.len() {
-            0 => format!("Error: old_str not found in {path}"),
+            0 => {
+                // Line-by-line match found nothing.  For large old_str blocks the
+                // model often misremembers interior lines while getting the edges
+                // right.  Try an anchor-based match: require the first two and last
+                // two lines to match exactly (trim_end), then replace the whole
+                // block.  Only accepted when there is exactly one such position.
+                if n >= 4 {
+                    let a0 = old_lines[0].trim_end();
+                    let a1 = old_lines[1].trim_end();
+                    let z0 = old_lines[n - 2].trim_end();
+                    let z1 = old_lines[n - 1].trim_end();
+                    // Skip if both start anchors and both end anchors are blank —
+                    // that would match almost anything.
+                    let start_ok = !a0.trim().is_empty() || !a1.trim().is_empty();
+                    let end_ok = !z0.trim().is_empty() || !z1.trim().is_empty();
+                    if start_ok && end_ok {
+                        let anchor_hits: Vec<usize> = (0..=file_lines.len().saturating_sub(n))
+                            .filter(|&i| {
+                                file_lines[i].trim_end() == a0
+                                    && file_lines[i + 1].trim_end() == a1
+                                    && file_lines[i + n - 2].trim_end() == z0
+                                    && file_lines[i + n - 1].trim_end() == z1
+                            })
+                            .collect();
+                        if anchor_hits.len() == 1 {
+                            let start = anchor_hits[0];
+                            let mut result: Vec<&str> = file_lines[..start].to_vec();
+                            result.extend(new_str.lines());
+                            if new_str.ends_with('\n') {
+                                result.push("");
+                            }
+                            result.extend_from_slice(&file_lines[start + n..]);
+                            let mut patched = result.join("\n");
+                            if !content.ends_with('\n') && patched.ends_with('\n') {
+                                patched.pop();
+                            } else if content.ends_with('\n') && !patched.ends_with('\n') {
+                                patched.push('\n');
+                            }
+                            return match std::fs::write(path, &patched) {
+                                Ok(()) => format!(
+                                    "Patched {path} (anchor fallback): block identified by \
+                                     first/last lines of old_str replaced with new_str. \
+                                     The new content is already written — do NOT call \
+                                     append_file or write_file.",
+                                ),
+                                Err(e) => format!("Error writing {path}: {e}"),
+                            };
+                        }
+                    }
+                }
+                format!("Error: old_str not found in {path}")
+            }
             1 => {
                 let start = hits[0];
                 let mut result: Vec<&str> = file_lines[..start].to_vec();
@@ -2030,6 +2081,52 @@ mod tests {
             !result.ends_with("\n\n"),
             "double trailing newline: {result:?}"
         );
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn patch_file_anchor_fallback_tolerates_wrong_interior_lines() {
+        // Simulate a model that reproduced 5 lines but got the middle one wrong.
+        // The file has the real content; old_str has a mutated interior line.
+        let path = std::env::temp_dir().join("shio_patch_anchor.txt");
+        fs::write(
+            &path,
+            "fn foo() {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n}\n",
+        )
+        .unwrap();
+        let ex = executor(false, false);
+        // Middle line differs from the file — exact and line-by-line fallbacks both fail.
+        let args = serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "old_str": "fn foo() {\n    let a = 1;\n    let b = WRONG;\n    let c = 3;\n}",
+            "new_str": "fn foo() {\n    42\n}",
+        });
+        let out = ex.patch_file(&args);
+        assert!(out.contains("Patched"), "{out}");
+        assert!(out.contains("anchor"), "{out}");
+        let result = fs::read_to_string(&path).unwrap();
+        assert!(result.contains("42"), "{result}");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn patch_file_anchor_fallback_rejects_ambiguous_anchors() {
+        // Two blocks with the same first two and last two lines — anchor match must
+        // refuse rather than silently pick one.
+        let path = std::env::temp_dir().join("shio_patch_anchor_ambig.txt");
+        fs::write(
+            &path,
+            "fn foo() {\n    let a = 1;\n    x\n    let z = 9;\n}\nfn foo() {\n    let a = 1;\n    y\n    let z = 9;\n}\n",
+        )
+        .unwrap();
+        let ex = executor(false, false);
+        let args = serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "old_str": "fn foo() {\n    let a = 1;\n    WRONG\n    let z = 9;\n}",
+            "new_str": "fn bar() {}",
+        });
+        let out = ex.patch_file(&args);
+        assert!(out.starts_with("Error"), "{out}");
         let _ = fs::remove_file(&path);
     }
 
