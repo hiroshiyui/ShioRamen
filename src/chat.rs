@@ -19,6 +19,9 @@ Prefer patch_file for targeted edits over full rewrites with write_file — \
 patch_file is safer because it only modifies the matched region. \
 Never use append_file to modify or refactor existing lines; append_file is \
 strictly for adding new content at the end of a file. \
+patch_file replaces old_str with new_str atomically — after a successful \
+patch_file the new content is already written; never follow it with \
+append_file or write_file for the same change. \
 Use get_working_directory to orient yourself before constructing file paths, and \
 create_directory (not run_shell) when you need to make new directories. \
 If a task would touch more than 3 files, summarize your plan and ask for \

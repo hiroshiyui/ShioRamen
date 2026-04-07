@@ -850,9 +850,8 @@ impl ToolExecutor {
         let patched = content.replacen(old_str, new_str, 1);
         match std::fs::write(path, &patched) {
             Ok(()) => format!(
-                "Patched {path}: replaced {} bytes with {} bytes",
-                old_str.len(),
-                new_str.len()
+                "Patched {path}: old_str replaced with new_str in place. \
+                 The new content is already written — do NOT call append_file or write_file.",
             ),
             Err(e) => format!("Error writing {path}: {e}"),
         }
