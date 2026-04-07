@@ -218,9 +218,9 @@ pub fn all_tools() -> Vec<ToolDef> {
                     replaces it with new_str. Use this for ALL in-place edits: \
                     modifying, refactoring, or rewriting existing lines. \
                     Safer than write_file for focused edits because the rest of the file is untouched. \
-                    old_str may include read_file_range line-number prefixes (they are stripped \
-                    automatically for matching). new_str is written verbatim — do NOT include \
-                    line-number prefixes in new_str.",
+                    old_str must be the exact text from the file as returned by read_file or \
+                    read_file_range (which outputs raw lines with no line-number prefixes). \
+                    new_str is written verbatim.",
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -828,20 +828,25 @@ impl ToolExecutor {
             return format!("Error: start_line ({start}) is after end_line ({end})");
         }
 
-        let lines: Vec<String> = content
+        let body: Vec<&str> = content
             .lines()
             .enumerate()
             .filter(|(i, _)| {
                 let lineno = i + 1;
                 lineno >= start && lineno <= end
             })
-            .map(|(i, line)| format!("{:>5} │ {line}", i + 1))
+            .map(|(_, line)| line)
             .collect();
 
-        if lines.is_empty() {
+        if body.is_empty() {
             format!("(no lines in range {start}–{end}; file has {total} lines)")
         } else {
-            lines.join("\n")
+            // Header gives the model the line range for insert_after_line; content
+            // is raw so the model can use it verbatim in patch_file old_str/new_str.
+            format!(
+                "Lines {start}–{end} of {path} (file has {total} lines):\n{}",
+                body.join("\n")
+            )
         }
     }
 }
@@ -1707,11 +1712,9 @@ mod tests {
         assert!(out.contains("line4"), "{out}");
         assert!(!out.contains("line1"), "{out}");
         assert!(!out.contains("line5"), "{out}");
-        // Line numbers must be present so the model knows where it is.
-        assert!(
-            out.contains('│'),
-            "expected line-number prefix in output: {out}"
-        );
+        // Header must report the range so the model knows where it is.
+        assert!(out.contains("Lines 2"), "{out}");
+        assert!(out.contains("Lines 2") && out.contains('4'), "{out}");
         let _ = fs::remove_file(&path);
     }
 
@@ -1724,7 +1727,8 @@ mod tests {
         let out = ex.read_file_range(&args);
         assert!(out.contains('b'), "{out}");
         assert!(out.contains('c'), "{out}");
-        assert!(!out.contains('a'), "{out}");
+        // "a\n" would be the first line content; the header may contain path chars
+        assert!(!out.contains("\na\n") && !out.ends_with("\na"), "{out}");
         let _ = fs::remove_file(&path);
     }
 
