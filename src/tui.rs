@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use std::collections::HashMap;
 use std::io;
+use std::sync::OnceLock;
 
 use anyhow::Result;
 use crossterm::{
@@ -15,11 +16,12 @@ use futures_util::StreamExt;
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
+use syntect::{easy::HighlightLines, highlighting::ThemeSet, parsing::SyntaxSet};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::chat::ChatSession;
@@ -69,22 +71,31 @@ enum EntryKind {
     Error,
 }
 
+// ── Solarized palette ─────────────────────────────────────────────────────────
+// https://ethanschoonover.com/solarized/
+const SOL_BASE02: Color = Color::Rgb(7, 54, 66); // bg highlights (dark theme)
+const SOL_BASE01: Color = Color::Rgb(88, 110, 117); // comments / secondary
+const SOL_BASE2: Color = Color::Rgb(238, 232, 213); // bg highlights (light theme)
+const SOL_YELLOW: Color = Color::Rgb(181, 137, 0);
+const SOL_ORANGE: Color = Color::Rgb(203, 75, 22);
+const SOL_RED: Color = Color::Rgb(220, 50, 47);
+const SOL_CYAN: Color = Color::Rgb(42, 161, 152);
+const SOL_GREEN: Color = Color::Rgb(133, 153, 0);
+
 fn entry_style(kind: EntryKind) -> (&'static str, &'static str, Style) {
     // Returns (first-line prefix, continuation indent, style)
     // All prefixes are 7 characters wide for consistent alignment.
     match kind {
-        EntryKind::User => ("  you> ", "       ", Style::default().fg(Color::Cyan)),
+        EntryKind::User => ("  you> ", "       ", Style::default().fg(SOL_CYAN)),
         EntryKind::Assistant => (" shio> ", "       ", Style::default()),
-        EntryKind::ToolCall => ("  [**] ", "       ", Style::default().fg(Color::Yellow)),
+        EntryKind::ToolCall => ("  [**] ", "       ", Style::default().fg(SOL_YELLOW)),
         EntryKind::ToolResult => (
             "  [-›] ",
             "       ",
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::DIM),
+            Style::default().fg(SOL_GREEN).add_modifier(Modifier::DIM),
         ),
-        EntryKind::Info => ("  [--] ", "       ", Style::default().fg(Color::DarkGray)),
-        EntryKind::Error => ("  [!!] ", "       ", Style::default().fg(Color::Red)),
+        EntryKind::Info => ("  [--] ", "       ", Style::default().fg(SOL_BASE01)),
+        EntryKind::Error => ("  [!!] ", "       ", Style::default().fg(SOL_RED)),
     }
 }
 
@@ -139,6 +150,7 @@ enum AppStatus {
         prompt: String,
         reply_tx: oneshot::Sender<bool>,
     },
+    ConfirmExit,
 }
 
 impl App {
@@ -276,11 +288,15 @@ async fn run_loop(
 fn render(f: &mut Frame, app: &App) {
     let area = f.area();
 
+    // Expand input area height for multi-line input (cap at 10 visible lines).
+    let input_line_count = (app.input.chars().filter(|&c| c == '\n').count() + 1).min(10) as u16;
+    let input_height = input_line_count + 1; // +1 for the top border
+
     let chunks = Layout::vertical([
-        Constraint::Length(1), // title bar
-        Constraint::Fill(1),   // messages
-        Constraint::Length(1), // status line
-        Constraint::Length(2), // input (top-border + 1 line)
+        Constraint::Length(1),            // title bar
+        Constraint::Fill(1),              // messages
+        Constraint::Length(1),            // status line
+        Constraint::Length(input_height), // input
     ])
     .split(area);
 
@@ -294,7 +310,7 @@ fn render(f: &mut Frame, app: &App) {
         " ShioRamen  [{mode}]  [Tab] complete  [PgUp/Dn] scroll  [F2] select  [Ctrl+C] quit"
     );
     f.render_widget(
-        Paragraph::new(title_str).style(Style::default().bg(Color::DarkGray).fg(Color::White)),
+        Paragraph::new(title_str).style(Style::default().bg(SOL_BASE02).fg(SOL_BASE2)),
         chunks[0],
     );
 
@@ -319,9 +335,7 @@ fn render(f: &mut Frame, app: &App) {
                 (
                     "  Select mode — drag to select text, then copy.  [F2] exit select mode"
                         .to_string(),
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(SOL_GREEN).add_modifier(Modifier::BOLD),
                 )
             } else {
                 (String::new(), Style::default())
@@ -330,13 +344,15 @@ fn render(f: &mut Frame, app: &App) {
         AppStatus::Waiting => {
             const FRAMES: &[&str] = &["🤔.", "🤔..", "🤔..."];
             let frame = FRAMES[app.anim_frame as usize % FRAMES.len()];
-            (format!("  {frame}"), Style::default().fg(Color::Yellow))
+            (format!("  {frame}"), Style::default().fg(SOL_YELLOW))
         }
         AppStatus::Confirming { prompt, .. } => (
             format!("  Confirm: {prompt}  [y/N]"),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(SOL_ORANGE).add_modifier(Modifier::BOLD),
+        ),
+        AppStatus::ConfirmExit => (
+            "  Exit chat? [y/N]".to_string(),
+            Style::default().fg(SOL_RED).add_modifier(Modifier::BOLD),
         ),
     };
     f.render_widget(Paragraph::new(status_text).style(status_style), chunks[2]);
@@ -346,54 +362,61 @@ fn render(f: &mut Frame, app: &App) {
     let inner = input_block.inner(chunks[3]);
     f.render_widget(input_block, chunks[3]);
 
-    // Use display-column width (not byte offset) so CJK / wide characters are
-    // counted correctly.
     use unicode_width::UnicodeWidthStr;
     let prefix = "> ";
+    let cont_prefix = "  ";
     let prefix_cols = prefix.width() as u16; // 2
 
-    // How many columns of the input are left of the cursor.
-    let cursor_col = app.input[..app.cursor].width() as u16;
+    // Determine cursor line and its display column.
+    let (cursor_line, _) = cursor_line_col(&app.input, app.cursor);
+    let cursor_col_str = app.input[..app.cursor]
+        .rsplit_once('\n')
+        .map(|(_, after)| after)
+        .unwrap_or(&app.input[..app.cursor]);
+    let cursor_col = cursor_col_str.width() as u16;
 
-    // Compute horizontal scroll so the cursor is always within the visible
-    // input area.  The prefix is rendered in a fixed left slice so it never
-    // scrolls out of view.
     let input_area_cols = inner.width.saturating_sub(prefix_cols);
-    let scroll_x: u16 = if cursor_col >= input_area_cols {
+
+    // Horizontal scroll only for single-line input to avoid distorting other
+    // lines in multi-line mode.
+    let input_lines: Vec<&str> = if app.input.is_empty() {
+        vec![""]
+    } else {
+        app.input.split('\n').collect()
+    };
+    let scroll_x: u16 = if input_lines.len() == 1 && cursor_col >= input_area_cols {
         cursor_col - input_area_cols + 1
     } else {
         0
     };
 
-    // Render the ">" prefix in a fixed left rect.
-    f.render_widget(
-        Paragraph::new(prefix),
-        Rect {
-            x: inner.x,
-            y: inner.y,
-            width: prefix_cols.min(inner.width),
-            height: 1,
-        },
-    );
+    // Vertical scroll to keep cursor line visible when input is capped at 10 rows.
+    let visible_rows = inner.height as usize;
+    let scroll_row: u16 = if cursor_line >= visible_rows {
+        (cursor_line - visible_rows + 1) as u16
+    } else {
+        0
+    };
 
-    // Render the input text (horizontally scrolled) in the remaining rect.
-    if inner.width > prefix_cols {
-        f.render_widget(
-            Paragraph::new(app.input.as_str()).scroll((0, scroll_x)),
-            Rect {
-                x: inner.x + prefix_cols,
-                y: inner.y,
-                width: input_area_cols,
-                height: 1,
-            },
-        );
-    }
+    // Build one ratatui Line per input row with the appropriate prefix.
+    let text_lines: Vec<Line<'_>> = input_lines
+        .iter()
+        .enumerate()
+        .map(|(i, &line)| {
+            let pfx = if i == 0 { prefix } else { cont_prefix };
+            Line::from(vec![Span::raw(pfx), Span::raw(line)])
+        })
+        .collect();
+
+    f.render_widget(
+        Paragraph::new(text_lines).scroll((scroll_row, scroll_x)),
+        inner,
+    );
 
     // Draw cursor only while input is active.
     if matches!(app.status, AppStatus::Idle) {
-        // cursor_col - scroll_x is always < input_area_cols by construction.
-        let cx = inner.x + prefix_cols + cursor_col - scroll_x;
-        let cy = inner.y;
+        let cx = inner.x + prefix_cols + cursor_col.saturating_sub(scroll_x);
+        let cy = inner.y + (cursor_line as u16).saturating_sub(scroll_row);
         f.set_cursor_position((cx, cy));
     }
 }
@@ -422,17 +445,223 @@ fn build_lines(entries: &[ChatEntry], streaming: Option<&str>, width: usize) -> 
     out
 }
 
+// ── Syntax highlighting ───────────────────────────────────────────────────────
+
+static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
+static THEME_SET: OnceLock<ThemeSet> = OnceLock::new();
+
+fn syntax_set() -> &'static SyntaxSet {
+    SYNTAX_SET.get_or_init(SyntaxSet::load_defaults_newlines)
+}
+
+fn theme_set() -> &'static ThemeSet {
+    THEME_SET.get_or_init(ThemeSet::load_defaults)
+}
+
+/// ── Code-block backgrounds — Solarized Light: Base2 tinted with accent hues. ─
+const CODE_BG: Color = SOL_BASE2; // Base2  — standard code bg
+const DIFF_ADD_BG: Color = Color::Rgb(220, 232, 200); // Base2 + green tint
+const DIFF_DEL_BG: Color = Color::Rgb(242, 218, 210); // Base2 + red tint
+const DIFF_META_BG: Color = Color::Rgb(215, 225, 238); // Base2 + blue tint
+
 fn push_entry_lines(out: &mut Vec<Line<'static>>, entry: &ChatEntry, width: usize) {
+    use unicode_width::UnicodeWidthStr;
+
     let (first_prefix, cont_prefix, style) = entry_style(entry.kind);
-    let pfx_width = first_prefix.len(); // all prefixes are exactly 7 bytes / 7 ASCII cols
+    let pfx_width = first_prefix.len(); // all prefixes are exactly 7 ASCII cols
     let text_width = width.saturating_sub(pfx_width).max(10);
 
-    let wrapped = textwrap::wrap(&entry.text, text_width);
-    for (i, segment) in wrapped.iter().enumerate() {
-        let pfx: &str = if i == 0 { first_prefix } else { cont_prefix };
+    let ss = syntax_set();
+    let theme = &theme_set().themes["Solarized (light)"];
+
+    let mut first_out = true;
+    let mut in_code = false;
+    let mut is_diff = false;
+    let mut prose_buf: Vec<&str> = Vec::new();
+    let mut highlighter: Option<HighlightLines<'_>> = None;
+
+    for raw_line in entry.text.split('\n') {
+        if !in_code {
+            if fence_prefix_len(raw_line) > 0 {
+                // Flush accumulated prose through textwrap first.
+                emit_prose(
+                    &mut prose_buf,
+                    out,
+                    &mut first_out,
+                    first_prefix,
+                    cont_prefix,
+                    style,
+                    text_width,
+                );
+
+                let lang = raw_line[3..].trim();
+                is_diff = lang.eq_ignore_ascii_case("diff");
+                in_code = true;
+
+                // Set up the syntax highlighter for this language.
+                let syntax = ss
+                    .find_syntax_by_token(lang)
+                    .unwrap_or_else(|| ss.find_syntax_plain_text());
+                highlighter = Some(HighlightLines::new(syntax, theme));
+
+                let pfx = if first_out { first_prefix } else { cont_prefix };
+                first_out = false;
+                let label = if lang.is_empty() {
+                    "```".to_string()
+                } else {
+                    format!("```{lang}")
+                };
+                out.push(Line::from(vec![
+                    Span::styled(pfx.to_string(), style),
+                    Span::styled(label, Style::default().fg(SOL_BASE01)),
+                ]));
+            } else {
+                prose_buf.push(raw_line);
+            }
+        } else if fence_prefix_len(raw_line) > 0 {
+            // Closing fence.
+            in_code = false;
+            is_diff = false;
+            highlighter = None;
+            let pfx = if first_out { first_prefix } else { cont_prefix };
+            first_out = false;
+            out.push(Line::from(vec![
+                Span::styled(pfx.to_string(), style),
+                Span::styled("```".to_string(), Style::default().fg(SOL_BASE01)),
+            ]));
+        } else {
+            // Code line — syntax-highlighted foreground, Morandi background.
+            let pfx = if first_out { first_prefix } else { cont_prefix };
+            first_out = false;
+            let bg = code_line_bg(raw_line, is_diff);
+
+            // highlight_line expects a trailing newline when using the
+            // `load_defaults_newlines` syntax set.
+            let line_nl = format!("{raw_line}\n");
+            let spans = match highlighter
+                .as_mut()
+                .and_then(|h| h.highlight_line(&line_nl, ss).ok())
+            {
+                Some(ranges) => {
+                    let mut spans: Vec<Span<'static>> = vec![Span::styled(pfx.to_string(), style)];
+                    let mut col = 0usize;
+                    for (syn_style, text) in &ranges {
+                        // Strip the trailing newline syntect appended.
+                        let text = text.trim_end_matches('\n');
+                        if text.is_empty() {
+                            continue;
+                        }
+                        let fg = Color::Rgb(
+                            syn_style.foreground.r,
+                            syn_style.foreground.g,
+                            syn_style.foreground.b,
+                        );
+                        col += text.width();
+                        spans.push(Span::styled(
+                            text.to_string(),
+                            Style::default().fg(fg).bg(bg),
+                        ));
+                    }
+                    // Trailing pad so the background fills the whole column.
+                    if text_width > col {
+                        spans.push(Span::styled(
+                            " ".repeat(text_width - col),
+                            Style::default().bg(bg),
+                        ));
+                    }
+                    spans
+                }
+                None => {
+                    // Fallback: plain text with background colour.
+                    let display_w = raw_line.width();
+                    let padded = format!(
+                        "{}{}",
+                        raw_line,
+                        " ".repeat(text_width.saturating_sub(display_w))
+                    );
+                    vec![
+                        Span::styled(pfx.to_string(), style),
+                        Span::styled(padded, Style::default().bg(bg)),
+                    ]
+                }
+            };
+            out.push(Line::from(spans));
+        }
+    }
+
+    // Flush any remaining prose after the last code block (or when there were no
+    // code blocks at all — the common case).
+    emit_prose(
+        &mut prose_buf,
+        out,
+        &mut first_out,
+        first_prefix,
+        cont_prefix,
+        style,
+        text_width,
+    );
+
+    // Guard: if entry text was empty, emit the prefix alone.
+    if first_out {
+        out.push(Line::from(vec![
+            Span::styled(first_prefix.to_string(), style),
+            Span::raw(""),
+        ]));
+    }
+}
+
+/// Returns 3 if `line` begins with ``` or ~~~, otherwise 0.
+fn fence_prefix_len(line: &str) -> usize {
+    let b = line.as_bytes();
+    if b.len() >= 3 && (b[0] == b'`' || b[0] == b'~') && b[1] == b[0] && b[2] == b[0] {
+        3
+    } else {
+        0
+    }
+}
+
+/// Picks the background colour for a line inside a code block.
+fn code_line_bg(line: &str, is_diff: bool) -> Color {
+    if is_diff {
+        if line.starts_with("---") || line.starts_with("+++") || line.starts_with("@@") {
+            DIFF_META_BG
+        } else if line.starts_with('-') {
+            DIFF_DEL_BG
+        } else if line.starts_with('+') {
+            DIFF_ADD_BG
+        } else {
+            CODE_BG
+        }
+    } else {
+        CODE_BG
+    }
+}
+
+/// Wraps accumulated prose lines through textwrap and appends them to `out`.
+fn emit_prose(
+    prose_buf: &mut Vec<&str>,
+    out: &mut Vec<Line<'static>>,
+    first_out: &mut bool,
+    first_prefix: &'static str,
+    cont_prefix: &'static str,
+    style: Style,
+    text_width: usize,
+) {
+    if prose_buf.is_empty() {
+        return;
+    }
+    let joined = prose_buf.join("\n");
+    prose_buf.clear();
+    for seg in textwrap::wrap(&joined, text_width).iter() {
+        let pfx = if *first_out {
+            first_prefix
+        } else {
+            cont_prefix
+        };
+        *first_out = false;
         out.push(Line::from(vec![
             Span::styled(pfx.to_string(), style),
-            Span::raw(segment.to_string()),
+            Span::raw(seg.to_string()),
         ]));
     }
 }
@@ -443,6 +672,17 @@ fn push_entry_lines(out: &mut Vec<Line<'static>>, entry: &ChatEntry, width: usiz
 async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     use KeyCode::*;
     use KeyModifiers as Mods;
+
+    // In ConfirmExit state: y/Enter quits, anything else cancels.
+    if matches!(app.status, AppStatus::ConfirmExit) {
+        match key.code {
+            Char('y') | Char('Y') | Enter => return true,
+            _ => {
+                app.status = AppStatus::Idle;
+            }
+        }
+        return false;
+    }
 
     // In Confirming state: only y/n/Escape accepted.
     if let AppStatus::Confirming { .. } = &app.status {
@@ -464,9 +704,17 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
 
     // ── Normal editing ────────────────────────────────────────────────────────
     match (key.code, key.modifiers) {
-        // Quit
-        (Char('c'), m) | (Char('d'), m) if m.contains(Mods::CONTROL) => return true,
+        // Ctrl+C / Ctrl+D → ask for confirmation before quitting.
+        (Char('c'), m) | (Char('d'), m) if m.contains(Mods::CONTROL) => {
+            app.status = AppStatus::ConfirmExit;
+        }
 
+        // Newline (Alt+Enter inserts a literal newline; plain Enter submits)
+        (Enter, m) if m.contains(Mods::ALT) => {
+            app.input.insert(app.cursor, '\n');
+            app.cursor += 1;
+            app.comp_candidates.clear();
+        }
         // Submit
         (Enter, _) => submit(app).await,
 
@@ -501,15 +749,47 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             app.cursor = char_end_at(&app.input, app.cursor);
         }
         (Home, _) => {
-            app.cursor = 0;
+            let (line, _) = cursor_line_col(&app.input, app.cursor);
+            app.cursor = line_starts(&app.input)[line];
         }
         (End, _) => {
-            app.cursor = app.input.len();
+            let (line, _) = cursor_line_col(&app.input, app.cursor);
+            let starts = line_starts(&app.input);
+            app.cursor = if line + 1 < starts.len() {
+                starts[line + 1] - 1 // position of the '\n', not past it
+            } else {
+                app.input.len()
+            };
         }
 
-        // Input history
-        (Up, _) => hist_prev(app),
-        (Down, _) => hist_next(app),
+        // Up: move cursor up one line within multi-line input, or go to history.
+        (Up, _) => {
+            let (line, col) = cursor_line_col(&app.input, app.cursor);
+            if line == 0 {
+                hist_prev(app);
+            } else {
+                let starts = line_starts(&app.input);
+                let prev_start = starts[line - 1];
+                let prev_len = starts[line] - 1 - prev_start; // bytes before the '\n'
+                app.cursor = prev_start + col.min(prev_len);
+            }
+        }
+        // Down: move cursor down one line within multi-line input, or go to history.
+        (Down, _) => {
+            let (line, col) = cursor_line_col(&app.input, app.cursor);
+            let starts = line_starts(&app.input);
+            if line + 1 >= starts.len() {
+                hist_next(app);
+            } else {
+                let next_start = starts[line + 1];
+                let next_len = if line + 2 < starts.len() {
+                    starts[line + 2] - 1 - next_start
+                } else {
+                    app.input.len() - next_start
+                };
+                app.cursor = next_start + col.min(next_len);
+            }
+        }
 
         // Scroll
         (PageUp, _) => view_scroll(app, -10),
@@ -523,10 +803,17 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
 
         // Bash-style line editing
         (Char('a'), m) if m.contains(Mods::CONTROL) => {
-            app.cursor = 0;
+            let (line, _) = cursor_line_col(&app.input, app.cursor);
+            app.cursor = line_starts(&app.input)[line];
         }
         (Char('e'), m) if m.contains(Mods::CONTROL) => {
-            app.cursor = app.input.len();
+            let (line, _) = cursor_line_col(&app.input, app.cursor);
+            let starts = line_starts(&app.input);
+            app.cursor = if line + 1 < starts.len() {
+                starts[line + 1] - 1
+            } else {
+                app.input.len()
+            };
         }
         (Char('u'), m) if m.contains(Mods::CONTROL) => {
             app.input.clear();
@@ -694,6 +981,24 @@ fn list_path_completions(dir: &str, prefix: &str) -> Vec<String> {
     results
 }
 
+/// Returns the byte offset of the start of each line (split by `\n`).
+fn line_starts(s: &str) -> Vec<usize> {
+    let mut starts = vec![0usize];
+    for (i, b) in s.bytes().enumerate() {
+        if b == b'\n' {
+            starts.push(i + 1);
+        }
+    }
+    starts
+}
+
+/// Returns `(line_index, byte_column_within_line)` for the given cursor byte offset.
+fn cursor_line_col(s: &str, cursor: usize) -> (usize, usize) {
+    let starts = line_starts(s);
+    let line = starts.partition_point(|&st| st <= cursor).saturating_sub(1);
+    (line, cursor - starts[line])
+}
+
 /// Return the byte index of the start of the Unicode codepoint that ends at `pos`.
 /// Safe to use as a cursor position or slice boundary.
 fn char_start_before(s: &str, pos: usize) -> usize {
@@ -763,7 +1068,7 @@ async fn submit(app: &mut App) {
 
     match input.as_str() {
         "/exit" | "/quit" => {
-            app.quit = true;
+            app.status = AppStatus::ConfirmExit;
             return;
         }
         "/reset" => {
@@ -1404,6 +1709,223 @@ mod tests {
     fn expand_skill_prompt_multiple_placeholders() {
         let out = expand_skill_prompt("Do {args} then do {args}", "foo");
         assert_eq!(out, "Do foo then do foo");
+    }
+
+    // ── line_starts ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn line_starts_empty_string() {
+        assert_eq!(line_starts(""), vec![0]);
+    }
+
+    #[test]
+    fn line_starts_single_line() {
+        assert_eq!(line_starts("hello"), vec![0]);
+    }
+
+    #[test]
+    fn line_starts_two_lines() {
+        assert_eq!(line_starts("hello\nworld"), vec![0, 6]);
+    }
+
+    #[test]
+    fn line_starts_three_lines() {
+        assert_eq!(line_starts("a\nb\nc"), vec![0, 2, 4]);
+    }
+
+    #[test]
+    fn line_starts_trailing_newline() {
+        // "hi\n" has a final empty line starting at byte 3
+        assert_eq!(line_starts("hi\n"), vec![0, 3]);
+    }
+
+    // ── cursor_line_col ───────────────────────────────────────────────────────
+
+    #[test]
+    fn cursor_line_col_single_line() {
+        assert_eq!(cursor_line_col("hello", 0), (0, 0));
+        assert_eq!(cursor_line_col("hello", 3), (0, 3));
+        assert_eq!(cursor_line_col("hello", 5), (0, 5));
+    }
+
+    #[test]
+    fn cursor_line_col_multiline_first_line() {
+        let s = "hello\nworld";
+        assert_eq!(cursor_line_col(s, 0), (0, 0));
+        assert_eq!(cursor_line_col(s, 4), (0, 4));
+        // byte 5 is the '\n' itself — still on line 0
+        assert_eq!(cursor_line_col(s, 5), (0, 5));
+    }
+
+    #[test]
+    fn cursor_line_col_multiline_second_line() {
+        let s = "hello\nworld";
+        // byte 6 is the start of "world"
+        assert_eq!(cursor_line_col(s, 6), (1, 0));
+        assert_eq!(cursor_line_col(s, 9), (1, 3));
+        assert_eq!(cursor_line_col(s, 11), (1, 5));
+    }
+
+    #[test]
+    fn cursor_line_col_three_lines() {
+        let s = "a\nb\nc";
+        assert_eq!(cursor_line_col(s, 0), (0, 0)); // 'a'
+        assert_eq!(cursor_line_col(s, 2), (1, 0)); // 'b'
+        assert_eq!(cursor_line_col(s, 4), (2, 0)); // 'c'
+        assert_eq!(cursor_line_col(s, 5), (2, 1)); // end of 'c'
+    }
+
+    // ── fence_prefix_len ──────────────────────────────────────────────────────
+
+    #[test]
+    fn fence_prefix_len_backticks() {
+        assert_eq!(fence_prefix_len("```"), 3);
+        assert_eq!(fence_prefix_len("```python"), 3);
+        assert_eq!(fence_prefix_len("```rust some text"), 3);
+    }
+
+    #[test]
+    fn fence_prefix_len_tildes() {
+        assert_eq!(fence_prefix_len("~~~"), 3);
+        assert_eq!(fence_prefix_len("~~~js"), 3);
+    }
+
+    #[test]
+    fn fence_prefix_len_not_a_fence() {
+        assert_eq!(fence_prefix_len(""), 0);
+        assert_eq!(fence_prefix_len("``"), 0); // only 2 backticks
+        assert_eq!(fence_prefix_len("hello"), 0);
+        assert_eq!(fence_prefix_len("``~"), 0); // mixed chars
+        assert_eq!(fence_prefix_len("`~`"), 0);
+    }
+
+    // ── code_line_bg ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn code_line_bg_non_diff_always_code_bg() {
+        assert_eq!(code_line_bg("hello world", false), CODE_BG);
+        assert_eq!(code_line_bg("-removed line", false), CODE_BG);
+        assert_eq!(code_line_bg("+added line", false), CODE_BG);
+        assert_eq!(code_line_bg("--- a/file", false), CODE_BG);
+    }
+
+    #[test]
+    fn code_line_bg_diff_removed_line() {
+        assert_eq!(code_line_bg("-removed", true), DIFF_DEL_BG);
+        assert_eq!(code_line_bg("-", true), DIFF_DEL_BG);
+    }
+
+    #[test]
+    fn code_line_bg_diff_added_line() {
+        assert_eq!(code_line_bg("+added", true), DIFF_ADD_BG);
+        assert_eq!(code_line_bg("+", true), DIFF_ADD_BG);
+    }
+
+    #[test]
+    fn code_line_bg_diff_meta_lines() {
+        assert_eq!(code_line_bg("--- a/foo.rs", true), DIFF_META_BG);
+        assert_eq!(code_line_bg("+++ b/foo.rs", true), DIFF_META_BG);
+        assert_eq!(code_line_bg("@@ -1,5 +1,7 @@", true), DIFF_META_BG);
+    }
+
+    #[test]
+    fn code_line_bg_diff_context_line() {
+        // Lines without a leading +/- are unchanged context — same bg as regular code.
+        assert_eq!(code_line_bg(" context line", true), CODE_BG);
+        assert_eq!(code_line_bg("plain", true), CODE_BG);
+    }
+
+    // ── fmt_confirm_prompt ────────────────────────────────────────────────────
+
+    fn make_call(name: &str, args: &str) -> ToolCallItem {
+        ToolCallItem {
+            id: "test-id".to_string(),
+            kind: "function".to_string(),
+            function: crate::client::ToolCallFunction {
+                name: name.to_string(),
+                arguments: args.to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn fmt_confirm_prompt_write_file() {
+        let call = make_call("write_file", r#"{"path":"src/main.rs"}"#);
+        assert_eq!(fmt_confirm_prompt(&call), "Write to src/main.rs?");
+    }
+
+    #[test]
+    fn fmt_confirm_prompt_patch_file() {
+        let call = make_call("patch_file", r#"{"path":"README.md"}"#);
+        assert_eq!(fmt_confirm_prompt(&call), "Patch README.md?");
+    }
+
+    #[test]
+    fn fmt_confirm_prompt_delete_file() {
+        let call = make_call("delete_file", r#"{"path":"old.txt"}"#);
+        assert_eq!(fmt_confirm_prompt(&call), "Delete old.txt?");
+    }
+
+    #[test]
+    fn fmt_confirm_prompt_move_file() {
+        let call = make_call("move_file", r#"{"src":"a.txt","dst":"b.txt"}"#);
+        assert_eq!(fmt_confirm_prompt(&call), "Move a.txt → b.txt?");
+    }
+
+    #[test]
+    fn fmt_confirm_prompt_run_shell() {
+        let call = make_call("run_shell", r#"{"command":"rm -rf /tmp/test"}"#);
+        assert_eq!(fmt_confirm_prompt(&call), "Run: rm -rf /tmp/test?");
+    }
+
+    #[test]
+    fn fmt_confirm_prompt_unknown_tool_falls_back_to_name() {
+        let call = make_call("my_custom_tool", "{}");
+        assert_eq!(fmt_confirm_prompt(&call), "Execute my_custom_tool?");
+    }
+
+    #[test]
+    fn fmt_confirm_prompt_missing_path_field_shows_question_mark() {
+        let call = make_call("write_file", "{}");
+        assert_eq!(fmt_confirm_prompt(&call), "Write to ??");
+    }
+
+    // ── fmt_call ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn fmt_call_shows_function_name_and_first_two_string_args() {
+        let call = make_call("read_file", r#"{"path":"src/lib.rs"}"#);
+        assert!(fmt_call(&call).starts_with("read_file("));
+        assert!(fmt_call(&call).contains(r#"path="src/lib.rs""#));
+    }
+
+    #[test]
+    fn fmt_call_truncates_long_arg_values_at_60_chars() {
+        let long = "x".repeat(80);
+        let args = format!(r#"{{"path":"{long}"}}"#);
+        let out = fmt_call(&make_call("write_file", &args));
+        // The displayed path value must be capped at 60 chars.
+        let value_part = out.split('"').nth(3).unwrap_or("");
+        assert!(value_part.len() <= 60, "value not truncated: {value_part}");
+    }
+
+    #[test]
+    fn fmt_call_no_string_args_shows_just_name() {
+        // Arguments has only non-string (numeric) values — filtered out.
+        let call = make_call("set_timeout", r#"{"ms":500}"#);
+        assert_eq!(fmt_call(&call), "set_timeout()");
+    }
+
+    #[test]
+    fn fmt_call_empty_args_shows_just_name() {
+        let call = make_call("list_tools", "{}");
+        assert_eq!(fmt_call(&call), "list_tools()");
+    }
+
+    #[test]
+    fn fmt_call_invalid_json_falls_back_to_name() {
+        let call = make_call("broken_tool", "not json");
+        assert_eq!(fmt_call(&call), "broken_tool");
     }
 
     // ── replace_latex ─────────────────────────────────────────────────────────
