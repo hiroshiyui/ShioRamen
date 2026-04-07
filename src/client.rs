@@ -336,9 +336,10 @@ impl LlamaClient {
 #[derive(Debug, Deserialize)]
 pub struct SlotInfo {
     pub id: u32,
-    /// 0 = idle, 1 = processing
-    pub state: u8,
+    pub is_processing: bool,
     pub n_ctx: u32,
+    /// Tokens consumed in the current turn; absent when the slot is idle.
+    #[serde(default)]
     pub n_past: u32,
 }
 
@@ -565,20 +566,21 @@ mod tests {
 
     #[test]
     fn slot_info_deserialises_idle_slot() {
-        let json = r#"{"id":0,"state":0,"n_ctx":8192,"n_past":512}"#;
+        // Actual llama-server response: is_processing + n_ctx, no n_past when idle.
+        let json = r#"{"id":0,"is_processing":false,"n_ctx":8192,"speculative":false}"#;
         let slot: SlotInfo = serde_json::from_str(json).unwrap();
         assert_eq!(slot.id, 0);
-        assert_eq!(slot.state, 0);
+        assert!(!slot.is_processing);
         assert_eq!(slot.n_ctx, 8192);
-        assert_eq!(slot.n_past, 512);
+        assert_eq!(slot.n_past, 0); // defaults to 0 when absent
     }
 
     #[test]
     fn slot_info_deserialises_busy_slot() {
-        let json = r#"{"id":3,"state":1,"n_ctx":32768,"n_past":32665}"#;
+        let json = r#"{"id":3,"is_processing":true,"n_ctx":32768,"n_past":32665}"#;
         let slot: SlotInfo = serde_json::from_str(json).unwrap();
         assert_eq!(slot.id, 3);
-        assert_eq!(slot.state, 1);
+        assert!(slot.is_processing);
         assert_eq!(slot.n_ctx, 32768);
         assert_eq!(slot.n_past, 32665);
     }
@@ -586,8 +588,8 @@ mod tests {
     #[test]
     fn slot_info_deserialises_array() {
         let json = r#"[
-            {"id":0,"state":0,"n_ctx":8192,"n_past":0},
-            {"id":1,"state":1,"n_ctx":8192,"n_past":4096}
+            {"id":0,"is_processing":false,"n_ctx":8192},
+            {"id":1,"is_processing":true,"n_ctx":8192,"n_past":4096}
         ]"#;
         let slots: Vec<SlotInfo> = serde_json::from_str(json).unwrap();
         assert_eq!(slots.len(), 2);
@@ -598,8 +600,7 @@ mod tests {
     #[test]
     fn slot_info_ignores_extra_fields() {
         // llama-server returns many more fields; we only care about our four.
-        let json =
-            r#"{"id":0,"state":0,"n_ctx":4096,"n_past":100,"n_predict":200,"is_processing":false}"#;
+        let json = r#"{"id":0,"is_processing":false,"n_ctx":4096,"n_past":100,"n_predict":200,"speculative":false}"#;
         let slot: SlotInfo = serde_json::from_str(json).unwrap();
         assert_eq!(slot.n_ctx, 4096);
         assert_eq!(slot.n_past, 100);

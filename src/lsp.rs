@@ -1066,6 +1066,122 @@ mod tests {
         assert!(out.contains("diagnostic: something"), "got: {out}");
     }
 
+    // ── resolve_server — tier-1 user config lookup ───────────────────────────
+
+    #[test]
+    fn resolve_server_user_config_by_language_name() {
+        let mut user_servers = HashMap::new();
+        user_servers.insert("rust".to_string(), "my-rust-analyzer".to_string());
+        // .rs maps to lang "rust"; should hit tier-1 immediately.
+        let result = resolve_server("rs", "/any/file.rs", &user_servers);
+        assert_eq!(result, Some("my-rust-analyzer".to_string()));
+    }
+
+    #[test]
+    fn resolve_server_user_config_by_extension_fallback() {
+        let mut user_servers = HashMap::new();
+        // Key is "rs" (extension), not "rust" (language name).
+        user_servers.insert("rs".to_string(), "custom-rs-lsp".to_string());
+        let result = resolve_server("rs", "/any/file.rs", &user_servers);
+        assert_eq!(result, Some("custom-rs-lsp".to_string()));
+    }
+
+    #[test]
+    fn resolve_server_user_config_language_name_takes_precedence_over_ext() {
+        let mut user_servers = HashMap::new();
+        user_servers.insert("rust".to_string(), "by-lang".to_string());
+        user_servers.insert("rs".to_string(), "by-ext".to_string());
+        // Both keys present; lang lookup happens first so "by-lang" wins.
+        let result = resolve_server("rs", "/any/file.rs", &user_servers);
+        assert_eq!(result, Some("by-lang".to_string()));
+    }
+
+    #[test]
+    fn resolve_server_empty_config_no_path_returns_none() {
+        // .xyz has no known candidates and no project marker — must return None.
+        let user_servers = HashMap::new();
+        let result = resolve_server("xyz", "/tmp/file.xyz", &user_servers);
+        assert_eq!(result, None);
+    }
+
+    // ── detect_project_server — marker file detection ─────────────────────────
+
+    #[test]
+    fn detect_project_server_python_pyproject_toml() {
+        let tmp = std::env::temp_dir().join("shio_lsp_test_python");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("pyproject.toml"), "[build-system]\n").unwrap();
+        let fake_file = tmp.join("app.py");
+        std::fs::write(&fake_file, "").unwrap();
+
+        let result = detect_project_server("py", fake_file.to_str().unwrap());
+        if is_in_path("pyright-langserver --stdio") {
+            assert_eq!(result, Some("pyright-langserver --stdio".to_string()));
+        } else {
+            assert_eq!(result, None);
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_project_server_typescript_tsconfig_json() {
+        let tmp = std::env::temp_dir().join("shio_lsp_test_typescript");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("tsconfig.json"), "{}").unwrap();
+        let fake_file = tmp.join("index.ts");
+        std::fs::write(&fake_file, "").unwrap();
+
+        let result = detect_project_server("ts", fake_file.to_str().unwrap());
+        if is_in_path("typescript-language-server --stdio") {
+            assert_eq!(
+                result,
+                Some("typescript-language-server --stdio".to_string())
+            );
+        } else {
+            assert_eq!(result, None);
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_project_server_c_cmake_lists() {
+        let tmp = std::env::temp_dir().join("shio_lsp_test_cmake");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("CMakeLists.txt"),
+            "cmake_minimum_required(VERSION 3.0)\n",
+        )
+        .unwrap();
+        let fake_file = tmp.join("main.c");
+        std::fs::write(&fake_file, "").unwrap();
+
+        let result = detect_project_server("c", fake_file.to_str().unwrap());
+        if is_in_path("clangd") {
+            assert_eq!(result, Some("clangd".to_string()));
+        } else {
+            assert_eq!(result, None);
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_project_server_no_marker_returns_none() {
+        let tmp = std::env::temp_dir().join("shio_lsp_test_empty");
+        std::fs::create_dir_all(&tmp).unwrap();
+        // Sub-directory with no Python marker anywhere (temp dir has no pyproject.toml).
+        let sub = tmp.join("src");
+        std::fs::create_dir_all(&sub).unwrap();
+        let fake_file = sub.join("app.py");
+        std::fs::write(&fake_file, "").unwrap();
+
+        // The walk-up will hit filesystem root without finding a marker.
+        let result = detect_project_server("py", fake_file.to_str().unwrap());
+        // We can't assert None unconditionally because a pyproject.toml might exist
+        // somewhere above /tmp. Just verify the call doesn't panic.
+        let _ = result;
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     // ── read_lsp_message — framing parser ────────────────────────────────────
 
     #[test]

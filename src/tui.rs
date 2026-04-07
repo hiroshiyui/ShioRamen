@@ -61,7 +61,7 @@ struct ChatEntry {
     text: String,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum EntryKind {
     User,
     Assistant,
@@ -1110,7 +1110,7 @@ async fn submit(app: &mut App) {
                     let lines: Vec<String> = slots
                         .iter()
                         .map(|s| {
-                            let state = if s.state == 0 { "idle" } else { "busy" };
+                            let state = if s.is_processing { "busy" } else { "idle" };
                             let pct = if s.n_ctx > 0 {
                                 s.n_past * 100 / s.n_ctx
                             } else {
@@ -1281,8 +1281,9 @@ fn dispatch_turn(app: &mut App) {
     let executor = app.executor.clone();
     let tx = app.event_tx.clone();
 
+    let ctx_size = app.ctx_size;
     app.model_task = Some(tokio::spawn(async move {
-        run_model_task(client, msgs, temp, tools, executor, tx).await;
+        run_model_task(client, msgs, temp, tools, executor, tx, ctx_size).await;
     }));
 }
 
@@ -1419,9 +1420,10 @@ async fn run_model_task(
     tools: Vec<ToolDef>,
     executor: Option<ToolExecutor>,
     tx: mpsc::UnboundedSender<TuiEvent>,
+    ctx_size: u32,
 ) {
     let result = if let Some(exec) = &executor {
-        run_agent_loop(&client, &mut msgs, temp, &tools, exec, &tx).await
+        run_agent_loop(&client, &mut msgs, temp, &tools, exec, &tx, ctx_size).await
     } else {
         run_stream_turn(&client, &mut msgs, temp, &tx).await
     };
@@ -1449,6 +1451,32 @@ async fn run_stream_turn(
     Ok(())
 }
 
+/// Characters allowed per tool result before it gets truncated.
+/// ~6 000 tokens at 4 chars/token — large enough for most files, small
+/// enough to leave room for the rest of the conversation.
+const MAX_TOOL_RESULT_CHARS: usize = 24_000;
+
+/// Cap a tool result at [`MAX_TOOL_RESULT_CHARS`] characters.
+/// The truncation message instructs the model to use read_file_range
+/// rather than leaving it confused about partial content.
+fn cap_tool_result(result: String) -> String {
+    if result.len() <= MAX_TOOL_RESULT_CHARS {
+        return result;
+    }
+    // Truncate at a char boundary.
+    let cut = result
+        .char_indices()
+        .map(|(i, _)| i)
+        .take_while(|&i| i < MAX_TOOL_RESULT_CHARS)
+        .last()
+        .unwrap_or(MAX_TOOL_RESULT_CHARS);
+    format!(
+        "{}\n[Output truncated at {cut} chars. \
+         Use read_file_range with explicit line numbers to read specific sections.]",
+        &result[..cut]
+    )
+}
+
 async fn run_agent_loop(
     client: &LlamaClient,
     msgs: &mut Vec<Message>,
@@ -1456,6 +1484,7 @@ async fn run_agent_loop(
     tools: &[ToolDef],
     executor: &ToolExecutor,
     tx: &mpsc::UnboundedSender<TuiEvent>,
+    ctx_size: u32,
 ) -> Result<()> {
     let mut planning_mode = false;
     // Built lazily on first enter_plan_mode; reused for all subsequent iterations.
@@ -1475,6 +1504,13 @@ async fn run_agent_loop(
         } else {
             tools
         };
+
+        // Trim history before every API call so accumulated tool results
+        // don't push the request past the context window.
+        if ctx_size > 0 {
+            let budget = ctx_size as usize * 4 * 80 / 100;
+            trim_to_budget(msgs, budget);
+        }
 
         // Some local models (e.g. Gemma4 with peg-gemma4 template) emit EOS
         // immediately when the last message has role "tool".  Append a temporary
@@ -1612,7 +1648,7 @@ async fn run_agent_loop(
                         .collect::<String>();
                     let _ = tx.send(TuiEvent::ToolDone(preview));
 
-                    msgs.push(Message::tool_result(&call.id, result));
+                    msgs.push(Message::tool_result(&call.id, cap_tool_result(result)));
                 }
             }
         }
@@ -1670,6 +1706,7 @@ fn fmt_call(call: &ToolCallItem) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::ToolCallFunction;
 
     // ── char_start_before ─────────────────────────────────────────────────────
 
@@ -2110,5 +2147,156 @@ mod tests {
         let mut msgs = vec![sys(), no_content, usr("hello")];
         let dropped = trim_to_budget(&mut msgs, 1000);
         assert_eq!(dropped, 0);
+    }
+
+    // ── cap_tool_result ───────────────────────────────────────────────────────
+
+    #[test]
+    fn cap_tool_result_passthrough_when_short() {
+        let s = "hello".to_string();
+        assert_eq!(cap_tool_result(s.clone()), s);
+    }
+
+    #[test]
+    fn cap_tool_result_truncates_long_result() {
+        let long = "a".repeat(MAX_TOOL_RESULT_CHARS + 100);
+        let out = cap_tool_result(long);
+        assert!(out.len() < MAX_TOOL_RESULT_CHARS + 200);
+        assert!(out.contains("[Output truncated"));
+        assert!(out.contains("read_file_range"));
+    }
+
+    #[test]
+    fn cap_tool_result_at_exact_limit_is_not_truncated() {
+        let exact = "b".repeat(MAX_TOOL_RESULT_CHARS);
+        let out = cap_tool_result(exact.clone());
+        assert_eq!(out, exact);
+    }
+
+    #[test]
+    fn cap_tool_result_handles_multibyte_chars() {
+        // Each '→' is 3 bytes; fill to just above the byte limit.
+        let arrow = "→".repeat(MAX_TOOL_RESULT_CHARS / 3 + 10);
+        let out = cap_tool_result(arrow);
+        // Must not panic and must be valid UTF-8.
+        assert!(std::str::from_utf8(out.as_bytes()).is_ok());
+        assert!(out.contains("[Output truncated"));
+    }
+
+    // ── needs_confirm ─────────────────────────────────────────────────────────
+
+    fn make_call_for_confirm(name: &str) -> ToolCallItem {
+        ToolCallItem {
+            id: "x".into(),
+            kind: "function".into(),
+            function: ToolCallFunction {
+                name: name.into(),
+                arguments: "{}".into(),
+            },
+        }
+    }
+
+    fn exec(confirm_writes: bool, confirm_shell: bool) -> ToolExecutor {
+        ToolExecutor {
+            confirm_writes,
+            confirm_shell,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn needs_confirm_write_file_follows_confirm_writes() {
+        assert!(needs_confirm(
+            &make_call_for_confirm("write_file"),
+            &exec(true, false)
+        ));
+        assert!(!needs_confirm(
+            &make_call_for_confirm("write_file"),
+            &exec(false, false)
+        ));
+    }
+
+    #[test]
+    fn needs_confirm_patch_and_delete_and_move_follow_confirm_writes() {
+        for name in &["patch_file", "delete_file", "move_file"] {
+            assert!(needs_confirm(
+                &make_call_for_confirm(name),
+                &exec(true, false)
+            ));
+            assert!(!needs_confirm(
+                &make_call_for_confirm(name),
+                &exec(false, false)
+            ));
+        }
+    }
+
+    #[test]
+    fn needs_confirm_run_shell_follows_confirm_shell() {
+        assert!(needs_confirm(
+            &make_call_for_confirm("run_shell"),
+            &exec(false, true)
+        ));
+        assert!(!needs_confirm(
+            &make_call_for_confirm("run_shell"),
+            &exec(false, false)
+        ));
+    }
+
+    #[test]
+    fn needs_confirm_read_file_never_requires_confirmation() {
+        assert!(!needs_confirm(
+            &make_call_for_confirm("read_file"),
+            &exec(true, true)
+        ));
+    }
+
+    #[test]
+    fn needs_confirm_unknown_tool_never_requires_confirmation() {
+        assert!(!needs_confirm(
+            &make_call_for_confirm("web_search"),
+            &exec(true, true)
+        ));
+    }
+
+    // ── entry_style ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn entry_style_all_prefixes_are_seven_chars_wide() {
+        for kind in [
+            EntryKind::User,
+            EntryKind::Assistant,
+            EntryKind::ToolCall,
+            EntryKind::ToolResult,
+            EntryKind::Info,
+            EntryKind::Error,
+        ] {
+            let (prefix, indent, _) = entry_style(kind);
+            assert_eq!(
+                prefix.chars().count(),
+                7,
+                "prefix for {kind:?} should be 7 chars"
+            );
+            assert_eq!(
+                indent.chars().count(),
+                7,
+                "indent for {kind:?} should be 7 chars"
+            );
+        }
+    }
+
+    #[test]
+    fn entry_style_prefixes_are_distinct() {
+        let kinds = [
+            EntryKind::User,
+            EntryKind::Assistant,
+            EntryKind::ToolCall,
+            EntryKind::ToolResult,
+            EntryKind::Info,
+            EntryKind::Error,
+        ];
+        let prefixes: Vec<_> = kinds.iter().map(|&k| entry_style(k).0).collect();
+        // All prefixes must be unique.
+        let unique: std::collections::HashSet<_> = prefixes.iter().collect();
+        assert_eq!(unique.len(), prefixes.len());
     }
 }
