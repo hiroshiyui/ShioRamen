@@ -1449,25 +1449,20 @@ async fn run_stream_turn(
     Ok(())
 }
 
-/// Characters allowed per tool result before it gets truncated.
-/// ~6 000 tokens at 4 chars/token — large enough for most files, small
-/// enough to leave room for the rest of the conversation.
-const MAX_TOOL_RESULT_CHARS: usize = 24_000;
-
-/// Cap a tool result at [`MAX_TOOL_RESULT_CHARS`] characters.
+/// Cap a tool result at `limit` characters.
 /// The truncation message instructs the model to use read_file_range
 /// rather than leaving it confused about partial content.
-fn cap_tool_result(result: String) -> String {
-    if result.len() <= MAX_TOOL_RESULT_CHARS {
+fn cap_tool_result(result: String, limit: usize) -> String {
+    if result.len() <= limit {
         return result;
     }
     // Truncate at a char boundary.
     let cut = result
         .char_indices()
         .map(|(i, _)| i)
-        .take_while(|&i| i < MAX_TOOL_RESULT_CHARS)
+        .take_while(|&i| i < limit)
         .last()
-        .unwrap_or(MAX_TOOL_RESULT_CHARS);
+        .unwrap_or(limit);
     format!(
         "{}\n[Output truncated at {cut} chars. \
          Use read_file_range with explicit line numbers to read specific sections.]",
@@ -1621,6 +1616,7 @@ async fn run_agent_loop(
                             confirm_writes: false,
                             confirm_shell: false,
                             lsp: executor.lsp.clone(),
+                            max_tool_result_chars: executor.max_tool_result_chars,
                         };
                         let call2 = call.clone();
                         tokio::task::spawn_blocking(move || exec.execute_quiet(&call2))
@@ -1638,7 +1634,10 @@ async fn run_agent_loop(
                         .collect::<String>();
                     let _ = tx.send(TuiEvent::ToolDone(preview));
 
-                    msgs.push(Message::tool_result(&call.id, cap_tool_result(result)));
+                    msgs.push(Message::tool_result(
+                        &call.id,
+                        cap_tool_result(result, executor.max_tool_result_chars),
+                    ));
                 }
             }
         }
@@ -1697,6 +1696,7 @@ fn fmt_call(call: &ToolCallItem) -> String {
 mod tests {
     use super::*;
     use crate::client::ToolCallFunction;
+    use crate::tools::DEFAULT_MAX_TOOL_RESULT_CHARS;
 
     // ── char_start_before ─────────────────────────────────────────────────────
 
@@ -2144,33 +2144,49 @@ mod tests {
     #[test]
     fn cap_tool_result_passthrough_when_short() {
         let s = "hello".to_string();
-        assert_eq!(cap_tool_result(s.clone()), s);
+        assert_eq!(cap_tool_result(s.clone(), DEFAULT_MAX_TOOL_RESULT_CHARS), s);
     }
 
     #[test]
     fn cap_tool_result_truncates_long_result() {
-        let long = "a".repeat(MAX_TOOL_RESULT_CHARS + 100);
-        let out = cap_tool_result(long);
-        assert!(out.len() < MAX_TOOL_RESULT_CHARS + 200);
+        let limit = DEFAULT_MAX_TOOL_RESULT_CHARS;
+        let long = "a".repeat(limit + 100);
+        let out = cap_tool_result(long, limit);
+        assert!(out.len() < limit + 200);
         assert!(out.contains("[Output truncated"));
         assert!(out.contains("read_file_range"));
     }
 
     #[test]
     fn cap_tool_result_at_exact_limit_is_not_truncated() {
-        let exact = "b".repeat(MAX_TOOL_RESULT_CHARS);
-        let out = cap_tool_result(exact.clone());
+        let limit = DEFAULT_MAX_TOOL_RESULT_CHARS;
+        let exact = "b".repeat(limit);
+        let out = cap_tool_result(exact.clone(), limit);
         assert_eq!(out, exact);
     }
 
     #[test]
     fn cap_tool_result_handles_multibyte_chars() {
         // Each '→' is 3 bytes; fill to just above the byte limit.
-        let arrow = "→".repeat(MAX_TOOL_RESULT_CHARS / 3 + 10);
-        let out = cap_tool_result(arrow);
+        let limit = DEFAULT_MAX_TOOL_RESULT_CHARS;
+        let arrow = "→".repeat(limit / 3 + 10);
+        let out = cap_tool_result(arrow, limit);
         // Must not panic and must be valid UTF-8.
         assert!(std::str::from_utf8(out.as_bytes()).is_ok());
         assert!(out.contains("[Output truncated"));
+    }
+
+    #[test]
+    fn cap_tool_result_respects_custom_limit() {
+        // A larger limit should pass through content that would be truncated at
+        // the default limit.
+        let large_limit = DEFAULT_MAX_TOOL_RESULT_CHARS * 4; // e.g. ctx=32K scenario
+        let content = "x".repeat(DEFAULT_MAX_TOOL_RESULT_CHARS + 1000);
+        let out = cap_tool_result(content.clone(), large_limit);
+        assert_eq!(
+            out, content,
+            "content within large_limit should not be truncated"
+        );
     }
 
     // ── needs_confirm ─────────────────────────────────────────────────────────

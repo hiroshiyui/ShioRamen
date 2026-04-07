@@ -479,12 +479,31 @@ pub fn all_tools() -> Vec<ToolDef> {
 
 // ── Executor ─────────────────────────────────────────────────────────────────
 
-#[derive(Clone, Default)]
+/// Fallback cap used when no context size is known.
+/// At startup this is overridden to `ctx_size * 4 * 75 / 100` so the
+/// limit automatically scales with the configured context window.
+pub const DEFAULT_MAX_TOOL_RESULT_CHARS: usize = 24_000;
+
+#[derive(Clone)]
 pub struct ToolExecutor {
     pub confirm_writes: bool,
     pub confirm_shell: bool,
     /// LSP server overrides from `[lsp.servers]` in `shio.toml`.
     pub lsp: std::collections::HashMap<String, String>,
+    /// Maximum characters returned from a single tool call before truncation.
+    /// Computed from `ctx_size` at startup so the cap scales with the context window.
+    pub max_tool_result_chars: usize,
+}
+
+impl Default for ToolExecutor {
+    fn default() -> Self {
+        Self {
+            confirm_writes: false,
+            confirm_shell: false,
+            lsp: std::collections::HashMap::new(),
+            max_tool_result_chars: DEFAULT_MAX_TOOL_RESULT_CHARS,
+        }
+    }
 }
 
 const YELLOW: &str = "\x1b[33m";

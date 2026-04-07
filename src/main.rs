@@ -222,6 +222,11 @@ async fn main() -> Result<()> {
             }
 
             println!();
+            let ctx_size = args.server.ctx.or(cfg.server.ctx).unwrap_or(DEFAULT_CTX);
+            // Cap a single tool result at 75 % of the context budget (estimated at
+            // 4 bytes per token).  This lets the model read large files on wide
+            // context windows while still preventing overflow on small ones.
+            let max_tool_result_chars = (ctx_size as usize * 4 * 3 / 4).max(24_000);
             let tools_requested = !args.no_tools && cfg.tools.enabled.unwrap_or(true);
             let executor = if tools_requested {
                 if prompt_trust()? {
@@ -229,6 +234,7 @@ async fn main() -> Result<()> {
                         confirm_writes: cfg.tools.confirm_writes.unwrap_or(true),
                         confirm_shell: cfg.tools.confirm_shell.unwrap_or(true),
                         lsp: cfg.lsp.servers.clone(),
+                        max_tool_result_chars,
                     })
                 } else {
                     eprintln!("  Tools disabled for this session.\n");
@@ -237,7 +243,6 @@ async fn main() -> Result<()> {
             } else {
                 None
             };
-            let ctx_size = args.server.ctx.or(cfg.server.ctx).unwrap_or(DEFAULT_CTX);
             let client = LlamaClient::new(server.url.clone());
             let session = ChatSession::new(
                 client,
