@@ -244,6 +244,7 @@ async fn main() -> Result<()> {
                 None
             };
             let client = LlamaClient::new(server.url.clone());
+            let show_thinking = cfg.chat.show_thinking.unwrap_or(true);
             let session = ChatSession::new(
                 client,
                 temp,
@@ -251,6 +252,7 @@ async fn main() -> Result<()> {
                 executor,
                 cfg.skills.clone(),
                 ctx_size,
+                show_thinking,
             );
             session.run().await?;
             drop(server);

@@ -70,6 +70,8 @@ pub struct ChatSession {
     pub(crate) skills: HashMap<String, SkillDef>,
     /// Context window size in tokens (0 = unknown).
     pub(crate) ctx_size: u32,
+    /// Whether to render `<think>…</think>` blocks in a dimmed style.
+    pub(crate) show_thinking: bool,
 }
 
 impl ChatSession {
@@ -80,6 +82,7 @@ impl ChatSession {
         executor: Option<ToolExecutor>,
         skills: HashMap<String, SkillDef>,
         ctx_size: u32,
+        show_thinking: bool,
     ) -> Self {
         Self {
             client,
@@ -89,6 +92,7 @@ impl ChatSession {
             tools: all_tools(),
             skills,
             ctx_size,
+            show_thinking,
         }
     }
 
@@ -112,6 +116,7 @@ mod tests {
             executor,
             HashMap::new(),
             0,
+            true,
         )
     }
 
@@ -163,7 +168,7 @@ mod tests {
             },
         );
         let client = LlamaClient::new("http://127.0.0.1:1".to_string());
-        let session = ChatSession::new(client, 0.7, "sys".to_string(), None, skills, 0);
+        let session = ChatSession::new(client, 0.7, "sys".to_string(), None, skills, 0, true);
         assert_eq!(session.skills.len(), 1);
         assert!(session.skills.contains_key("commit"));
     }

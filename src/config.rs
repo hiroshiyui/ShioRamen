@@ -44,6 +44,9 @@ pub struct ChatSection {
     pub model: Option<PathBuf>,
     pub temperature: Option<f32>,
     pub system_prompt: Option<String>,
+    /// Show `<think>…</think>` blocks from reasoning models in a dimmed style.
+    /// Default: true.
+    pub show_thinking: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]

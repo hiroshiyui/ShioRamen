@@ -16,8 +16,9 @@ flash_attn    = true   # Faster attention; disable if you hit compatibility issu
 cont_batching = true   # Better throughput when multiple requests queue up
 
 [chat]
-model       = "./models/gemma-4-e4b-it-Q8_0.gguf"
-temperature = 0.1   # Low temperature for precise, deterministic coding responses
+model          = "./models/gemma-4-e4b-it-Q8_0.gguf"
+temperature    = 0.1   # Low temperature for precise, deterministic coding responses
+show_thinking  = true  # Show <think>…</think> blocks from reasoning models (dimmed); set false to hide them
 
 system_prompt = """
 You are ShioRamen, a sharp, focused local coding assistant running entirely offline. \

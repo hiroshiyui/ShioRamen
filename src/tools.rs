@@ -505,6 +505,26 @@ pub fn all_tools() -> Vec<ToolDef> {
     ]
 }
 
+// ── Shared HTTP client ────────────────────────────────────────────────────────
+
+/// Return the process-wide blocking HTTP client, or an error string if the
+/// TLS backend failed to initialise.  The client is constructed once and
+/// reused; per-request timeouts are set by each call site via
+/// `client.get(url).timeout(…)`.
+fn http_client() -> Result<&'static reqwest::blocking::Client, String> {
+    static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
+    if let Some(c) = CLIENT.get() {
+        return Ok(c);
+    }
+    let built = reqwest::blocking::Client::builder()
+        .user_agent("ShioRamen/0.1 (local AI assistant)")
+        .build()
+        .map_err(|e| format!("Error: failed to initialise HTTP client: {e}"))?;
+    // get_or_init guarantees only one value is stored even under contention;
+    // if another thread won the race our `built` is simply dropped.
+    Ok(CLIENT.get_or_init(|| built))
+}
+
 // ── Executor ─────────────────────────────────────────────────────────────────
 
 /// Fallback cap used when no context size is known.
@@ -872,7 +892,6 @@ fn strip_line_number_prefix(s: &str, box_drawing_only: bool) -> String {
                 chars.next();
             }
             // must have at least one digit
-            let digit_start = chars.peek().map(|(i, _)| *i).unwrap_or(line.len());
             let mut has_digit = false;
             while chars
                 .peek()
@@ -904,7 +923,6 @@ fn strip_line_number_prefix(s: &str, box_drawing_only: bool) -> String {
                 chars.next();
             }
             let content_start = chars.peek().map(|(i, _)| *i).unwrap_or(line.len());
-            let _ = digit_start; // suppress unused warning
             &line[content_start..]
         })
         .collect::<Vec<_>>()
@@ -934,23 +952,79 @@ impl ToolExecutor {
 
         let count = content.matches(old_str).count();
         match count {
-            0 => return format!("Error: old_str not found in {path}"),
-            1 => {}
-            n => {
+            1 => {
+                let patched = content.replacen(old_str, new_str, 1);
+                return match std::fs::write(path, &patched) {
+                    Ok(()) => format!(
+                        "Patched {path}: old_str replaced with new_str in place. \
+                         The new content is already written — do NOT call append_file or write_file.",
+                    ),
+                    Err(e) => format!("Error writing {path}: {e}"),
+                };
+            }
+            n if n > 1 => {
                 return format!(
                     "Error: old_str appears {n} times in {path} — \
                      make it more specific so it matches exactly once"
                 );
             }
+            _ => {} // 0 — fall through to line-by-line fallback
         }
 
-        let patched = content.replacen(old_str, new_str, 1);
-        match std::fs::write(path, &patched) {
-            Ok(()) => format!(
-                "Patched {path}: old_str replaced with new_str in place. \
-                 The new content is already written — do NOT call append_file or write_file.",
+        // ── Line-by-line fallback ─────────────────────────────────────────────
+        // Exact substring match failed.  Try matching each line of old_str against
+        // a contiguous block of file lines, trimming trailing whitespace from both
+        // sides so minor spacing differences do not prevent large edits from landing.
+        let old_lines: Vec<&str> = old_str.lines().collect();
+        // Guard: a whitespace-only old_str would match any blank line and produce
+        // false positives.  Treat it as not-found rather than risking a wrong patch.
+        if old_lines.is_empty() || old_lines.iter().all(|l| l.trim().is_empty()) {
+            return format!("Error: old_str not found in {path}");
+        }
+        let file_lines: Vec<&str> = content.lines().collect();
+        let n = old_lines.len();
+
+        let hits: Vec<usize> = (0..=file_lines.len().saturating_sub(n))
+            .filter(|&i| {
+                file_lines[i..i + n]
+                    .iter()
+                    .zip(old_lines.iter())
+                    .all(|(fl, ol)| fl.trim_end() == ol.trim_end())
+            })
+            .collect();
+
+        match hits.len() {
+            0 => format!("Error: old_str not found in {path}"),
+            1 => {
+                let start = hits[0];
+                let mut result: Vec<&str> = file_lines[..start].to_vec();
+                result.extend(new_str.lines());
+                // Preserve a trailing newline that new_str.lines() would drop.
+                if new_str.ends_with('\n') {
+                    result.push("");
+                }
+                result.extend_from_slice(&file_lines[start + n..]);
+                let mut patched = result.join("\n");
+                // If the original file ended with '\n', the joined string already
+                // ends with '\n' from the pushed "". Remove the doubled newline only
+                // when the file did NOT end with '\n' originally.
+                if !content.ends_with('\n') && patched.ends_with('\n') {
+                    patched.pop();
+                } else if content.ends_with('\n') && !patched.ends_with('\n') {
+                    patched.push('\n');
+                }
+                match std::fs::write(path, &patched) {
+                    Ok(()) => format!(
+                        "Patched {path} (line-by-line fallback): old_str replaced with new_str. \
+                         The new content is already written — do NOT call append_file or write_file.",
+                    ),
+                    Err(e) => format!("Error writing {path}: {e}"),
+                }
+            }
+            n => format!(
+                "Error: old_str matches {n} locations in {path} (line-by-line fallback) — \
+                 make it more specific so it matches exactly once"
             ),
-            Err(e) => format!("Error writing {path}: {e}"),
         }
     }
 
@@ -1011,16 +1085,16 @@ impl ToolExecutor {
             );
         }
 
-        static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
-        let client = CLIENT.get_or_init(|| {
-            reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(10))
-                .user_agent("ShioRamen/0.1 (local AI assistant)")
-                .build()
-                .expect("failed to build reqwest blocking client")
-        });
+        let client = match http_client() {
+            Ok(c) => c,
+            Err(e) => return e,
+        };
 
-        let response = match client.get(url).send() {
+        let response = match client
+            .get(url)
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+        {
             Ok(r) => r,
             Err(e) => return format!("Error fetching {url}: {e}"),
         };
@@ -1108,16 +1182,17 @@ impl ToolExecutor {
 
         let search_url = format!("https://lite.duckduckgo.com/lite/?q={encoded}");
 
-        static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
-        let client = CLIENT.get_or_init(|| {
-            reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(15))
-                .user_agent("Mozilla/5.0 (compatible; ShioRamen/0.1)")
-                .build()
-                .expect("failed to build reqwest blocking client")
-        });
+        let client = match http_client() {
+            Ok(c) => c,
+            Err(e) => return e,
+        };
 
-        let body = match client.get(&search_url).send().and_then(|r| r.text()) {
+        let body = match client
+            .get(&search_url)
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .and_then(|r| r.text())
+        {
             Ok(b) => b,
             Err(e) => return format!("Error fetching search results: {e}"),
         };
@@ -1201,9 +1276,19 @@ impl ToolExecutor {
             format!("{}\n- {memory}\n", existing.trim_end())
         };
 
-        match std::fs::write(memory_file, &new_content) {
+        // Write atomically: write to a temp file next to the target, then rename.
+        // This prevents losing updates from two concurrent saves and avoids a
+        // partial write leaving the memory file in a corrupted state.
+        let tmp_path = format!("{memory_file}.tmp");
+        if let Err(e) = std::fs::write(&tmp_path, &new_content) {
+            return format!("Error saving memory: {e}");
+        }
+        match std::fs::rename(&tmp_path, memory_file) {
             Ok(()) => format!("Saved to {memory_file}: {memory}"),
-            Err(e) => format!("Error saving memory: {e}"),
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp_path);
+                format!("Error saving memory: {e}")
+            }
         }
     }
 
@@ -1424,9 +1509,12 @@ fn is_private_host(url: &str) -> bool {
             || (o[0] == 169 && o[1] == 254); // 169.254.0.0/16 IMDS / link-local
     }
 
-    // IPv6 loopback (::1 already caught above as a string, but cover parsed form too).
+    // IPv6: loopback, unique-local (fc00::/7), and link-local (fe80::/10).
     if let Ok(ipv6) = host.parse::<std::net::Ipv6Addr>() {
-        return ipv6.is_loopback();
+        let segs = ipv6.segments();
+        return ipv6.is_loopback()                          // ::1
+            || (segs[0] & 0xfe00) == 0xfc00               // fc00::/7  unique local
+            || (segs[0] & 0xffc0) == 0xfe80; // fe80::/10 link-local
     }
 
     false
@@ -1865,6 +1953,87 @@ mod tests {
     }
 
     #[test]
+    fn patch_file_fallback_tolerates_trailing_whitespace() {
+        let path = std::env::temp_dir().join("shio_patch_fallback.txt");
+        // File has trailing spaces on the second line.
+        fs::write(&path, "fn foo() {\n    let x = 1;   \n}\n").unwrap();
+        let ex = executor(false, false);
+        // old_str has no trailing spaces — exact match would fail.
+        let args = serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "old_str": "fn foo() {\n    let x = 1;\n}",
+            "new_str": "fn foo() {\n    let x = 2;\n}",
+        });
+        let out = ex.patch_file(&args);
+        assert!(out.contains("Patched"), "{out}");
+        assert!(out.contains("fallback"), "{out}");
+        let result = fs::read_to_string(&path).unwrap();
+        assert!(result.contains("let x = 2;"), "{result}");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn patch_file_fallback_errors_when_ambiguous() {
+        let path = std::env::temp_dir().join("shio_patch_fallback_ambig.txt");
+        // Two identical blocks (old_str matches both via line-by-line).
+        fs::write(&path, "fn a() {}\nfn a() {}\n").unwrap();
+        let ex = executor(false, false);
+        let args = serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "old_str": "fn a() {}",
+            "new_str": "fn b() {}",
+        });
+        let out = ex.patch_file(&args);
+        assert!(out.starts_with("Error"), "{out}");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn patch_file_fallback_rejects_whitespace_only_old_str() {
+        // A whitespace-only old_str would match every blank line — must be rejected.
+        let path = std::env::temp_dir().join("shio_patch_ws_guard.txt");
+        fs::write(&path, "a\n\nb\n").unwrap();
+        let ex = executor(false, false);
+        let args = serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "old_str": "   ",   // all whitespace
+            "new_str": "x",
+        });
+        let out = ex.patch_file(&args);
+        assert!(out.starts_with("Error"), "{out}");
+        // File must be unchanged.
+        assert_eq!(fs::read_to_string(&path).unwrap(), "a\n\nb\n");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn patch_file_fallback_preserves_trailing_newline_in_new_str() {
+        // new_str ending with '\n' must be preserved verbatim (not dropped by lines()).
+        let path = std::env::temp_dir().join("shio_patch_trail_nl.txt");
+        fs::write(&path, "fn foo() {   \n}\n").unwrap(); // trailing space triggers fallback
+        let ex = executor(false, false);
+        let args = serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "old_str": "fn foo() {\n}",
+            "new_str": "fn foo() {\n    42\n}\n",
+        });
+        let out = ex.patch_file(&args);
+        assert!(out.contains("Patched"), "{out}");
+        let result = fs::read_to_string(&path).unwrap();
+        assert!(result.contains("42"), "{result}");
+        // File should end with exactly one newline.
+        assert!(
+            result.ends_with('\n'),
+            "missing trailing newline: {result:?}"
+        );
+        assert!(
+            !result.ends_with("\n\n"),
+            "double trailing newline: {result:?}"
+        );
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
     fn execute_quiet_unwraps_function_name_wrapped_args() {
         // Some local models send {"patch_file": {"path": …}} instead of {"path": …}.
         use crate::client::{ToolCallFunction, ToolCallItem};
@@ -2210,6 +2379,27 @@ mod tests {
     fn is_private_host_ipv6_loopback() {
         assert!(is_private_host("http://[::1]/"));
         assert!(is_private_host("http://[::1]:9000/"));
+    }
+
+    #[test]
+    fn is_private_host_ipv6_unique_local() {
+        // fc00::/7 — unique local addresses (fd00:: is in range, fc00:: is too)
+        assert!(is_private_host("http://[fd12:3456:789a::1]/"));
+        assert!(is_private_host("http://[fc00::1]/path"));
+    }
+
+    #[test]
+    fn is_private_host_ipv6_link_local() {
+        // fe80::/10 — link-local addresses
+        assert!(is_private_host("http://[fe80::1]/"));
+        assert!(is_private_host("http://[fe80::dead:beef]:8080/api"));
+    }
+
+    #[test]
+    fn is_private_host_ipv6_public_returns_false() {
+        // 2001:db8::/32 is documentation range (publicly routable prefix)
+        assert!(!is_private_host("https://[2001:db8::1]/"));
+        assert!(!is_private_host("https://[2606:4700:4700::1111]/dns")); // Cloudflare
     }
 
     #[test]

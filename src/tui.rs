@@ -65,6 +65,7 @@ struct ChatEntry {
 enum EntryKind {
     User,
     Assistant,
+    Thinking,
     ToolCall,
     ToolResult,
     Info,
@@ -88,6 +89,11 @@ fn entry_style(kind: EntryKind) -> (&'static str, &'static str, Style) {
     match kind {
         EntryKind::User => ("  you> ", "       ", Style::default().fg(SOL_CYAN)),
         EntryKind::Assistant => (" shio> ", "       ", Style::default()),
+        EntryKind::Thinking => (
+            "  [~~] ",
+            "       ",
+            Style::default().fg(SOL_BASE01).add_modifier(Modifier::DIM),
+        ),
         EntryKind::ToolCall => ("  [**] ", "       ", Style::default().fg(SOL_YELLOW)),
         EntryKind::ToolResult => (
             "  [-›] ",
@@ -112,6 +118,15 @@ struct App {
     // Display
     entries: Vec<ChatEntry>,
     streaming: Option<String>, // assistant response being built token-by-token
+    /// Live thinking text accumulating inside a `<think>…</think>` block.
+    thinking: Option<String>,
+    /// True while streaming tokens that belong inside a `<think>` block.
+    in_think: bool,
+    /// Raw token accumulator — held until `<think>`/`</think>` tag boundaries
+    /// are resolved before routing to `streaming` or `thinking`.
+    raw_buf: String,
+    /// Whether to display `<think>` blocks (from config).
+    show_thinking: bool,
     scroll: u16,
     auto_scroll: bool,
 
@@ -208,6 +223,10 @@ async fn run_loop(
         temperature: session.temperature,
         entries: Vec::new(),
         streaming: None,
+        thinking: None,
+        in_think: false,
+        raw_buf: String::new(),
+        show_thinking: session.show_thinking,
         scroll: 0,
         auto_scroll: true,
         input: String::new(),
@@ -323,7 +342,17 @@ fn render(f: &mut Frame, app: &App) {
 
     // ── Messages area ──────────────────────────────────────────────────────────
     let msg_width = chunks[1].width.saturating_sub(1) as usize;
-    let all_lines = build_lines(&app.entries, app.streaming.as_deref(), msg_width);
+    let streaming_think = if app.show_thinking {
+        app.thinking.as_deref()
+    } else {
+        None
+    };
+    let all_lines = build_lines(
+        &app.entries,
+        streaming_think,
+        app.streaming.as_deref(),
+        msg_width,
+    );
     let total = all_lines.len() as u16;
     let visible = chunks[1].height;
 
@@ -428,7 +457,12 @@ fn render(f: &mut Frame, app: &App) {
     }
 }
 
-fn build_lines(entries: &[ChatEntry], streaming: Option<&str>, width: usize) -> Vec<Line<'static>> {
+fn build_lines(
+    entries: &[ChatEntry],
+    streaming_think: Option<&str>,
+    streaming: Option<&str>,
+    width: usize,
+) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
 
     for entry in entries {
@@ -436,7 +470,20 @@ fn build_lines(entries: &[ChatEntry], streaming: Option<&str>, width: usize) -> 
         out.push(Line::raw(""));
     }
 
-    // In-progress streaming response shown at the bottom.
+    // Live thinking block (shown while the model is still inside <think>…</think>).
+    if let Some(text) = streaming_think {
+        push_entry_lines(
+            &mut out,
+            &ChatEntry {
+                kind: EntryKind::Thinking,
+                text: text.to_string(),
+            },
+            width,
+        );
+        out.push(Line::raw(""));
+    }
+
+    // In-progress response shown at the bottom.
     if let Some(text) = streaming {
         push_entry_lines(
             &mut out,
@@ -1312,10 +1359,13 @@ fn dispatch_turn(app: &mut App) {
 fn handle_model_event(app: &mut App, ev: TuiEvent) {
     match ev {
         TuiEvent::StreamToken(token) => {
-            match &mut app.streaming {
-                Some(s) => s.push_str(&token),
-                None => app.streaming = Some(token),
-            }
+            app.raw_buf.push_str(&token);
+            consume_raw_buf(
+                &mut app.raw_buf,
+                &mut app.in_think,
+                &mut app.streaming,
+                &mut app.thinking,
+            );
             app.auto_scroll = true;
         }
         TuiEvent::ToolStart(label) => {
@@ -1405,7 +1455,111 @@ fn replace_latex(mut s: String) -> String {
     s
 }
 
+/// Route tokens from `raw_buf` to `thinking` or `streaming` by splitting at
+/// `<think>` / `</think>` tag boundaries.
+///
+/// Holds back up to `tag_len - 1` bytes at the tail so a tag split across two
+/// consecutive tokens is always caught on the next call.
+fn consume_raw_buf(
+    raw_buf: &mut String,
+    in_think: &mut bool,
+    streaming: &mut Option<String>,
+    thinking: &mut Option<String>,
+) {
+    loop {
+        if *in_think {
+            match raw_buf.find("</think>") {
+                Some(pos) => {
+                    let chunk = raw_buf[..pos].to_string();
+                    *raw_buf = raw_buf[pos + 8..].to_string(); // 8 == "</think>".len()
+                    *in_think = false;
+                    if !chunk.is_empty() {
+                        match thinking {
+                            Some(t) => t.push_str(&chunk),
+                            None => *thinking = Some(chunk),
+                        }
+                    }
+                }
+                None => {
+                    // Hold back last 7 bytes (</think>.len() - 1) for partial-tag safety.
+                    let hold = 7usize.min(raw_buf.len());
+                    let safe = raw_buf.len() - hold;
+                    if safe > 0 {
+                        let chunk = raw_buf[..safe].to_string();
+                        *raw_buf = raw_buf[safe..].to_string();
+                        match thinking {
+                            Some(t) => t.push_str(&chunk),
+                            None => *thinking = Some(chunk),
+                        }
+                    }
+                    break;
+                }
+            }
+        } else {
+            match raw_buf.find("<think>") {
+                Some(pos) => {
+                    let chunk = raw_buf[..pos].to_string();
+                    *raw_buf = raw_buf[pos + 7..].to_string(); // 7 == "<think>".len()
+                    *in_think = true;
+                    if !chunk.is_empty() {
+                        match streaming {
+                            Some(s) => s.push_str(&chunk),
+                            None => *streaming = Some(chunk),
+                        }
+                    }
+                }
+                None => {
+                    // Hold back last 6 bytes (<think>.len() - 1) for partial-tag safety.
+                    let hold = 6usize.min(raw_buf.len());
+                    let safe = raw_buf.len() - hold;
+                    if safe > 0 {
+                        let chunk = raw_buf[..safe].to_string();
+                        *raw_buf = raw_buf[safe..].to_string();
+                        match streaming {
+                            Some(s) => s.push_str(&chunk),
+                            None => *streaming = Some(chunk),
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+}
+
 fn finalize_streaming(app: &mut App) {
+    // Flush whatever is still buffered (no more tokens will arrive).
+    if !app.raw_buf.is_empty() {
+        let remaining = std::mem::take(&mut app.raw_buf);
+        if app.in_think {
+            match &mut app.thinking {
+                Some(t) => t.push_str(&remaining),
+                None => app.thinking = Some(remaining),
+            }
+        } else {
+            match &mut app.streaming {
+                Some(s) => s.push_str(&remaining),
+                None => {
+                    if !remaining.is_empty() {
+                        app.streaming = Some(remaining);
+                    }
+                }
+            }
+        }
+        app.in_think = false;
+    }
+
+    // Thinking always precedes the response; push it first.
+    if let Some(text) = app.thinking.take() {
+        let text = text.trim_matches('\n').to_string();
+        if app.show_thinking && !text.is_empty() {
+            app.entries.push(ChatEntry {
+                kind: EntryKind::Thinking,
+                text,
+            });
+        }
+    }
+
     if let Some(text) = app.streaming.take() {
         app.entries.push(ChatEntry {
             kind: EntryKind::Assistant,
@@ -2372,6 +2526,7 @@ mod tests {
         for kind in [
             EntryKind::User,
             EntryKind::Assistant,
+            EntryKind::Thinking,
             EntryKind::ToolCall,
             EntryKind::ToolResult,
             EntryKind::Info,
@@ -2396,6 +2551,7 @@ mod tests {
         let kinds = [
             EntryKind::User,
             EntryKind::Assistant,
+            EntryKind::Thinking,
             EntryKind::ToolCall,
             EntryKind::ToolResult,
             EntryKind::Info,
@@ -2405,5 +2561,59 @@ mod tests {
         // All prefixes must be unique.
         let unique: std::collections::HashSet<_> = prefixes.iter().collect();
         assert_eq!(unique.len(), prefixes.len());
+    }
+
+    // ── consume_raw_buf ───────────────────────────────────────────────────────
+
+    fn run_consume(input: &str) -> (Option<String>, Option<String>) {
+        let mut raw = input.to_string();
+        let mut in_think = false;
+        let mut streaming: Option<String> = None;
+        let mut thinking: Option<String> = None;
+        consume_raw_buf(&mut raw, &mut in_think, &mut streaming, &mut thinking);
+        // Flush held-back tail (simulates end-of-turn).
+        if !raw.is_empty() {
+            if in_think {
+                match &mut thinking {
+                    Some(t) => t.push_str(&raw),
+                    None => thinking = Some(raw.clone()),
+                }
+            } else {
+                match &mut streaming {
+                    Some(s) => s.push_str(&raw),
+                    None => streaming = Some(raw.clone()),
+                }
+            }
+        }
+        (streaming, thinking)
+    }
+
+    #[test]
+    fn consume_raw_buf_no_think_tag_goes_to_streaming() {
+        let (streaming, thinking) = run_consume("hello world");
+        assert_eq!(streaming.as_deref(), Some("hello world"));
+        assert!(thinking.is_none());
+    }
+
+    #[test]
+    fn consume_raw_buf_think_block_routed_to_thinking() {
+        let (streaming, thinking) = run_consume("<think>reason</think>answer");
+        assert_eq!(thinking.as_deref(), Some("reason"));
+        assert_eq!(streaming.as_deref(), Some("answer"));
+    }
+
+    #[test]
+    fn consume_raw_buf_think_only_no_response() {
+        let (streaming, thinking) = run_consume("<think>just thinking</think>");
+        assert_eq!(thinking.as_deref(), Some("just thinking"));
+        assert!(streaming.is_none() || streaming.as_deref() == Some(""));
+    }
+
+    #[test]
+    fn consume_raw_buf_text_before_think_goes_to_streaming() {
+        let (streaming, thinking) = run_consume("prefix<think>thought</think>suffix");
+        assert_eq!(thinking.as_deref(), Some("thought"));
+        assert!(streaming.as_deref().unwrap_or("").contains("prefix"));
+        assert!(streaming.as_deref().unwrap_or("").contains("suffix"));
     }
 }
