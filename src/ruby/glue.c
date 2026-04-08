@@ -45,11 +45,123 @@ const char* shio_mrb_eval(mrb_state* mrb, const char* code, const char** error_o
     return mrb_string_value_cstr(mrb, &inspected);
 }
 
-/* Register the Shio native module and all its methods.
- * Phase A stub — native methods are added here in Phase B/C as each tool
- * migrates from Rust to Ruby.
- */
+/* ── Rust native implementations ─────────────────────────────────────────── */
+
+extern const char* shio_native_current_dir(const char** error_out);
+extern void        shio_native_create_dir_all(const char* path, const char** error_out);
+extern const char* shio_native_read_file(const char* path, const char** error_out);
+extern const char* shio_native_read_dir(const char* path, const char** error_out);
+extern void        shio_native_delete_file(const char* path, const char** error_out);
+extern void        shio_native_rename(const char* src, const char* dst, const char** error_out);
+extern void        shio_native_write_file(const char* path, const char* content, const char** error_out);
+extern void        shio_native_append_file(const char* path, const char* content, const char** error_out);
+
+/* ── mRuby shim: Shio.current_dir ─────────────────────────────────────────── */
+
+static mrb_value shio_rb_current_dir(mrb_state* mrb, mrb_value self) {
+    (void)self;
+    const char* err = NULL;
+    const char* result = shio_native_current_dir(&err);
+    if (err) mrb_raise(mrb, E_RUNTIME_ERROR, err);
+    return mrb_str_new_cstr(mrb, result);
+}
+
+/* ── mRuby shim: Shio.create_dir_all(path) ───────────────────────────────── */
+
+static mrb_value shio_rb_create_dir_all(mrb_state* mrb, mrb_value self) {
+    (void)self;
+    const char* path_arg;
+    mrb_get_args(mrb, "z", &path_arg);
+    const char* err = NULL;
+    shio_native_create_dir_all(path_arg, &err);
+    if (err) mrb_raise(mrb, E_RUNTIME_ERROR, err);
+    return mrb_nil_value();
+}
+
+/* ── mRuby shim: Shio.read_file(path) ───────────────────────────────────── */
+
+static mrb_value shio_rb_read_file(mrb_state* mrb, mrb_value self) {
+    (void)self;
+    const char* path_arg;
+    mrb_get_args(mrb, "z", &path_arg);
+    const char* err = NULL;
+    const char* result = shio_native_read_file(path_arg, &err);
+    if (err) mrb_raise(mrb, E_RUNTIME_ERROR, err);
+    return mrb_str_new_cstr(mrb, result);
+}
+
+/* ── mRuby shim: Shio.read_dir(path) ────────────────────────────────────── */
+
+static mrb_value shio_rb_read_dir(mrb_state* mrb, mrb_value self) {
+    (void)self;
+    const char* path_arg;
+    mrb_get_args(mrb, "z", &path_arg);
+    const char* err = NULL;
+    const char* result = shio_native_read_dir(path_arg, &err);
+    if (err) mrb_raise(mrb, E_RUNTIME_ERROR, err);
+    return mrb_str_new_cstr(mrb, result);
+}
+
+/* ── mRuby shim: Shio.delete_file(path) ─────────────────────────────────── */
+
+static mrb_value shio_rb_delete_file(mrb_state* mrb, mrb_value self) {
+    (void)self;
+    const char* path_arg;
+    mrb_get_args(mrb, "z", &path_arg);
+    const char* err = NULL;
+    shio_native_delete_file(path_arg, &err);
+    if (err) mrb_raise(mrb, E_RUNTIME_ERROR, err);
+    return mrb_nil_value();
+}
+
+/* ── mRuby shim: Shio.rename(src, dst) ──────────────────────────────────── */
+
+static mrb_value shio_rb_rename(mrb_state* mrb, mrb_value self) {
+    (void)self;
+    const char* src_arg;
+    const char* dst_arg;
+    mrb_get_args(mrb, "zz", &src_arg, &dst_arg);
+    const char* err = NULL;
+    shio_native_rename(src_arg, dst_arg, &err);
+    if (err) mrb_raise(mrb, E_RUNTIME_ERROR, err);
+    return mrb_nil_value();
+}
+
+/* ── mRuby shim: Shio.write_file(path, content) ──────────────────────────── */
+
+static mrb_value shio_rb_write_file(mrb_state* mrb, mrb_value self) {
+    (void)self;
+    const char* path_arg;
+    const char* content_arg;
+    mrb_get_args(mrb, "zz", &path_arg, &content_arg);
+    const char* err = NULL;
+    shio_native_write_file(path_arg, content_arg, &err);
+    if (err) mrb_raise(mrb, E_RUNTIME_ERROR, err);
+    return mrb_nil_value();
+}
+
+/* ── mRuby shim: Shio.append_file(path, content) ─────────────────────────── */
+
+static mrb_value shio_rb_append_file(mrb_state* mrb, mrb_value self) {
+    (void)self;
+    const char* path_arg;
+    const char* content_arg;
+    mrb_get_args(mrb, "zz", &path_arg, &content_arg);
+    const char* err = NULL;
+    shio_native_append_file(path_arg, content_arg, &err);
+    if (err) mrb_raise(mrb, E_RUNTIME_ERROR, err);
+    return mrb_nil_value();
+}
+
+/* Register the Shio native module and all its methods. */
 void shio_register_native(mrb_state* mrb) {
-    /* Phase A stub — filled in during Phase B/C */
-    (void)mrb;
+    struct RClass* shio = mrb_define_module(mrb, "Shio");
+    mrb_define_module_function(mrb, shio, "current_dir",    shio_rb_current_dir,    MRB_ARGS_NONE());
+    mrb_define_module_function(mrb, shio, "create_dir_all", shio_rb_create_dir_all, MRB_ARGS_REQ(1));
+    mrb_define_module_function(mrb, shio, "read_file",      shio_rb_read_file,      MRB_ARGS_REQ(1));
+    mrb_define_module_function(mrb, shio, "read_dir",       shio_rb_read_dir,       MRB_ARGS_REQ(1));
+    mrb_define_module_function(mrb, shio, "delete_file",    shio_rb_delete_file,    MRB_ARGS_REQ(1));
+    mrb_define_module_function(mrb, shio, "rename",         shio_rb_rename,         MRB_ARGS_REQ(2));
+    mrb_define_module_function(mrb, shio, "write_file",     shio_rb_write_file,     MRB_ARGS_REQ(2));
+    mrb_define_module_function(mrb, shio, "append_file",    shio_rb_append_file,    MRB_ARGS_REQ(2));
 }

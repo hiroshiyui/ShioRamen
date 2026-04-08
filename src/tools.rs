@@ -610,24 +610,13 @@ impl ToolExecutor {
             }
         }
         match name {
-            "read_file" => self.read_file(args),
-            "write_file" => self.write_file(args),
-            "append_file" => self.append_file(args),
-            "insert_after_line" => self.insert_after_line(args),
-            "list_directory" => self.list_directory(args),
             "run_shell" => self.run_shell(args),
             "search_files" => self.search_files(args),
             "grep_files" => self.grep_files(args),
-            "read_file_range" => self.read_file_range(args),
             "patch_file" => self.patch_file(args),
-            "delete_file" => self.delete_file(args),
-            "move_file" => self.move_file(args),
             "fetch_url" => self.fetch_url(args),
-            "create_directory" => self.create_directory(args),
-            "get_working_directory" => self.get_working_directory(),
             "web_search" => self.web_search(args),
             "save_memory" => self.save_memory(args),
-            "read_many_files" => self.read_many_files(args),
             "write_todos" => self.write_todos(args),
             "lsp" => self.lsp_query(args),
             // Plan mode control is handled by the TUI agent loop, not here.
@@ -648,137 +637,6 @@ impl ToolExecutor {
     }
 
     // ── Individual tools ──────────────────────────────────────────────────────
-
-    fn read_file(&self, args: &Value) -> String {
-        let path = require_str!(args, "path");
-        match std::fs::read_to_string(path) {
-            Ok(content) => content,
-            Err(e) => format!("Error reading {path}: {e}"),
-        }
-    }
-
-    fn write_file(&self, args: &Value) -> String {
-        let path = require_str!(args, "path");
-        let content = require_str!(args, "content");
-
-        if self.confirm_writes && !confirm(&format!("{YELLOW}Write to {path}?{RESET}")) {
-            return "Aborted by user.".into();
-        }
-
-        if let Err(e) = ensure_parent_dirs(path) {
-            return e;
-        }
-
-        match std::fs::write(path, content) {
-            Ok(()) => format!("Wrote {} bytes to {path}", content.len()),
-            Err(e) => format!("Error writing {path}: {e}"),
-        }
-    }
-
-    fn append_file(&self, args: &Value) -> String {
-        let path = require_str!(args, "path");
-        let content = require_str!(args, "content");
-
-        if self.confirm_writes && !confirm(&format!("{YELLOW}Append to {path}?{RESET}")) {
-            return "Aborted by user.".into();
-        }
-
-        if let Err(e) = ensure_parent_dirs(path) {
-            return e;
-        }
-
-        use std::io::Write as _;
-        match std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-        {
-            Err(e) => format!("Error opening {path}: {e}"),
-            Ok(mut f) => match f.write_all(content.as_bytes()) {
-                Ok(()) => format!("Appended {} bytes to {path}", content.len()),
-                Err(e) => format!("Error appending to {path}: {e}"),
-            },
-        }
-    }
-
-    fn insert_after_line(&self, args: &Value) -> String {
-        let path = require_str!(args, "path");
-        let line_num = match args["line"]
-            .as_u64()
-            .or_else(|| args["line"].as_str().and_then(|s| s.parse::<u64>().ok()))
-        {
-            Some(n) => n as usize,
-            None => {
-                return "Error: missing or invalid 'line' argument (expected integer)".to_string();
-            }
-        };
-        let content = require_str!(args, "content");
-        // Ensure inserted content ends with a newline.
-        let content = if content.ends_with('\n') {
-            content.to_string()
-        } else {
-            format!("{content}\n")
-        };
-
-        if self.confirm_writes
-            && !confirm(&format!(
-                "{YELLOW}Insert after line {line_num} in {path}?{RESET}"
-            ))
-        {
-            return "Aborted by user.".into();
-        }
-
-        let text = match std::fs::read_to_string(path) {
-            Ok(t) => t,
-            Err(e) => return format!("Error reading {path}: {e}"),
-        };
-
-        let mut lines: Vec<&str> = text.lines().collect();
-        let total = lines.len();
-        if line_num > total {
-            return format!("Error: line {line_num} is out of range (file has {total} lines)");
-        }
-
-        lines.insert(line_num, content.trim_end_matches('\n'));
-        let mut result = lines.join("\n");
-        if text.ends_with('\n') || line_num == total {
-            result.push('\n');
-        }
-
-        match std::fs::write(path, &result) {
-            Ok(()) => format!(
-                "Inserted {} bytes after line {line_num} in {path}",
-                content.len()
-            ),
-            Err(e) => format!("Error writing {path}: {e}"),
-        }
-    }
-
-    fn list_directory(&self, args: &Value) -> String {
-        let path = args["path"].as_str().unwrap_or(".");
-        let entries = match std::fs::read_dir(path) {
-            Ok(e) => e,
-            Err(e) => return format!("Error listing {path}: {e}"),
-        };
-
-        let mut lines: Vec<String> = entries
-            .filter_map(|e| e.ok())
-            .map(|e| {
-                let name = e.file_name().to_string_lossy().into_owned();
-                if e.path().is_dir() {
-                    format!("{name}/")
-                } else {
-                    name
-                }
-            })
-            .collect();
-        lines.sort();
-        if lines.is_empty() {
-            "(empty)".into()
-        } else {
-            lines.join("\n")
-        }
-    }
 
     fn run_shell(&self, args: &Value) -> String {
         let command = require_str!(args, "command");
@@ -863,48 +721,6 @@ impl ToolExecutor {
             "(no matches)".into()
         } else {
             results.join("\n")
-        }
-    }
-
-    fn read_file_range(&self, args: &Value) -> String {
-        let path = require_str!(args, "path");
-        let start = match args["start_line"].as_u64() {
-            Some(n) if n >= 1 => n as usize,
-            _ => return "Error: 'start_line' must be a positive integer".into(),
-        };
-        let end = args["end_line"].as_u64().map(|n| n as usize);
-
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(e) => return format!("Error reading {path}: {e}"),
-        };
-
-        let total = content.lines().count();
-        let end = end.unwrap_or(total).min(total);
-
-        if start > end {
-            return format!("Error: start_line ({start}) is after end_line ({end})");
-        }
-
-        let body: Vec<&str> = content
-            .lines()
-            .enumerate()
-            .filter(|(i, _)| {
-                let lineno = i + 1;
-                lineno >= start && lineno <= end
-            })
-            .map(|(_, line)| line)
-            .collect();
-
-        if body.is_empty() {
-            format!("(no lines in range {start}–{end}; file has {total} lines)")
-        } else {
-            // Header gives the model the line range for insert_after_line; content
-            // is raw so the model can use it verbatim in patch_file old_str/new_str.
-            format!(
-                "Lines {start}–{end} of {path} (file has {total} lines):\n{}",
-                body.join("\n")
-            )
         }
     }
 }
@@ -1117,45 +933,6 @@ impl ToolExecutor {
         }
     }
 
-    fn delete_file(&self, args: &Value) -> String {
-        let path = require_str!(args, "path");
-
-        if self.confirm_writes && !confirm(&format!("{YELLOW}Delete {path}?{RESET}")) {
-            return "Aborted by user.".into();
-        }
-
-        match std::fs::remove_file(path) {
-            Ok(()) => format!("Deleted {path}"),
-            Err(e) => format!("Error deleting {path}: {e}"),
-        }
-    }
-
-    fn move_file(&self, args: &Value) -> String {
-        let src = require_str!(args, "src");
-        let dst = require_str!(args, "dst");
-
-        let dst_exists = Path::new(dst).exists();
-        let confirm_msg = if dst_exists {
-            format!(
-                "{YELLOW}Move {src} → {dst}? WARNING: destination already exists and will be overwritten.{RESET}"
-            )
-        } else {
-            format!("{YELLOW}Move {src} → {dst}?{RESET}")
-        };
-        if self.confirm_writes && !confirm(&confirm_msg) {
-            return "Aborted by user.".into();
-        }
-
-        if let Err(e) = ensure_parent_dirs(dst) {
-            return e;
-        }
-
-        match std::fs::rename(src, dst) {
-            Ok(()) => format!("Moved {src} → {dst}"),
-            Err(e) => format!("Error moving {src} → {dst}: {e}"),
-        }
-    }
-
     fn fetch_url(&self, args: &Value) -> String {
         let url = require_str!(args, "url");
         let max_chars = args["max_chars"]
@@ -1229,21 +1006,6 @@ impl ToolExecutor {
             )
         } else {
             text
-        }
-    }
-
-    fn create_directory(&self, args: &Value) -> String {
-        let path = require_str!(args, "path");
-        match std::fs::create_dir_all(path) {
-            Ok(()) => format!("Created directory: {path}"),
-            Err(e) => format!("Error creating {path}: {e}"),
-        }
-    }
-
-    fn get_working_directory(&self) -> String {
-        match std::env::current_dir() {
-            Ok(p) => p.display().to_string(),
-            Err(e) => format!("Error getting working directory: {e}"),
         }
     }
 
@@ -1379,31 +1141,6 @@ impl ToolExecutor {
                 format!("Error saving memory: {e}")
             }
         }
-    }
-
-    fn read_many_files(&self, args: &Value) -> String {
-        let paths = match args["paths"].as_array() {
-            Some(p) => p,
-            None => return "Error: missing 'paths' array".into(),
-        };
-        if paths.is_empty() {
-            return "Error: 'paths' array is empty".into();
-        }
-
-        let mut out = String::new();
-        for path_val in paths {
-            let path = match path_val.as_str() {
-                Some(p) => p,
-                None => continue,
-            };
-            out.push_str(&format!("=== {path} ===\n"));
-            match std::fs::read_to_string(path) {
-                Ok(content) => out.push_str(&content),
-                Err(e) => out.push_str(&format!("[Error: {e}]")),
-            }
-            out.push_str("\n\n");
-        }
-        out.trim_end().to_string()
     }
 
     fn lsp_query(&self, args: &Value) -> String {
@@ -1665,16 +1402,22 @@ mod tests {
         let path = std::env::temp_dir().join("shio_tool_read.txt");
         fs::write(&path, "hello tool").unwrap();
         let ex = executor(false, false);
-        let args = serde_json::json!({ "path": path.to_str().unwrap() });
-        assert_eq!(ex.read_file(&args), "hello tool");
+        let result = ex.vm.lock().unwrap().call_tool(
+            "read_file",
+            &serde_json::json!({ "path": path.to_str().unwrap() }).to_string(),
+        );
+        assert_eq!(result, "hello tool");
         let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn read_file_missing_returns_error() {
         let ex = executor(false, false);
-        let args = serde_json::json!({ "path": "/nonexistent/shio_missing.txt" });
-        assert!(ex.read_file(&args).starts_with("Error"));
+        let result = ex.vm.lock().unwrap().call_tool(
+            "read_file",
+            &serde_json::json!({ "path": "/nonexistent/shio_missing.txt" }).to_string(),
+        );
+        assert!(result.starts_with("Error"), "{result}");
     }
 
     // ── write_file ────────────────────────────────────────────────────────────
@@ -1684,8 +1427,11 @@ mod tests {
         let path = std::env::temp_dir().join("shio_tool_write.txt");
         let _ = fs::remove_file(&path);
         let ex = executor(false, false);
-        let args = serde_json::json!({ "path": path.to_str().unwrap(), "content": "written" });
-        let result = ex.write_file(&args);
+        let result = ex.vm.lock().unwrap().call_tool(
+            "write_file",
+            &serde_json::json!({ "path": path.to_str().unwrap(), "content": "written" })
+                .to_string(),
+        );
         assert!(
             result.contains("written") || result.contains("bytes"),
             "{result}"
@@ -1701,11 +1447,14 @@ mod tests {
         let path = std::env::temp_dir().join("shio_write_preserve.txt");
         let _ = fs::remove_file(&path);
         let ex = executor(false, false);
-        let args = serde_json::json!({
-            "path": path.to_str().unwrap(),
-            "content": "  3 | value\n| col | col |"
-        });
-        ex.write_file(&args);
+        ex.vm.lock().unwrap().call_tool(
+            "write_file",
+            &serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "content": "  3 | value\n| col | col |"
+            })
+            .to_string(),
+        );
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
             "  3 | value\n| col | col |"
@@ -1720,12 +1469,15 @@ mod tests {
         let path = std::env::temp_dir().join("shio_insert_mid.txt");
         fs::write(&path, "line1\nline2\nline3\n").unwrap();
         let ex = executor(false, false);
-        let args = serde_json::json!({
-            "path": path.to_str().unwrap(),
-            "line": 2,
-            "content": "inserted"
-        });
-        let out = ex.insert_after_line(&args);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "insert_after_line",
+            &serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "line": 2,
+                "content": "inserted"
+            })
+            .to_string(),
+        );
         assert!(out.contains("Inserted"), "{out}");
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
@@ -1739,12 +1491,15 @@ mod tests {
         let path = std::env::temp_dir().join("shio_insert_end.txt");
         fs::write(&path, "line1\nline2\n").unwrap();
         let ex = executor(false, false);
-        let args = serde_json::json!({
-            "path": path.to_str().unwrap(),
-            "line": 2,
-            "content": "appended"
-        });
-        ex.insert_after_line(&args);
+        ex.vm.lock().unwrap().call_tool(
+            "insert_after_line",
+            &serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "line": 2,
+                "content": "appended"
+            })
+            .to_string(),
+        );
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
             "line1\nline2\nappended\n"
@@ -1757,12 +1512,15 @@ mod tests {
         let path = std::env::temp_dir().join("shio_insert_zero.txt");
         fs::write(&path, "line1\nline2\n").unwrap();
         let ex = executor(false, false);
-        let args = serde_json::json!({
-            "path": path.to_str().unwrap(),
-            "line": 0,
-            "content": "prepended"
-        });
-        ex.insert_after_line(&args);
+        ex.vm.lock().unwrap().call_tool(
+            "insert_after_line",
+            &serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "line": 0,
+                "content": "prepended"
+            })
+            .to_string(),
+        );
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
             "prepended\nline1\nline2\n"
@@ -1775,12 +1533,15 @@ mod tests {
         let path = std::env::temp_dir().join("shio_insert_oor.txt");
         fs::write(&path, "line1\n").unwrap();
         let ex = executor(false, false);
-        let args = serde_json::json!({
-            "path": path.to_str().unwrap(),
-            "line": 99,
-            "content": "x"
-        });
-        let out = ex.insert_after_line(&args);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "insert_after_line",
+            &serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "line": 99,
+                "content": "x"
+            })
+            .to_string(),
+        );
         assert!(out.starts_with("Error"), "{out}");
         let _ = fs::remove_file(&path);
     }
@@ -1791,12 +1552,15 @@ mod tests {
         let path = std::env::temp_dir().join("shio_insert_strnum.txt");
         fs::write(&path, "line1\nline2\n").unwrap();
         let ex = executor(false, false);
-        let args = serde_json::json!({
-            "path": path.to_str().unwrap(),
-            "line": "1",
-            "content": "inserted"
-        });
-        let out = ex.insert_after_line(&args);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "insert_after_line",
+            &serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "line": "1",
+                "content": "inserted"
+            })
+            .to_string(),
+        );
         assert!(!out.starts_with("Error"), "{out}");
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
@@ -1811,12 +1575,15 @@ mod tests {
         let path = std::env::temp_dir().join("shio_insert_preserve.txt");
         fs::write(&path, "line1\nline2\n").unwrap();
         let ex = executor(false, false);
-        let args = serde_json::json!({
-            "path": path.to_str().unwrap(),
-            "line": 1,
-            "content": "  3 | value"
-        });
-        ex.insert_after_line(&args);
+        ex.vm.lock().unwrap().call_tool(
+            "insert_after_line",
+            &serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "line": 1,
+                "content": "  3 | value"
+            })
+            .to_string(),
+        );
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
             "line1\n  3 | value\nline2\n"
@@ -1829,8 +1596,10 @@ mod tests {
     #[test]
     fn list_directory_shows_entries() {
         let ex = executor(false, false);
-        let args = serde_json::json!({ "path": "src" });
-        let out = ex.list_directory(&args);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "list_directory",
+            &serde_json::json!({ "path": "src" }).to_string(),
+        );
         assert!(out.contains("main.rs"), "{out}");
     }
 
@@ -1879,12 +1648,15 @@ mod tests {
         let path = std::env::temp_dir().join("shio_range.txt");
         fs::write(&path, "line1\nline2\nline3\nline4\nline5\n").unwrap();
         let ex = executor(false, false);
-        let args = serde_json::json!({
-            "path": path.to_str().unwrap(),
-            "start_line": 2,
-            "end_line": 4
-        });
-        let out = ex.read_file_range(&args);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "read_file_range",
+            &serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "start_line": 2,
+                "end_line": 4
+            })
+            .to_string(),
+        );
         assert!(out.contains("line2"), "{out}");
         assert!(out.contains("line4"), "{out}");
         assert!(!out.contains("line1"), "{out}");
@@ -1900,8 +1672,10 @@ mod tests {
         let path = std::env::temp_dir().join("shio_range2.txt");
         fs::write(&path, "a\nb\nc\n").unwrap();
         let ex = executor(false, false);
-        let args = serde_json::json!({ "path": path.to_str().unwrap(), "start_line": 2 });
-        let out = ex.read_file_range(&args);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "read_file_range",
+            &serde_json::json!({ "path": path.to_str().unwrap(), "start_line": 2 }).to_string(),
+        );
         assert!(out.contains('b'), "{out}");
         assert!(out.contains('c'), "{out}");
         // "a\n" would be the first line content; the header may contain path chars
@@ -2202,8 +1976,10 @@ mod tests {
         let path = std::env::temp_dir().join("shio_delete.txt");
         fs::write(&path, "bye").unwrap();
         let ex = executor(false, false);
-        let args = serde_json::json!({ "path": path.to_str().unwrap() });
-        let out = ex.delete_file(&args);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "delete_file",
+            &serde_json::json!({ "path": path.to_str().unwrap() }).to_string(),
+        );
         assert!(out.contains("Deleted"), "{out}");
         assert!(!path.exists());
     }
@@ -2211,8 +1987,10 @@ mod tests {
     #[test]
     fn delete_file_errors_on_missing_file() {
         let ex = executor(false, false);
-        let args = serde_json::json!({ "path": "/nonexistent/shio_gone.txt" });
-        let out = ex.delete_file(&args);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "delete_file",
+            &serde_json::json!({ "path": "/nonexistent/shio_gone.txt" }).to_string(),
+        );
         assert!(out.starts_with("Error"), "{out}");
     }
 
@@ -2225,11 +2003,14 @@ mod tests {
         let _ = fs::remove_file(&dst);
         fs::write(&src, "content").unwrap();
         let ex = executor(false, false);
-        let args = serde_json::json!({
-            "src": src.to_str().unwrap(),
-            "dst": dst.to_str().unwrap()
-        });
-        let out = ex.move_file(&args);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "move_file",
+            &serde_json::json!({
+                "src": src.to_str().unwrap(),
+                "dst": dst.to_str().unwrap()
+            })
+            .to_string(),
+        );
         assert!(out.contains("Moved") || out.contains("→"), "{out}");
         assert!(!src.exists());
         assert!(dst.exists());
@@ -2331,7 +2112,10 @@ mod tests {
     fn create_directory_creates_nested_dirs() {
         let dir = std::env::temp_dir().join("shio_test_mkdir/a/b/c");
         let ex = executor(false, false);
-        let result = ex.create_directory(&serde_json::json!({ "path": dir.to_str().unwrap() }));
+        let result = ex.vm.lock().unwrap().call_tool(
+            "create_directory",
+            &serde_json::json!({ "path": dir.to_str().unwrap() }).to_string(),
+        );
         assert!(result.contains("Created"), "{result}");
         assert!(dir.is_dir());
         let _ = std::fs::remove_dir_all(std::env::temp_dir().join("shio_test_mkdir"));
@@ -2342,7 +2126,10 @@ mod tests {
         let dir = std::env::temp_dir().join("shio_test_mkdir_exist");
         std::fs::create_dir_all(&dir).unwrap();
         let ex = executor(false, false);
-        let result = ex.create_directory(&serde_json::json!({ "path": dir.to_str().unwrap() }));
+        let result = ex.vm.lock().unwrap().call_tool(
+            "create_directory",
+            &serde_json::json!({ "path": dir.to_str().unwrap() }).to_string(),
+        );
         assert!(result.contains("Created"), "{result}");
         let _ = std::fs::remove_dir(&dir);
     }
@@ -2350,7 +2137,7 @@ mod tests {
     #[test]
     fn create_directory_requires_path() {
         let ex = executor(false, false);
-        let result = ex.create_directory(&serde_json::json!({}));
+        let result = ex.vm.lock().unwrap().call_tool("create_directory", "{}");
         assert!(result.starts_with("Error"), "{result}");
     }
 
@@ -2359,7 +2146,11 @@ mod tests {
     #[test]
     fn get_working_directory_returns_nonempty_path() {
         let ex = executor(false, false);
-        let result = ex.get_working_directory();
+        let result = ex
+            .vm
+            .lock()
+            .unwrap()
+            .call_tool("get_working_directory", "{}");
         assert!(!result.is_empty());
         assert!(!result.starts_with("Error"), "{result}");
     }
@@ -2412,9 +2203,13 @@ mod tests {
         fs::write(&a, "content_a").unwrap();
         fs::write(&b, "content_b").unwrap();
         let ex = executor(false, false);
-        let result = ex.read_many_files(&serde_json::json!({
-            "paths": [a.to_str().unwrap(), b.to_str().unwrap()]
-        }));
+        let result = ex.vm.lock().unwrap().call_tool(
+            "read_many_files",
+            &serde_json::json!({
+                "paths": [a.to_str().unwrap(), b.to_str().unwrap()]
+            })
+            .to_string(),
+        );
         assert!(result.contains("content_a"), "{result}");
         assert!(result.contains("content_b"), "{result}");
         let _ = fs::remove_file(&a);
@@ -2424,16 +2219,24 @@ mod tests {
     #[test]
     fn read_many_files_reports_missing_file_inline() {
         let ex = executor(false, false);
-        let result = ex.read_many_files(&serde_json::json!({
-            "paths": ["/nonexistent/shio_rmf_missing.txt"]
-        }));
+        let result = ex.vm.lock().unwrap().call_tool(
+            "read_many_files",
+            &serde_json::json!({
+                "paths": ["/nonexistent/shio_rmf_missing.txt"]
+            })
+            .to_string(),
+        );
         assert!(result.contains("Error"), "{result}");
     }
 
     #[test]
     fn read_many_files_requires_paths() {
         let ex = executor(false, false);
-        let result = ex.read_many_files(&serde_json::json!({}));
+        let result = ex
+            .vm
+            .lock()
+            .unwrap()
+            .call_tool("read_many_files", &serde_json::json!({}).to_string());
         assert!(result.starts_with("Error"), "{result}");
     }
 
@@ -2562,8 +2365,10 @@ mod tests {
         let dir = std::env::temp_dir().join("shio_write_nested/a/b");
         let path = dir.join("out.txt");
         let ex = executor(false, false);
-        let args = serde_json::json!({ "path": path.to_str().unwrap(), "content": "nested" });
-        let result = ex.write_file(&args);
+        let result = ex.vm.lock().unwrap().call_tool(
+            "write_file",
+            &serde_json::json!({ "path": path.to_str().unwrap(), "content": "nested" }).to_string(),
+        );
         assert!(
             result.contains("bytes") || result.contains("nested"),
             "{result}"
@@ -2619,8 +2424,10 @@ mod tests {
         let path = std::env::temp_dir().join("shio_append_new.txt");
         let _ = fs::remove_file(&path);
         let ex = executor(false, false);
-        let args = serde_json::json!({ "path": path.to_str().unwrap(), "content": "hello" });
-        let out = ex.append_file(&args);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "append_file",
+            &serde_json::json!({ "path": path.to_str().unwrap(), "content": "hello" }).to_string(),
+        );
         assert!(out.contains("Appended"), "{out}");
         assert_eq!(fs::read_to_string(&path).unwrap(), "hello");
         let _ = fs::remove_file(&path);
@@ -2631,8 +2438,11 @@ mod tests {
         let path = std::env::temp_dir().join("shio_append_existing.txt");
         fs::write(&path, "line1\n").unwrap();
         let ex = executor(false, false);
-        let args = serde_json::json!({ "path": path.to_str().unwrap(), "content": "line2\n" });
-        ex.append_file(&args);
+        ex.vm.lock().unwrap().call_tool(
+            "append_file",
+            &serde_json::json!({ "path": path.to_str().unwrap(), "content": "line2\n" })
+                .to_string(),
+        );
         assert_eq!(fs::read_to_string(&path).unwrap(), "line1\nline2\n");
         let _ = fs::remove_file(&path);
     }
@@ -2643,8 +2453,10 @@ mod tests {
         let path = dir.join("sub").join("file.txt");
         let _ = fs::remove_dir_all(&dir);
         let ex = executor(false, false);
-        let args = serde_json::json!({ "path": path.to_str().unwrap(), "content": "data" });
-        let out = ex.append_file(&args);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "append_file",
+            &serde_json::json!({ "path": path.to_str().unwrap(), "content": "data" }).to_string(),
+        );
         assert!(out.contains("Appended"), "{out}");
         assert_eq!(fs::read_to_string(&path).unwrap(), "data");
         let _ = fs::remove_dir_all(&dir);
@@ -2653,15 +2465,21 @@ mod tests {
     #[test]
     fn append_file_missing_path_returns_error() {
         let ex = executor(false, false);
-        let args = serde_json::json!({ "content": "data" });
-        assert_eq!(ex.append_file(&args), "Error: missing 'path' argument");
+        let out = ex.vm.lock().unwrap().call_tool(
+            "append_file",
+            &serde_json::json!({ "content": "data" }).to_string(),
+        );
+        assert_eq!(out, "Error: missing 'path' argument");
     }
 
     #[test]
     fn append_file_missing_content_returns_error() {
         let ex = executor(false, false);
-        let args = serde_json::json!({ "path": "/tmp/shio_whatever.txt" });
-        assert_eq!(ex.append_file(&args), "Error: missing 'content' argument");
+        let out = ex.vm.lock().unwrap().call_tool(
+            "append_file",
+            &serde_json::json!({ "path": "/tmp/shio_whatever.txt" }).to_string(),
+        );
+        assert_eq!(out, "Error: missing 'content' argument");
     }
 
     #[test]
@@ -2670,11 +2488,14 @@ mod tests {
         let path = std::env::temp_dir().join("shio_append_preserve.txt");
         let _ = fs::remove_file(&path);
         let ex = executor(false, false);
-        let args = serde_json::json!({
-            "path": path.to_str().unwrap(),
-            "content": "  3 | value"
-        });
-        ex.append_file(&args);
+        ex.vm.lock().unwrap().call_tool(
+            "append_file",
+            &serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "content": "  3 | value"
+            })
+            .to_string(),
+        );
         assert_eq!(fs::read_to_string(&path).unwrap(), "  3 | value");
         let _ = fs::remove_file(&path);
     }

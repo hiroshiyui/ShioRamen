@@ -92,8 +92,55 @@ impl ShioVm {
     }
 
     fn load_builtin_tools(&mut self) -> Result<()> {
-        // Phase A: no built-ins loaded yet. Each batch in Phase C adds an
-        // include_str! entry here.
+        for (name, code) in &[
+            (
+                "get_working_directory",
+                include_str!("../../tools/builtin/get_working_directory.rb"),
+            ),
+            (
+                "create_directory",
+                include_str!("../../tools/builtin/create_directory.rb"),
+            ),
+            (
+                "read_file",
+                include_str!("../../tools/builtin/read_file.rb"),
+            ),
+            (
+                "list_directory",
+                include_str!("../../tools/builtin/list_directory.rb"),
+            ),
+            (
+                "delete_file",
+                include_str!("../../tools/builtin/delete_file.rb"),
+            ),
+            (
+                "move_file",
+                include_str!("../../tools/builtin/move_file.rb"),
+            ),
+            (
+                "write_file",
+                include_str!("../../tools/builtin/write_file.rb"),
+            ),
+            (
+                "append_file",
+                include_str!("../../tools/builtin/append_file.rb"),
+            ),
+            (
+                "insert_after_line",
+                include_str!("../../tools/builtin/insert_after_line.rb"),
+            ),
+            (
+                "read_file_range",
+                include_str!("../../tools/builtin/read_file_range.rb"),
+            ),
+            (
+                "read_many_files",
+                include_str!("../../tools/builtin/read_many_files.rb"),
+            ),
+        ] {
+            self.eval(code)
+                .map_err(|e| anyhow!("builtin tool {name} failed: {e}"))?;
+        }
         Ok(())
     }
 
