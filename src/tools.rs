@@ -582,6 +582,11 @@ impl ToolExecutor {
 
     fn dispatch(&self, name: &str, args: &Value) -> String {
         if std::env::var("SHIO_USE_RUBY").is_ok() {
+            // Push the per-executor LSP config into the native layer so that
+            // shio_native_lsp_query can pass it to lsp::query.
+            if let Ok(json) = serde_json::to_string(&self.lsp) {
+                crate::ruby::native::set_lsp_config_json(&json);
+            }
             let args_json = args.to_string();
             let result = match self.vm.lock() {
                 Ok(mut guard) => guard.call_tool(name, &args_json),
@@ -594,11 +599,6 @@ impl ToolExecutor {
         }
         match name {
             "run_shell" => self.run_shell(args),
-            "lsp" => self.lsp_query(args),
-            // Plan mode control is handled by the TUI agent loop, not here.
-            "enter_plan_mode" | "exit_plan_mode" => {
-                "Plan mode control is handled by the agent loop.".to_string()
-            }
             _ => format!("Unknown tool: {name}"),
         }
     }
@@ -650,16 +650,6 @@ impl ToolExecutor {
                 }
             }
         }
-    }
-}
-
-impl ToolExecutor {
-    fn lsp_query(&self, args: &Value) -> String {
-        let operation = args["operation"].as_str().unwrap_or("hover");
-        let file = require_str!(args, "file");
-        let line = args["line"].as_u64().unwrap_or(1) as u32;
-        let column = args["column"].as_u64().unwrap_or(1) as u32;
-        crate::lsp::query(operation, file, line, column, &self.lsp)
     }
 }
 
@@ -1414,21 +1404,23 @@ mod tests {
         assert_eq!(all_tools().len(), 22);
     }
 
-    // ── lsp_query ─────────────────────────────────────────────────────────────
+    // ── lsp ───────────────────────────────────────────────────────────────────
 
     #[test]
     fn lsp_query_unsupported_extension_returns_error_message() {
-        // .xyz is not a known language; no server will be found without an install.
-        // This exercises lsp_query dispatch all the way through lsp::query without
+        // .xyz is not a known language — exercises lsp::query through Ruby without
         // needing a real LSP server.
         let ex = executor(false, false);
-        let args = serde_json::json!({
-            "operation": "hover",
-            "file": "test.xyz",
-            "line": 1,
-            "column": 1
-        });
-        let result = ex.lsp_query(&args);
+        let result = ex.vm.lock().unwrap().call_tool(
+            "lsp",
+            &serde_json::json!({
+                "operation": "hover",
+                "file": "test.xyz",
+                "line": 1,
+                "column": 1
+            })
+            .to_string(),
+        );
         assert!(
             result.contains("No LSP server found") || result.contains("Error"),
             "expected error message, got: {result}"
@@ -1438,25 +1430,22 @@ mod tests {
     #[test]
     fn lsp_query_missing_file_argument() {
         let ex = executor(false, false);
-        let args = serde_json::json!({ "operation": "hover" });
-        let result = ex.lsp_query(&args);
+        let result = ex.vm.lock().unwrap().call_tool(
+            "lsp",
+            &serde_json::json!({ "operation": "hover" }).to_string(),
+        );
         assert!(result.contains("missing 'file'"), "got: {result}");
     }
 
     #[test]
     fn lsp_query_dispatched_via_execute_quiet() {
+        // Verify the lsp tool is reachable through the Ruby VM.
         let ex = executor(false, false);
-        let call = crate::client::ToolCallItem {
-            id: "call1".to_string(),
-            kind: "function".to_string(),
-            function: crate::client::ToolCallFunction {
-                name: "lsp".to_string(),
-                arguments: r#"{"operation":"hover","file":"test.xyz","line":1}"#.to_string(),
-            },
-        };
-        let result = ex.execute_quiet(&call);
-        // Should not return "Unknown tool" — the dispatch must reach lsp_query.
-        assert!(!result.contains("Unknown tool"), "got: {result}");
+        let result = ex.vm.lock().unwrap().call_tool(
+            "lsp",
+            &serde_json::json!({"operation": "hover", "file": "test.xyz", "line": 1}).to_string(),
+        );
+        assert!(!result.starts_with("Error: unknown tool:"), "got: {result}");
     }
 
     // ── strip_html ────────────────────────────────────────────────────────────

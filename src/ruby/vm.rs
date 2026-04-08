@@ -165,6 +165,15 @@ impl ShioVm {
                 "patch_file",
                 include_str!("../../tools/builtin/patch_file.rb"),
             ),
+            ("lsp", include_str!("../../tools/builtin/lsp.rb")),
+            (
+                "enter_plan_mode",
+                include_str!("../../tools/builtin/enter_plan_mode.rb"),
+            ),
+            (
+                "exit_plan_mode",
+                include_str!("../../tools/builtin/exit_plan_mode.rb"),
+            ),
         ] {
             self.eval(code)
                 .map_err(|e| anyhow!("builtin tool {name} failed: {e}"))?;
