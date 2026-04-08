@@ -161,6 +161,10 @@ impl ShioVm {
                 "web_search",
                 include_str!("../../tools/builtin/web_search.rb"),
             ),
+            (
+                "patch_file",
+                include_str!("../../tools/builtin/patch_file.rb"),
+            ),
         ] {
             self.eval(code)
                 .map_err(|e| anyhow!("builtin tool {name} failed: {e}"))?;

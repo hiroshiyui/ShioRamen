@@ -594,7 +594,6 @@ impl ToolExecutor {
         }
         match name {
             "run_shell" => self.run_shell(args),
-            "patch_file" => self.patch_file(args),
             "lsp" => self.lsp_query(args),
             // Plan mode control is handled by the TUI agent loop, not here.
             "enter_plan_mode" | "exit_plan_mode" => {
@@ -655,149 +654,6 @@ impl ToolExecutor {
 }
 
 impl ToolExecutor {
-    fn patch_file(&self, args: &Value) -> String {
-        let path = require_str!(args, "path");
-        let old_str = require_str!(args, "old_str");
-        let new_str = require_str!(args, "new_str");
-
-        if self.confirm_writes && !confirm(&format!("{YELLOW}Patch {path}?{RESET}")) {
-            return "Aborted by user.".into();
-        }
-
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(e) => return format!("Error reading {path}: {e}"),
-        };
-
-        let count = content.matches(old_str).count();
-        match count {
-            1 => {
-                let patched = content.replacen(old_str, new_str, 1);
-                return match std::fs::write(path, &patched) {
-                    Ok(()) => format!(
-                        "Patched {path}: old_str replaced with new_str in place. \
-                         The new content is already written — do NOT call append_file or write_file.",
-                    ),
-                    Err(e) => format!("Error writing {path}: {e}"),
-                };
-            }
-            n if n > 1 => {
-                return format!(
-                    "Error: old_str appears {n} times in {path} — \
-                     make it more specific so it matches exactly once"
-                );
-            }
-            _ => {} // 0 — fall through to line-by-line fallback
-        }
-
-        // ── Line-by-line fallback ─────────────────────────────────────────────
-        // Exact substring match failed.  Try matching each line of old_str against
-        // a contiguous block of file lines, trimming trailing whitespace from both
-        // sides so minor spacing differences do not prevent large edits from landing.
-        let old_lines: Vec<&str> = old_str.lines().collect();
-        // Guard: a whitespace-only old_str would match any blank line and produce
-        // false positives.  Treat it as not-found rather than risking a wrong patch.
-        if old_lines.is_empty() || old_lines.iter().all(|l| l.trim().is_empty()) {
-            return format!("Error: old_str not found in {path}");
-        }
-        let file_lines: Vec<&str> = content.lines().collect();
-        let n = old_lines.len();
-
-        let hits: Vec<usize> = (0..=file_lines.len().saturating_sub(n))
-            .filter(|&i| {
-                file_lines[i..i + n]
-                    .iter()
-                    .zip(old_lines.iter())
-                    .all(|(fl, ol)| fl.trim_end() == ol.trim_end())
-            })
-            .collect();
-
-        match hits.len() {
-            0 => {
-                // Line-by-line match found nothing.  For large old_str blocks the
-                // model often misremembers interior lines while getting the edges
-                // right.  Try an anchor-based match: require the first two and last
-                // two lines to match exactly (trim_end), then replace the whole
-                // block.  Only accepted when there is exactly one such position.
-                if n >= 4 {
-                    let a0 = old_lines[0].trim_end();
-                    let a1 = old_lines[1].trim_end();
-                    let z0 = old_lines[n - 2].trim_end();
-                    let z1 = old_lines[n - 1].trim_end();
-                    // Skip if both start anchors and both end anchors are blank —
-                    // that would match almost anything.
-                    let start_ok = !a0.trim().is_empty() || !a1.trim().is_empty();
-                    let end_ok = !z0.trim().is_empty() || !z1.trim().is_empty();
-                    if start_ok && end_ok {
-                        let anchor_hits: Vec<usize> = (0..=file_lines.len().saturating_sub(n))
-                            .filter(|&i| {
-                                file_lines[i].trim_end() == a0
-                                    && file_lines[i + 1].trim_end() == a1
-                                    && file_lines[i + n - 2].trim_end() == z0
-                                    && file_lines[i + n - 1].trim_end() == z1
-                            })
-                            .collect();
-                        if anchor_hits.len() == 1 {
-                            let start = anchor_hits[0];
-                            let mut result: Vec<&str> = file_lines[..start].to_vec();
-                            result.extend(new_str.lines());
-                            if new_str.ends_with('\n') {
-                                result.push("");
-                            }
-                            result.extend_from_slice(&file_lines[start + n..]);
-                            let mut patched = result.join("\n");
-                            if !content.ends_with('\n') && patched.ends_with('\n') {
-                                patched.pop();
-                            } else if content.ends_with('\n') && !patched.ends_with('\n') {
-                                patched.push('\n');
-                            }
-                            return match std::fs::write(path, &patched) {
-                                Ok(()) => format!(
-                                    "Patched {path} (anchor fallback): block identified by \
-                                     first/last lines of old_str replaced with new_str. \
-                                     The new content is already written — do NOT call \
-                                     append_file or write_file.",
-                                ),
-                                Err(e) => format!("Error writing {path}: {e}"),
-                            };
-                        }
-                    }
-                }
-                format!("Error: old_str not found in {path}")
-            }
-            1 => {
-                let start = hits[0];
-                let mut result: Vec<&str> = file_lines[..start].to_vec();
-                result.extend(new_str.lines());
-                // Preserve a trailing newline that new_str.lines() would drop.
-                if new_str.ends_with('\n') {
-                    result.push("");
-                }
-                result.extend_from_slice(&file_lines[start + n..]);
-                let mut patched = result.join("\n");
-                // If the original file ended with '\n', the joined string already
-                // ends with '\n' from the pushed "". Remove the doubled newline only
-                // when the file did NOT end with '\n' originally.
-                if !content.ends_with('\n') && patched.ends_with('\n') {
-                    patched.pop();
-                } else if content.ends_with('\n') && !patched.ends_with('\n') {
-                    patched.push('\n');
-                }
-                match std::fs::write(path, &patched) {
-                    Ok(()) => format!(
-                        "Patched {path} (line-by-line fallback): old_str replaced with new_str. \
-                         The new content is already written — do NOT call append_file or write_file.",
-                    ),
-                    Err(e) => format!("Error writing {path}: {e}"),
-                }
-            }
-            n => format!(
-                "Error: old_str matches {n} locations in {path} (line-by-line fallback) — \
-                 make it more specific so it matches exactly once"
-            ),
-        }
-    }
-
     fn lsp_query(&self, args: &Value) -> String {
         let operation = args["operation"].as_str().unwrap_or("hover");
         let file = require_str!(args, "file");
@@ -1291,16 +1147,16 @@ mod tests {
         let path = std::env::temp_dir().join("shio_patch.txt");
         fs::write(&path, "hello world\n").unwrap();
         let ex = executor(false, false);
-        let args = serde_json::json!({
-            "path": path.to_str().unwrap(),
-            "old_str": "hello",
-            "new_str": "goodbye"
-        });
-        let out = ex.patch_file(&args);
-        assert!(
-            out.contains("Patched") || out.contains("patched") || out.contains("bytes"),
-            "{out}"
+        let out = ex.vm.lock().unwrap().call_tool(
+            "patch_file",
+            &serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "old_str": "hello",
+                "new_str": "goodbye"
+            })
+            .to_string(),
         );
+        assert!(out.contains("Patched"), "{out}");
         assert_eq!(fs::read_to_string(&path).unwrap(), "goodbye world\n");
         let _ = fs::remove_file(&path);
     }
@@ -1310,12 +1166,15 @@ mod tests {
         let path = std::env::temp_dir().join("shio_patch2.txt");
         fs::write(&path, "hello world\n").unwrap();
         let ex = executor(false, false);
-        let args = serde_json::json!({
-            "path": path.to_str().unwrap(),
-            "old_str": "nonexistent",
-            "new_str": "x"
-        });
-        let out = ex.patch_file(&args);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "patch_file",
+            &serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "old_str": "nonexistent",
+                "new_str": "x"
+            })
+            .to_string(),
+        );
         assert!(out.starts_with("Error"), "{out}");
         let _ = fs::remove_file(&path);
     }
@@ -1325,12 +1184,15 @@ mod tests {
         let path = std::env::temp_dir().join("shio_patch3.txt");
         fs::write(&path, "a a a\n").unwrap();
         let ex = executor(false, false);
-        let args = serde_json::json!({
-            "path": path.to_str().unwrap(),
-            "old_str": "a",
-            "new_str": "b"
-        });
-        let out = ex.patch_file(&args);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "patch_file",
+            &serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "old_str": "a",
+                "new_str": "b"
+            })
+            .to_string(),
+        );
         assert!(out.starts_with("Error"), "{out}");
         let _ = fs::remove_file(&path);
     }
@@ -1342,12 +1204,15 @@ mod tests {
         fs::write(&path, "fn foo() {\n    let x = 1;   \n}\n").unwrap();
         let ex = executor(false, false);
         // old_str has no trailing spaces — exact match would fail.
-        let args = serde_json::json!({
-            "path": path.to_str().unwrap(),
-            "old_str": "fn foo() {\n    let x = 1;\n}",
-            "new_str": "fn foo() {\n    let x = 2;\n}",
-        });
-        let out = ex.patch_file(&args);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "patch_file",
+            &serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "old_str": "fn foo() {\n    let x = 1;\n}",
+                "new_str": "fn foo() {\n    let x = 2;\n}",
+            })
+            .to_string(),
+        );
         assert!(out.contains("Patched"), "{out}");
         assert!(out.contains("fallback"), "{out}");
         let result = fs::read_to_string(&path).unwrap();
@@ -1361,12 +1226,15 @@ mod tests {
         // Two identical blocks (old_str matches both via line-by-line).
         fs::write(&path, "fn a() {}\nfn a() {}\n").unwrap();
         let ex = executor(false, false);
-        let args = serde_json::json!({
-            "path": path.to_str().unwrap(),
-            "old_str": "fn a() {}",
-            "new_str": "fn b() {}",
-        });
-        let out = ex.patch_file(&args);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "patch_file",
+            &serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "old_str": "fn a() {}",
+                "new_str": "fn b() {}",
+            })
+            .to_string(),
+        );
         assert!(out.starts_with("Error"), "{out}");
         let _ = fs::remove_file(&path);
     }
@@ -1377,12 +1245,15 @@ mod tests {
         let path = std::env::temp_dir().join("shio_patch_ws_guard.txt");
         fs::write(&path, "a\n\nb\n").unwrap();
         let ex = executor(false, false);
-        let args = serde_json::json!({
-            "path": path.to_str().unwrap(),
-            "old_str": "   ",   // all whitespace
-            "new_str": "x",
-        });
-        let out = ex.patch_file(&args);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "patch_file",
+            &serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "old_str": "   ",
+                "new_str": "x",
+            })
+            .to_string(),
+        );
         assert!(out.starts_with("Error"), "{out}");
         // File must be unchanged.
         assert_eq!(fs::read_to_string(&path).unwrap(), "a\n\nb\n");
@@ -1391,16 +1262,19 @@ mod tests {
 
     #[test]
     fn patch_file_fallback_preserves_trailing_newline_in_new_str() {
-        // new_str ending with '\n' must be preserved verbatim (not dropped by lines()).
+        // new_str ending with '\n' must be preserved verbatim (not dropped by split).
         let path = std::env::temp_dir().join("shio_patch_trail_nl.txt");
         fs::write(&path, "fn foo() {   \n}\n").unwrap(); // trailing space triggers fallback
         let ex = executor(false, false);
-        let args = serde_json::json!({
-            "path": path.to_str().unwrap(),
-            "old_str": "fn foo() {\n}",
-            "new_str": "fn foo() {\n    42\n}\n",
-        });
-        let out = ex.patch_file(&args);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "patch_file",
+            &serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "old_str": "fn foo() {\n}",
+                "new_str": "fn foo() {\n    42\n}\n",
+            })
+            .to_string(),
+        );
         assert!(out.contains("Patched"), "{out}");
         let result = fs::read_to_string(&path).unwrap();
         assert!(result.contains("42"), "{result}");
@@ -1419,7 +1293,6 @@ mod tests {
     #[test]
     fn patch_file_anchor_fallback_tolerates_wrong_interior_lines() {
         // Simulate a model that reproduced 5 lines but got the middle one wrong.
-        // The file has the real content; old_str has a mutated interior line.
         let path = std::env::temp_dir().join("shio_patch_anchor.txt");
         fs::write(
             &path,
@@ -1428,12 +1301,15 @@ mod tests {
         .unwrap();
         let ex = executor(false, false);
         // Middle line differs from the file — exact and line-by-line fallbacks both fail.
-        let args = serde_json::json!({
-            "path": path.to_str().unwrap(),
-            "old_str": "fn foo() {\n    let a = 1;\n    let b = WRONG;\n    let c = 3;\n}",
-            "new_str": "fn foo() {\n    42\n}",
-        });
-        let out = ex.patch_file(&args);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "patch_file",
+            &serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "old_str": "fn foo() {\n    let a = 1;\n    let b = WRONG;\n    let c = 3;\n}",
+                "new_str": "fn foo() {\n    42\n}",
+            })
+            .to_string(),
+        );
         assert!(out.contains("Patched"), "{out}");
         assert!(out.contains("anchor"), "{out}");
         let result = fs::read_to_string(&path).unwrap();
@@ -1443,8 +1319,7 @@ mod tests {
 
     #[test]
     fn patch_file_anchor_fallback_rejects_ambiguous_anchors() {
-        // Two blocks with the same first two and last two lines — anchor match must
-        // refuse rather than silently pick one.
+        // Two blocks with the same first two and last two lines — anchor must refuse.
         let path = std::env::temp_dir().join("shio_patch_anchor_ambig.txt");
         fs::write(
             &path,
@@ -1452,39 +1327,34 @@ mod tests {
         )
         .unwrap();
         let ex = executor(false, false);
-        let args = serde_json::json!({
-            "path": path.to_str().unwrap(),
-            "old_str": "fn foo() {\n    let a = 1;\n    WRONG\n    let z = 9;\n}",
-            "new_str": "fn bar() {}",
-        });
-        let out = ex.patch_file(&args);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "patch_file",
+            &serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "old_str": "fn foo() {\n    let a = 1;\n    WRONG\n    let z = 9;\n}",
+                "new_str": "fn bar() {}",
+            })
+            .to_string(),
+        );
         assert!(out.starts_with("Error"), "{out}");
         let _ = fs::remove_file(&path);
     }
 
     #[test]
-    fn execute_quiet_unwraps_function_name_wrapped_args() {
-        // Some local models send {"patch_file": {"path": …}} instead of {"path": …}.
-        use crate::client::{ToolCallFunction, ToolCallItem};
-        let path = std::env::temp_dir().join("shio_wrap_args.txt");
+    fn patch_file_via_vm_call_tool() {
+        // Verify patch_file is reachable through the Ruby VM (smoke test for registration).
+        let path = std::env::temp_dir().join("shio_patch_vm.txt");
         fs::write(&path, "hello world").unwrap();
         let ex = executor(false, false);
-        let call = ToolCallItem {
-            id: "x".into(),
-            kind: "function".into(),
-            function: ToolCallFunction {
-                name: "patch_file".into(),
-                arguments: serde_json::json!({
-                    "patch_file": {
-                        "path": path.to_str().unwrap(),
-                        "old_str": "hello",
-                        "new_str": "goodbye"
-                    }
-                })
-                .to_string(),
-            },
-        };
-        let out = ex.execute_quiet(&call);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "patch_file",
+            &serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "old_str": "hello",
+                "new_str": "goodbye"
+            })
+            .to_string(),
+        );
         assert!(out.contains("Patched"), "{out}");
         let _ = fs::remove_file(&path);
     }
