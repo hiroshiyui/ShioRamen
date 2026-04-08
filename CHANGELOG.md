@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.4.0] — 2026-04-08
+
+### Added
+- (ruby): embedded mRuby scripting layer — tool handlers are now Ruby scripts evaluated by an mRuby VM, replacing monolithic Rust dispatch
+- (ruby): Phase A infrastructure — `build.rs`, `src/ruby/` skeleton, mRuby build config with restricted gembox
+- (ruby): Phase B — parallel dispatch via `Arc<Mutex<ShioVm>>`, `ToolDef` plumbing from Ruby VM
+- (tools): migrate all 22 tools to Ruby (Phases C1–C9): file I/O, search, shell, web, LSP, plan mode
+- (skills): `start-agents` skill for importing AGENTS.md instructions
+- (tools): user-extensible tools — drop `.rb` files in `~/.config/shio/tools/` to add or override tools without recompiling
+
+### Fixed
+- (security): block Ruby `#{}` string interpolation injection in tool arguments via `value_to_ruby`
+- (security): SSRF filter now catches IPv4-mapped IPv6 addresses (`::ffff:127.0.0.1`)
+- (security): SSRF filter now blocks IPv6 unspecified address (`::`)
+- (security): disable HTTP redirect following to prevent 302→private-host bypass
+- (security): DNS-resolved hostnames checked against private IP ranges (`resolves_to_private`)
+- (tools): `patch_file` anchor fallback for large `old_str` blocks
+- (pull): partial downloads saved to `.part` file, renamed on success — prevents corrupt models
+- (edit): backup file (`.bak`) written before overwriting original
+- (context): symlinks skipped during directory collection to prevent traversal escape
+- (context): recursion depth capped at 20 levels
+- (client): connect timeout (10 s) and request timeout (5 min) added to `LlamaClient`
+- (tui): `prev_word`/`next_word` rewritten to respect UTF-8 char boundaries (prevents panic on multi-byte input)
+- (tui): scroll field widened from `u16` to `u32` to support long sessions
+- (client): SSE `[DONE]` sentinel now terminates both inner and outer streaming loops
+
+### Changed
+- (tools): Phase D cleanup — removed `all_tools()`, `dispatch()`, `SHIO_USE_RUBY` flag; `tool_defs()` now queries the Ruby VM directly
+- (tools): dropped `strip_line_number_prefix` (no longer needed)
+
+### Documentation
+- `doc/reference_manual.md`: project-wide reference covering architecture, config, tools, mRuby layer, LSP, and extension points
+- `doc/TODO.md`: cleared completed phases, points to reference manual
+
+### Maintenance
+- (ci): fix build — checkout submodules, install Ruby and bison
+- Test count: 312 → 318 (6 new security tests)
+
 ## [v0.3.0] — 2026-04-07
 
 ### Added
