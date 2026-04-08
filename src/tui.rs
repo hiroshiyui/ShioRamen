@@ -1943,30 +1943,37 @@ async fn run_agent_loop(
         };
 
         // Some local models (e.g. Gemma4 with peg-gemma4 template) emit EOS
-        // immediately when the last message has role "tool".  Append a temporary
-        // user nudge to the outgoing slice so the model understands it should
-        // produce a response.  We do NOT push it into `msgs` so it never
-        // appears in the persistent conversation history.
+        // immediately when the last message has role "tool".  Many chat
+        // templates also silently drop `role: "tool"` messages, leaving the
+        // model unable to see what the tool returned.
         //
-        // The nudge also embeds the tool result content as plain text because
-        // many chat templates silently drop `role: "tool"` messages, leaving
-        // the model unable to see what the tool returned.
+        // To work around both issues, replace trailing tool-result messages
+        // and their preceding assistant tool-call message with a single user
+        // message containing the results as plain text, then append a nudge.
+        // We do NOT modify `msgs` — the rewritten version is only used for
+        // this one request.
         let nudged: Vec<Message>;
         let msgs_to_send: &[Message] = if msgs.last().map(|m| m.role.as_str()) == Some("tool") {
             nudged = {
                 let mut v = msgs.to_vec();
-                // Collect all trailing tool-result messages so the model can
-                // see the content even when the chat template drops them.
-                let tool_summary: String = v
-                    .iter()
-                    .rev()
-                    .take_while(|m| m.role == "tool")
-                    .filter_map(|m| m.text_content().map(|t| t.to_string()))
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect::<Vec<_>>()
-                    .join("\n---\n");
+                // Pop trailing tool-result messages (and the assistant
+                // tool-call message that precedes them) so we can re-emit
+                // the content as a user message the model can always see.
+                let mut tool_texts: Vec<String> = Vec::new();
+                while v.last().map(|m| m.role.as_str()) == Some("tool") {
+                    if let Some(m) = v.pop()
+                        && let Some(t) = m.text_content()
+                    {
+                        tool_texts.push(t.to_string());
+                    }
+                }
+                tool_texts.reverse();
+                // Also pop the assistant tool-call message (content: None,
+                // tool_calls: Some(...)) that triggered these results.
+                if v.last().map(|m| m.tool_calls.is_some()).unwrap_or(false) {
+                    v.pop();
+                }
+                let tool_summary = tool_texts.join("\n---\n");
                 let nudge = if tool_summary.is_empty() {
                     "Continue the task based on the tool results above. \
                      Call more tools if needed, or provide your final answer."
