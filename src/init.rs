@@ -32,6 +32,9 @@ const TEMPLATE: &str = r#"# shio.toml — ShioRamen configuration
 # Enable continuous batching.
 # cont_batching = false
 
+# Multimodal projector for vision models (e.g. Gemma 4, LLaVA).
+# mmproj = "./models/mmproj.gguf"
+
 [chat]
 # Default model file used by `shio chat` and `shio ask`.
 # model = "./models/your-model.gguf"

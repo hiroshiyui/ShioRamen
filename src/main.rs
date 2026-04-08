@@ -96,6 +96,10 @@ pub struct ServerArgs {
     /// Enable continuous batching [config: server.cont_batching]
     #[arg(long)]
     pub cont_batching: bool,
+
+    /// Multimodal projector GGUF for vision models [config: server.mmproj]
+    #[arg(long)]
+    pub mmproj: Option<PathBuf>,
 }
 
 impl ServerArgs {
@@ -127,6 +131,7 @@ impl ServerArgs {
                 .or_else(|| cfg.cache_type_v.clone()),
             flash_attn: self.flash_attn || cfg.flash_attn.unwrap_or(false),
             cont_batching: self.cont_batching || cfg.cont_batching.unwrap_or(false),
+            mmproj: self.mmproj.clone().or_else(|| cfg.mmproj.clone()),
         }
     }
 

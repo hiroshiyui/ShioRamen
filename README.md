@@ -96,6 +96,7 @@ cache_type_v = "q4_0"
 
 flash_attn    = true
 cont_batching = true
+# mmproj      = "./models/mmproj.gguf"  # multimodal projector for vision models
 
 [chat]
 model       = "./models/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf"
@@ -140,6 +141,7 @@ Options:
       --cache-type-v <TYPE>          KV cache type for values
       --flash-attn                   Enable flash attention
       --cont-batching                Enable continuous batching
+      --mmproj <PATH>                Multimodal projector GGUF for vision models
 ```
 
 ### `chat`
@@ -313,6 +315,7 @@ cache_type_k  = "q4_0"                 # KV key cache quantization
 cache_type_v  = "q4_0"                 # KV value cache quantization
 flash_attn    = true
 cont_batching = true
+mmproj        = "./models/mmproj.gguf"  # multimodal projector for vision models (optional)
 
 [chat]
 model          = "./models/model.gguf"

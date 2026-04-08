@@ -37,6 +37,8 @@ pub struct ServerSection {
     pub flash_attn: Option<bool>,
     /// Enable continuous batching
     pub cont_batching: Option<bool>,
+    /// Path to a multimodal projector GGUF (required for vision models)
+    pub mmproj: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -163,6 +165,7 @@ pub struct Config {
     pub cache_type_v: Option<String>,
     pub flash_attn: bool,
     pub cont_batching: bool,
+    pub mmproj: Option<PathBuf>,
 }
 
 impl Config {
@@ -190,6 +193,7 @@ mod tests {
             cache_type_v: None,
             flash_attn: false,
             cont_batching: false,
+            mmproj: None,
         };
         assert_eq!(cfg.server_url(), "http://127.0.0.1:8080");
     }
@@ -207,6 +211,7 @@ mod tests {
             cache_type_v: None,
             flash_attn: false,
             cont_batching: false,
+            mmproj: None,
         };
         assert_eq!(cfg.server_url(), "http://0.0.0.0:9090");
     }

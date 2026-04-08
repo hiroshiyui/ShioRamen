@@ -68,6 +68,12 @@ impl ServerProcess {
         if config.cont_batching {
             cmd.arg("--cont-batching");
         }
+        if let Some(ref mmproj) = config.mmproj {
+            let mmproj_str = mmproj.to_str().ok_or_else(|| {
+                anyhow::anyhow!("mmproj path is not valid UTF-8: {}", mmproj.display())
+            })?;
+            cmd.args(["--mmproj", mmproj_str]);
+        }
         let mut child = cmd
             .stdout(Stdio::null()) // HTTP request logs — keep silent during chat
             .stderr(Stdio::inherit()) // model loading, GPU layers, startup progress
