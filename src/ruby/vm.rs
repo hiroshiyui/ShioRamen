@@ -137,6 +137,14 @@ impl ShioVm {
                 "read_many_files",
                 include_str!("../../tools/builtin/read_many_files.rb"),
             ),
+            (
+                "search_files",
+                include_str!("../../tools/builtin/search_files.rb"),
+            ),
+            (
+                "grep_files",
+                include_str!("../../tools/builtin/grep_files.rb"),
+            ),
         ] {
             self.eval(code)
                 .map_err(|e| anyhow!("builtin tool {name} failed: {e}"))?;

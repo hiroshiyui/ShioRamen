@@ -55,6 +55,8 @@ extern void        shio_native_delete_file(const char* path, const char** error_
 extern void        shio_native_rename(const char* src, const char* dst, const char** error_out);
 extern void        shio_native_write_file(const char* path, const char* content, const char** error_out);
 extern void        shio_native_append_file(const char* path, const char* content, const char** error_out);
+extern const char* shio_native_glob(const char* pattern, const char** error_out);
+extern const char* shio_native_grep(const char* pattern, const char* path, int case_insensitive, const char** error_out);
 
 /* ── mRuby shim: Shio.current_dir ─────────────────────────────────────────── */
 
@@ -153,6 +155,32 @@ static mrb_value shio_rb_append_file(mrb_state* mrb, mrb_value self) {
     return mrb_nil_value();
 }
 
+/* ── mRuby shim: Shio.glob(pattern) ──────────────────────────────────────── */
+
+static mrb_value shio_rb_glob(mrb_state* mrb, mrb_value self) {
+    (void)self;
+    const char* pattern_arg;
+    mrb_get_args(mrb, "z", &pattern_arg);
+    const char* err = NULL;
+    const char* result = shio_native_glob(pattern_arg, &err);
+    if (err) mrb_raise(mrb, E_RUNTIME_ERROR, err);
+    return mrb_str_new_cstr(mrb, result);
+}
+
+/* ── mRuby shim: Shio.grep(pattern, path, case_insensitive) ──────────────── */
+
+static mrb_value shio_rb_grep(mrb_state* mrb, mrb_value self) {
+    (void)self;
+    const char* pattern_arg;
+    const char* path_arg;
+    mrb_bool ci;
+    mrb_get_args(mrb, "zzb", &pattern_arg, &path_arg, &ci);
+    const char* err = NULL;
+    const char* result = shio_native_grep(pattern_arg, path_arg, (int)ci, &err);
+    if (err) mrb_raise(mrb, E_RUNTIME_ERROR, err);
+    return mrb_str_new_cstr(mrb, result);
+}
+
 /* Register the Shio native module and all its methods. */
 void shio_register_native(mrb_state* mrb) {
     struct RClass* shio = mrb_define_module(mrb, "Shio");
@@ -164,4 +192,6 @@ void shio_register_native(mrb_state* mrb) {
     mrb_define_module_function(mrb, shio, "rename",         shio_rb_rename,         MRB_ARGS_REQ(2));
     mrb_define_module_function(mrb, shio, "write_file",     shio_rb_write_file,     MRB_ARGS_REQ(2));
     mrb_define_module_function(mrb, shio, "append_file",    shio_rb_append_file,    MRB_ARGS_REQ(2));
+    mrb_define_module_function(mrb, shio, "glob",           shio_rb_glob,           MRB_ARGS_REQ(1));
+    mrb_define_module_function(mrb, shio, "grep",           shio_rb_grep,           MRB_ARGS_REQ(3));
 }

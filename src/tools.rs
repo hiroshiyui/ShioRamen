@@ -611,8 +611,6 @@ impl ToolExecutor {
         }
         match name {
             "run_shell" => self.run_shell(args),
-            "search_files" => self.search_files(args),
-            "grep_files" => self.grep_files(args),
             "patch_file" => self.patch_file(args),
             "fetch_url" => self.fetch_url(args),
             "web_search" => self.web_search(args),
@@ -673,54 +671,6 @@ impl ToolExecutor {
                     result
                 }
             }
-        }
-    }
-
-    fn search_files(&self, args: &Value) -> String {
-        let pattern = require_str!(args, "pattern");
-        let base = args["path"].as_str().unwrap_or(".");
-        let full_pattern = if base == "." {
-            pattern.to_string()
-        } else {
-            format!("{base}/{pattern}")
-        };
-
-        match glob::glob(&full_pattern) {
-            Err(e) => format!("Invalid pattern: {e}"),
-            Ok(paths) => {
-                let matches: Vec<String> = paths
-                    .filter_map(|p| p.ok())
-                    .map(|p| p.display().to_string())
-                    .collect();
-                if matches.is_empty() {
-                    "(no matches)".into()
-                } else {
-                    matches.join("\n")
-                }
-            }
-        }
-    }
-
-    fn grep_files(&self, args: &Value) -> String {
-        let pattern = require_str!(args, "pattern");
-        let path = args["path"].as_str().unwrap_or(".");
-        let case_insensitive = args["case_insensitive"].as_bool().unwrap_or(false);
-
-        let re = match regex::RegexBuilder::new(pattern)
-            .case_insensitive(case_insensitive)
-            .build()
-        {
-            Ok(r) => r,
-            Err(e) => return format!("Invalid regex: {e}"),
-        };
-
-        let mut results = Vec::new();
-        grep_path(Path::new(path), &re, &mut results);
-
-        if results.is_empty() {
-            "(no matches)".into()
-        } else {
-            results.join("\n")
         }
     }
 }
@@ -1346,34 +1296,6 @@ fn is_private_host(url: &str) -> bool {
     false
 }
 
-fn grep_path(path: &Path, re: &regex::Regex, out: &mut Vec<String>) {
-    if path.is_dir() {
-        let skip = [".git", "target", "node_modules", "vendor"];
-        if let Ok(entries) = std::fs::read_dir(path) {
-            let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
-            entries.sort_by_key(|e| e.file_name());
-            for entry in entries {
-                let p = entry.path();
-                let name = entry.file_name();
-                if p.is_dir() && skip.contains(&name.to_string_lossy().as_ref()) {
-                    continue;
-                }
-                grep_path(&p, re, out);
-            }
-        }
-        return;
-    }
-
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return;
-    };
-    for (i, line) in text.lines().enumerate() {
-        if re.is_match(line) {
-            out.push(format!("{}:{}: {}", path.display(), i + 1, line));
-        }
-    }
-}
-
 fn confirm(prompt: &str) -> bool {
     eprint!("{prompt} [y/N] ");
     io::stderr().flush().ok();
@@ -1626,8 +1548,10 @@ mod tests {
     #[test]
     fn search_files_finds_rust_sources() {
         let ex = executor(false, false);
-        let args = serde_json::json!({ "pattern": "src/*.rs" });
-        let out = ex.search_files(&args);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "search_files",
+            &serde_json::json!({ "pattern": "src/*.rs" }).to_string(),
+        );
         assert!(out.contains("main.rs"), "{out}");
     }
 
@@ -1636,8 +1560,10 @@ mod tests {
     #[test]
     fn grep_files_finds_pattern() {
         let ex = executor(false, false);
-        let args = serde_json::json!({ "pattern": "fn main", "path": "src/main.rs" });
-        let out = ex.grep_files(&args);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "grep_files",
+            &serde_json::json!({ "pattern": "fn main", "path": "src/main.rs" }).to_string(),
+        );
         assert!(out.contains("fn main"), "{out}");
     }
 
@@ -2396,12 +2322,15 @@ mod tests {
         let path = std::env::temp_dir().join("shio_grep_ci.txt");
         fs::write(&path, "Hello World\nlower case\n").unwrap();
         let ex = executor(false, false);
-        let args = serde_json::json!({
-            "pattern": "hello",
-            "path": path.to_str().unwrap(),
-            "case_insensitive": true
-        });
-        let out = ex.grep_files(&args);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "grep_files",
+            &serde_json::json!({
+                "pattern": "hello",
+                "path": path.to_str().unwrap(),
+                "case_insensitive": true
+            })
+            .to_string(),
+        );
         assert!(out.contains("Hello World"), "got: {out}");
         let _ = fs::remove_file(&path);
     }
@@ -2409,8 +2338,10 @@ mod tests {
     #[test]
     fn grep_files_invalid_regex_returns_error() {
         let ex = executor(false, false);
-        let args = serde_json::json!({ "pattern": "[invalid(regex", "path": "src" });
-        let out = ex.grep_files(&args);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "grep_files",
+            &serde_json::json!({ "pattern": "[invalid(regex", "path": "src" }).to_string(),
+        );
         assert!(
             out.contains("Invalid regex") || out.starts_with("Error"),
             "got: {out}"

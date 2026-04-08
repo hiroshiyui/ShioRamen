@@ -257,3 +257,97 @@ pub unsafe extern "C" fn shio_native_append_file(
         }
     }
 }
+
+// ── Shio.glob ─────────────────────────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn shio_native_glob(
+    pattern: *const c_char,
+    error_out: *mut *const c_char,
+) -> *const c_char {
+    let pat = match unsafe { CStr::from_ptr(pattern) }.to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            unsafe { set_err(error_out, "pattern is not valid UTF-8") };
+            return ptr::null();
+        }
+    };
+    match glob::glob(pat) {
+        Err(e) => {
+            unsafe { set_err(error_out, &format!("Invalid pattern: {e}")) };
+            ptr::null()
+        }
+        Ok(paths) => {
+            let matches: Vec<String> = paths
+                .filter_map(|p| p.ok())
+                .map(|p| p.display().to_string())
+                .collect();
+            set_result(matches.join("\n"))
+        }
+    }
+}
+
+// ── Shio.grep ─────────────────────────────────────────────────────────────────
+
+fn grep_path_native(path: &std::path::Path, re: &regex::Regex, out: &mut Vec<String>) {
+    if path.is_dir() {
+        let skip = [".git", "target", "node_modules", "vendor"];
+        if let Ok(entries) = std::fs::read_dir(path) {
+            let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+            entries.sort_by_key(|e| e.file_name());
+            for entry in entries {
+                let p = entry.path();
+                let name = entry.file_name();
+                if p.is_dir() && skip.contains(&name.to_string_lossy().as_ref()) {
+                    continue;
+                }
+                grep_path_native(&p, re, out);
+            }
+        }
+        return;
+    }
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    for (i, line) in text.lines().enumerate() {
+        if re.is_match(line) {
+            out.push(format!("{}:{}: {}", path.display(), i + 1, line));
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn shio_native_grep(
+    pattern: *const c_char,
+    path: *const c_char,
+    case_insensitive: std::ffi::c_int,
+    error_out: *mut *const c_char,
+) -> *const c_char {
+    let pat = match unsafe { CStr::from_ptr(pattern) }.to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            unsafe { set_err(error_out, "pattern is not valid UTF-8") };
+            return ptr::null();
+        }
+    };
+    let p = match unsafe { CStr::from_ptr(path) }.to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            unsafe { set_err(error_out, "path is not valid UTF-8") };
+            return ptr::null();
+        }
+    };
+    let re = match regex::RegexBuilder::new(pat)
+        .case_insensitive(case_insensitive != 0)
+        .build()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            unsafe { set_err(error_out, &format!("Invalid regex: {e}")) };
+            return ptr::null();
+        }
+    };
+    let mut results = Vec::new();
+    grep_path_native(std::path::Path::new(p), &re, &mut results);
+    set_result(results.join("\n"))
+}
