@@ -14,6 +14,81 @@ pub struct SamplingParams {
     pub repeat_penalty: Option<f32>,
 }
 
+// ── Message content (text or multimodal) ─────────────────────────────────────
+
+/// Message content: either a plain string or an array of content parts (text +
+/// images) following the OpenAI multimodal format.
+///
+/// Serialises as a bare `"string"` when text-only, or as
+/// `[{"type":"text","text":"…"}, {"type":"image_url","image_url":{"url":"data:…"}}]`
+/// when images are attached.  Deserialises both forms for session compatibility.
+#[derive(Debug, Clone)]
+pub enum MessageContent {
+    Text(String),
+    Parts(Vec<ContentPart>),
+}
+
+impl Serialize for MessageContent {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        match self {
+            Self::Text(s) => serializer.serialize_str(s),
+            Self::Parts(parts) => parts.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for MessageContent {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        use serde::de;
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::String(s) => Ok(Self::Text(s)),
+            serde_json::Value::Array(_) => {
+                let parts: Vec<ContentPart> =
+                    serde_json::from_value(value).map_err(de::Error::custom)?;
+                Ok(Self::Parts(parts))
+            }
+            _ => Err(de::Error::custom("content must be a string or array")),
+        }
+    }
+}
+
+#[allow(dead_code)]
+impl MessageContent {
+    /// Return the text portion, ignoring any image parts.
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            Self::Text(s) => Some(s),
+            Self::Parts(parts) => parts.iter().find_map(|p| {
+                if let ContentPart::Text { text } = p {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            }),
+        }
+    }
+}
+
+/// A single content part inside a multimodal message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentPart {
+    Text { text: String },
+    ImageUrl { image_url: ImageUrl },
+}
+
+/// URL wrapper for image content (typically a `data:` base64 URI).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageUrl {
+    pub url: String,
+}
+
 // ── Public message type ──────────────────────────────────────────────────────
 
 /// A single message in the conversation. `content` is None when the assistant
@@ -23,7 +98,7 @@ pub struct SamplingParams {
 pub struct Message {
     pub role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
+    pub content: Option<MessageContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCallItem>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -36,6 +111,21 @@ impl Message {
     }
     pub fn user(content: impl Into<String>) -> Self {
         Self::text("user", content)
+    }
+    pub fn user_with_images(text: String, images: Vec<String>) -> Self {
+        let mut parts: Vec<ContentPart> = images
+            .into_iter()
+            .map(|data_url| ContentPart::ImageUrl {
+                image_url: ImageUrl { url: data_url },
+            })
+            .collect();
+        parts.push(ContentPart::Text { text });
+        Self {
+            role: "user".into(),
+            content: Some(MessageContent::Parts(parts)),
+            tool_calls: None,
+            tool_call_id: None,
+        }
     }
     pub fn assistant(content: impl Into<String>) -> Self {
         Self::text("assistant", content)
@@ -51,16 +141,23 @@ impl Message {
     pub fn tool_result(id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             role: "tool".into(),
-            content: Some(content.into()),
+            content: Some(MessageContent::Text(content.into())),
             tool_calls: None,
             tool_call_id: Some(id.into()),
         }
     }
 
+    /// Convenience accessor: returns the text content of the message (if any),
+    /// ignoring image parts in multimodal messages.
+    #[allow(dead_code)]
+    pub fn text_content(&self) -> Option<&str> {
+        self.content.as_ref().and_then(|c| c.as_text())
+    }
+
     fn text(role: &str, content: impl Into<String>) -> Self {
         Self {
             role: role.into(),
-            content: Some(content.into()),
+            content: Some(MessageContent::Text(content.into())),
             tool_calls: None,
             tool_call_id: None,
         }
@@ -582,7 +679,7 @@ mod tests {
     fn system_message_serialises_correctly() {
         let m = Message::system("be helpful");
         assert_eq!(m.role, "system");
-        assert_eq!(m.content.as_deref(), Some("be helpful"));
+        assert_eq!(m.text_content(), Some("be helpful"));
         assert!(m.tool_calls.is_none());
         assert!(m.tool_call_id.is_none());
     }
@@ -591,21 +688,21 @@ mod tests {
     fn user_message_serialises_correctly() {
         let m = Message::user("hello");
         assert_eq!(m.role, "user");
-        assert_eq!(m.content.as_deref(), Some("hello"));
+        assert_eq!(m.text_content(), Some("hello"));
     }
 
     #[test]
     fn assistant_message_serialises_correctly() {
         let m = Message::assistant("hi there");
         assert_eq!(m.role, "assistant");
-        assert_eq!(m.content.as_deref(), Some("hi there"));
+        assert_eq!(m.text_content(), Some("hi there"));
     }
 
     #[test]
     fn tool_result_message_has_tool_call_id() {
         let m = Message::tool_result("call_abc", "file contents");
         assert_eq!(m.role, "tool");
-        assert_eq!(m.content.as_deref(), Some("file contents"));
+        assert_eq!(m.text_content(), Some("file contents"));
         assert_eq!(m.tool_call_id.as_deref(), Some("call_abc"));
         assert!(m.tool_calls.is_none());
     }

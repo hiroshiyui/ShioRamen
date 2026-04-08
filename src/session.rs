@@ -96,7 +96,7 @@ mod tests {
         assert_eq!(loaded.len(), 3);
         assert_eq!(loaded[0].role, "system");
         assert_eq!(loaded[1].role, "user");
-        assert_eq!(loaded[1].content.as_deref(), Some("hello"));
+        assert_eq!(loaded[1].text_content(), Some("hello"));
         assert_eq!(loaded[2].role, "assistant");
 
         let _ = std::fs::remove_dir_all(&dir);

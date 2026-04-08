@@ -6,8 +6,8 @@ use std::sync::OnceLock;
 use anyhow::Result;
 use crossterm::{
     event::{
-        DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent,
-        KeyModifiers, MouseEventKind,
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, EventStream, KeyCode, KeyEvent, KeyModifiers, MouseEventKind,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -137,6 +137,9 @@ struct App {
     hist_idx: Option<usize>,
     saved: String, // input saved when browsing history
 
+    /// Base64 data-URLs of images attached via Ctrl+V, sent with the next message.
+    attached_images: Vec<String>,
+
     // Tab completion state
     comp_candidates: Vec<String>,
     comp_idx: usize,
@@ -190,7 +193,12 @@ impl App {
 pub async fn run(session: ChatSession) -> Result<()> {
     enable_raw_mode()?;
     let mut out = io::stdout();
-    execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(
+        out,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
     let backend = CrosstermBackend::new(out);
     let mut term = Terminal::new(backend)?;
 
@@ -201,7 +209,8 @@ pub async fn run(session: ChatSession) -> Result<()> {
     execute!(
         term.backend_mut(),
         LeaveAlternateScreen,
-        DisableMouseCapture
+        DisableMouseCapture,
+        DisableBracketedPaste
     )?;
     term.show_cursor()?;
     result
@@ -234,6 +243,7 @@ async fn run_loop(
         history: Vec::new(),
         hist_idx: None,
         saved: String::new(),
+        attached_images: Vec::new(),
         comp_candidates: Vec::new(),
         comp_idx: 0,
         event_tx,
@@ -281,6 +291,9 @@ async fn run_loop(
                         MouseEventKind::ScrollDown => view_scroll(&mut app,  3),
                         _ => {}
                     }
+                }
+                Some(Ok(Event::Paste(text))) => {
+                    handle_paste(&mut app, text);
                 }
                 Some(Ok(Event::Resize(_, _))) => {}   // just re-render
                 Some(Err(e)) => return Err(e.into()),
@@ -784,14 +797,27 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             app.status = AppStatus::ConfirmExit;
         }
 
-        // Newline (Alt+Enter inserts a literal newline; plain Enter submits)
-        (Enter, m) if m.contains(Mods::ALT) => {
+        // Newline: Alt+Enter, Shift+Enter, or Ctrl+J inserts a literal newline.
+        (Enter, m) if m.contains(Mods::ALT) || m.contains(Mods::SHIFT) => {
             app.input.insert(app.cursor, '\n');
             app.cursor += 1;
             app.comp_candidates.clear();
         }
-        // Submit
-        (Enter, _) => submit(app).await,
+        (Char('j'), m) if m.contains(Mods::CONTROL) => {
+            app.input.insert(app.cursor, '\n');
+            app.cursor += 1;
+            app.comp_candidates.clear();
+        }
+        // Submit — but if the line ends with `\`, replace it with a newline instead.
+        (Enter, _) => {
+            if app.cursor > 0 && app.input.as_bytes().get(app.cursor - 1) == Some(&b'\\') {
+                app.input.replace_range(app.cursor - 1..app.cursor, "\n");
+                // cursor stays at same byte offset (replacing 1 byte with 1 byte)
+                app.comp_candidates.clear();
+            } else {
+                submit(app).await;
+            }
+        }
 
         // Delete
         (Backspace, _) => {
@@ -900,6 +926,11 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             app.input.drain(new_cursor..app.cursor);
             app.cursor = new_cursor;
             app.comp_candidates.clear();
+        }
+
+        // Paste from clipboard (Ctrl+V): attach image or insert text.
+        (Char('v'), m) if m.contains(Mods::CONTROL) => {
+            paste_clipboard(app);
         }
 
         // Regular character
@@ -1128,9 +1159,136 @@ fn next_word(s: &str, pos: usize) -> usize {
 
 // ── Input submission ──────────────────────────────────────────────────────────
 
+const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp"];
+
+/// Handle a bracketed-paste event.  If the pasted text looks like one or more
+/// image file paths (e.g. drag-and-drop from a file manager), read and attach
+/// them; otherwise insert the text verbatim.
+fn handle_paste(app: &mut App, text: String) {
+    // Terminals deliver drag-and-drop as pasted file paths, one per line.
+    // Check if *every* non-empty line is an image file that exists on disk.
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let all_images = !lines.is_empty()
+        && lines.iter().all(|line| {
+            let path = std::path::Path::new(line.trim());
+            path.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|ext| IMAGE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+                && path.is_file()
+        });
+
+    if all_images {
+        for line in &lines {
+            let path = std::path::Path::new(line.trim());
+            match attach_image_file(app, path) {
+                Ok(chip) => {
+                    app.input.insert_str(app.cursor, &chip);
+                    app.cursor += chip.len();
+                }
+                Err(e) => {
+                    let msg = format!("image: {e}");
+                    app.push_entry(EntryKind::Error, &msg);
+                }
+            }
+        }
+        app.comp_candidates.clear();
+    } else {
+        app.input.insert_str(app.cursor, &text);
+        app.cursor += text.len();
+        app.comp_candidates.clear();
+    }
+}
+
+/// Read an image file from disk, base64-encode it, attach to `app.attached_images`,
+/// and return the `[Image #N]` chip string.
+fn attach_image_file(app: &mut App, path: &std::path::Path) -> Result<String> {
+    let bytes =
+        std::fs::read(path).map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))?;
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("png")
+        .to_ascii_lowercase();
+    let mime = match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        _ => "image/png",
+    };
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    let data_url = format!("data:{mime};base64,{b64}");
+    app.attached_images.push(data_url);
+    let n = app.attached_images.len();
+    Ok(format!("[Image #{n}]"))
+}
+
+/// Read the system clipboard.  If it contains an image, base64-encode it and
+/// attach it to the current message; otherwise insert any text at the cursor.
+fn paste_clipboard(app: &mut App) {
+    use arboard::Clipboard;
+    let Ok(mut clip) = Clipboard::new() else {
+        app.push_entry(EntryKind::Error, "clipboard: cannot open");
+        return;
+    };
+
+    // Try image first.
+    if let Ok(img) = clip.get_image() {
+        // Encode as PNG into a `data:` URL.
+        let mut png_buf: Vec<u8> = Vec::new();
+        if image_encode_png(
+            std::io::Cursor::new(&mut png_buf),
+            img.width as u32,
+            img.height as u32,
+            &img.bytes,
+        )
+        .is_err()
+        {
+            app.push_entry(EntryKind::Error, "clipboard: failed to encode image");
+            return;
+        }
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&png_buf);
+        let data_url = format!("data:image/png;base64,{b64}");
+        app.attached_images.push(data_url);
+        let n = app.attached_images.len();
+        let chip = format!("[Image #{n}]");
+        app.input.insert_str(app.cursor, &chip);
+        app.cursor += chip.len();
+        app.comp_candidates.clear();
+        return;
+    }
+
+    // Fall back to text.
+    if let Ok(text) = clip.get_text()
+        && !text.is_empty()
+    {
+        app.input.insert_str(app.cursor, &text);
+        app.cursor += text.len();
+        app.comp_candidates.clear();
+    }
+}
+
+/// Encode raw RGBA bytes into a PNG buffer.
+fn image_encode_png(
+    writer: impl std::io::Write,
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+) -> Result<()> {
+    let mut encoder = png::Encoder::new(writer, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut w = encoder.write_header()?;
+    w.write_image_data(rgba)?;
+    w.finish()?;
+    Ok(())
+}
+
 async fn submit(app: &mut App) {
     let input = app.input.trim().to_string();
-    if input.is_empty() {
+    if input.is_empty() && app.attached_images.is_empty() {
         return;
     }
 
@@ -1229,9 +1387,14 @@ async fn submit(app: &mut App) {
         return;
     }
 
-    // Regular user message.
+    // Regular user message (with optional images).
     app.push_entry(EntryKind::User, &input);
-    app.messages.push(Message::user(&input));
+    if app.attached_images.is_empty() {
+        app.messages.push(Message::user(&input));
+    } else {
+        let images = std::mem::take(&mut app.attached_images);
+        app.messages.push(Message::user_with_images(input, images));
+    }
     app.status = AppStatus::Waiting;
     app.anim_frame = 0;
     dispatch_turn(app);
@@ -2354,7 +2517,7 @@ mod tests {
         let dropped = trim_to_budget(&mut msgs, 5);
         // Should drop usr("hello") first (index 1).
         assert!(dropped >= 1);
-        assert!(!msgs.iter().any(|m| m.content.as_deref() == Some("hello")));
+        assert!(!msgs.iter().any(|m| m.text_content() == Some("hello")));
     }
 
     #[test]
@@ -2390,7 +2553,7 @@ mod tests {
         assert_eq!(dropped, 2);
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].role, "system");
-        assert_eq!(msgs[1].content.as_deref(), Some("cc"));
+        assert_eq!(msgs[1].text_content(), Some("cc"));
     }
 
     #[test]
@@ -2420,8 +2583,7 @@ mod tests {
         // h1, h2, h3 can be dropped (indices 1-3), but "turn-result" must survive.
         assert!(dropped <= 3);
         assert!(
-            msgs.iter()
-                .any(|m| m.content.as_deref() == Some("turn-result")),
+            msgs.iter().any(|m| m.text_content() == Some("turn-result")),
             "current-turn message must not be removed"
         );
     }
@@ -2443,7 +2605,7 @@ mod tests {
         let dropped = trim_to_budget_before(&mut msgs, 5, 3);
         assert!(dropped >= 1);
         assert!(
-            msgs.iter().any(|m| m.content.as_deref() == Some("current")),
+            msgs.iter().any(|m| m.text_content() == Some("current")),
             "current-turn message must survive"
         );
     }

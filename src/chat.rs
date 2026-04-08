@@ -244,7 +244,7 @@ mod tests {
         let session = make_session(None);
         assert_eq!(session.messages.len(), 1);
         assert_eq!(session.messages[0].role, "system");
-        assert_eq!(session.messages[0].content.as_deref(), Some("be helpful"));
+        assert_eq!(session.messages[0].text_content(), Some("be helpful"));
     }
 
     #[test]
@@ -393,7 +393,7 @@ mod tests {
         ];
         session.resume(saved);
         // System prompt should be the current one, not the saved one.
-        assert_eq!(session.messages[0].content.as_deref(), Some("be helpful"));
+        assert_eq!(session.messages[0].text_content(), Some("be helpful"));
         assert_eq!(session.messages.len(), 3); // system + user + assistant
         assert_eq!(session.messages[1].role, "user");
     }
