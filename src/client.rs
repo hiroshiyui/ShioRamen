@@ -4,6 +4,16 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
+// ── Sampling parameters ──────────────────────────────────────────────────────
+
+/// Sampling configuration forwarded to llama-server in every chat request.
+#[derive(Debug, Clone, Copy)]
+pub struct SamplingParams {
+    pub temperature: f32,
+    pub top_p: Option<f32>,
+    pub repeat_penalty: Option<f32>,
+}
+
 // ── Public message type ──────────────────────────────────────────────────────
 
 /// A single message in the conversation. `content` is None when the assistant
@@ -107,6 +117,10 @@ struct ChatRequest<'a> {
     stream: bool,
     temperature: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repeat_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<&'a [ToolDef]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<&'static str>,
@@ -197,7 +211,7 @@ impl LlamaClient {
     pub async fn chat_agent_stream<F>(
         &self,
         messages: &[Message],
-        temperature: f32,
+        sampling: SamplingParams,
         tools: &[ToolDef],
         mut on_token: F,
     ) -> Result<AgentTurn>
@@ -208,7 +222,9 @@ impl LlamaClient {
             model: "local",
             messages,
             stream: true,
-            temperature,
+            temperature: sampling.temperature,
+            top_p: sampling.top_p,
+            repeat_penalty: sampling.repeat_penalty,
             tools: Some(tools),
             tool_choice: Some("auto"),
         };
@@ -334,12 +350,18 @@ impl LlamaClient {
 
     /// Non-streaming completion without printing; returns the full response.
     /// Used by `edit` to post-process model output.
-    pub async fn chat_collect(&self, messages: &[Message], temperature: f32) -> Result<String> {
+    pub async fn chat_collect(
+        &self,
+        messages: &[Message],
+        sampling: SamplingParams,
+    ) -> Result<String> {
         let request = ChatRequest {
             model: "local",
             messages,
             stream: false,
-            temperature,
+            temperature: sampling.temperature,
+            top_p: sampling.top_p,
+            repeat_penalty: sampling.repeat_penalty,
             tools: None,
             tool_choice: None,
         };
@@ -361,10 +383,12 @@ impl LlamaClient {
 
     /// Streaming chat; prints tokens to stdout as they arrive.
     /// Returns the fully assembled text.
-    pub async fn chat_stream(&self, messages: &[Message], temperature: f32) -> Result<String> {
-        let text = self
-            .chat_stream_cb(messages, temperature, print_flush)
-            .await?;
+    pub async fn chat_stream(
+        &self,
+        messages: &[Message],
+        sampling: SamplingParams,
+    ) -> Result<String> {
+        let text = self.chat_stream_cb(messages, sampling, print_flush).await?;
         println!();
         Ok(text)
     }
@@ -375,7 +399,7 @@ impl LlamaClient {
     pub async fn chat_stream_cb<F>(
         &self,
         messages: &[Message],
-        temperature: f32,
+        sampling: SamplingParams,
         mut on_token: F,
     ) -> Result<String>
     where
@@ -385,7 +409,9 @@ impl LlamaClient {
             model: "local",
             messages,
             stream: true,
-            temperature,
+            temperature: sampling.temperature,
+            top_p: sampling.top_p,
+            repeat_penalty: sampling.repeat_penalty,
             tools: None,
             tool_choice: None,
         };

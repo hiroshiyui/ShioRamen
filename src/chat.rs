@@ -2,7 +2,7 @@
 use anyhow::Result;
 use std::collections::HashMap;
 
-use crate::client::{LlamaClient, Message, ToolDef};
+use crate::client::{LlamaClient, Message, SamplingParams, ToolDef};
 use crate::config::SkillDef;
 use crate::tools::ToolExecutor;
 
@@ -163,7 +163,7 @@ fn extract_param_size(name: &str) -> Option<f64> {
 pub struct ChatSession {
     pub(crate) client: LlamaClient,
     pub(crate) messages: Vec<Message>,
-    pub(crate) temperature: f32,
+    pub(crate) sampling: SamplingParams,
     /// When Some, the agentic loop is active and these tools are offered to the model.
     pub(crate) executor: Option<ToolExecutor>,
     /// Tool definitions, computed once and reused across turns.
@@ -179,7 +179,7 @@ pub struct ChatSession {
 impl ChatSession {
     pub fn new(
         client: LlamaClient,
-        temperature: f32,
+        sampling: SamplingParams,
         system_prompt: String,
         executor: Option<ToolExecutor>,
         skills: HashMap<String, SkillDef>,
@@ -190,7 +190,7 @@ impl ChatSession {
         Self {
             client,
             messages: vec![Message::system(system_prompt)],
-            temperature,
+            sampling,
             executor,
             tools,
             skills,
@@ -224,7 +224,11 @@ mod tests {
         let client = LlamaClient::new("http://127.0.0.1:1".to_string());
         ChatSession::new(
             client,
-            0.7,
+            SamplingParams {
+                temperature: 0.7,
+                top_p: None,
+                repeat_penalty: None,
+            },
             "be helpful".to_string(),
             executor,
             HashMap::new(),
@@ -281,7 +285,19 @@ mod tests {
             },
         );
         let client = LlamaClient::new("http://127.0.0.1:1".to_string());
-        let session = ChatSession::new(client, 0.7, "sys".to_string(), None, skills, 0, true);
+        let session = ChatSession::new(
+            client,
+            SamplingParams {
+                temperature: 0.7,
+                top_p: None,
+                repeat_penalty: None,
+            },
+            "sys".to_string(),
+            None,
+            skills,
+            0,
+            true,
+        );
         assert_eq!(session.skills.len(), 1);
         assert!(session.skills.contains_key("commit"));
     }

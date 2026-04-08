@@ -21,7 +21,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 use chat::{ChatSession, DEFAULT_SYSTEM_PROMPT};
-use client::LlamaClient;
+use client::{LlamaClient, SamplingParams};
 use config::{
     Config, DEFAULT_CTX, DEFAULT_HOST, DEFAULT_NGL, DEFAULT_PORT, DEFAULT_SERVER_BIN, DEFAULT_TEMP,
     ShioConfig,
@@ -183,6 +183,14 @@ struct ChatArgs {
     #[arg(long)]
     temp: Option<f32>,
 
+    /// Top-p (nucleus) sampling [config: chat.top_p]
+    #[arg(long)]
+    top_p: Option<f32>,
+
+    /// Repetition penalty (> 1.0 discourages repetition) [config: chat.repeat_penalty]
+    #[arg(long)]
+    repeat_penalty: Option<f32>,
+
     /// Skip spawning llama-server; connect to an already running instance
     #[arg(long)]
     no_spawn: bool,
@@ -217,7 +225,11 @@ async fn main() -> Result<()> {
         }
 
         Commands::Chat(args) => {
-            let temp = args.temp.or(cfg.chat.temperature).unwrap_or(DEFAULT_TEMP);
+            let sampling = SamplingParams {
+                temperature: args.temp.or(cfg.chat.temperature).unwrap_or(DEFAULT_TEMP),
+                top_p: args.top_p.or(cfg.chat.top_p),
+                repeat_penalty: args.repeat_penalty.or(cfg.chat.repeat_penalty),
+            };
             let system_prompt = resolve_system_prompt(&cfg);
             let server = args
                 .server
@@ -256,7 +268,7 @@ async fn main() -> Result<()> {
             let show_thinking = cfg.chat.show_thinking.unwrap_or(true);
             let mut session = ChatSession::new(
                 client,
-                temp,
+                sampling,
                 system_prompt,
                 executor,
                 cfg.skills.clone(),
@@ -532,6 +544,18 @@ mod tests {
         assert!(!args.server.cont_batching);
         assert!(args.model.is_none());
         assert!(args.temp.is_none());
+        assert!(args.top_p.is_none());
+        assert!(args.repeat_penalty.is_none());
+    }
+
+    #[test]
+    fn chat_parses_top_p_and_repeat_penalty() {
+        let cli = parse(&["shio", "chat", "--top-p", "0.9", "--repeat-penalty", "1.15"]).unwrap();
+        let Commands::Chat(args) = cli.command else {
+            panic!()
+        };
+        assert_eq!(args.top_p, Some(0.9f32));
+        assert_eq!(args.repeat_penalty, Some(1.15f32));
     }
 
     // ── pull flags ───────────────────────────────────────────────────────────

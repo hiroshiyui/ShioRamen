@@ -43,6 +43,11 @@ pub struct ServerSection {
 pub struct ChatSection {
     pub model: Option<PathBuf>,
     pub temperature: Option<f32>,
+    /// Top-p (nucleus) sampling.  Lower values focus on the most likely tokens.
+    pub top_p: Option<f32>,
+    /// Repetition penalty.  Values > 1.0 discourage the model from repeating
+    /// the same tokens, reducing looping in long outputs.
+    pub repeat_penalty: Option<f32>,
     pub system_prompt: Option<String>,
     /// Show `<think>…</think>` blocks from reasoning models in a dimmed style.
     /// Default: true.
@@ -223,8 +228,10 @@ mod tests {
             cont_batching = true
 
             [chat]
-            model       = "./models/model.gguf"
-            temperature = 0.3
+            model          = "./models/model.gguf"
+            temperature    = 0.3
+            top_p          = 0.9
+            repeat_penalty = 1.15
 
             [paths]
             models_dir = "./models"
@@ -238,6 +245,8 @@ mod tests {
         assert_eq!(cfg.server.flash_attn, Some(true));
         assert_eq!(cfg.server.cont_batching, Some(true));
         assert_eq!(cfg.chat.temperature, Some(0.3));
+        assert_eq!(cfg.chat.top_p, Some(0.9));
+        assert_eq!(cfg.chat.repeat_penalty, Some(1.15));
         assert_eq!(cfg.paths.models_dir, Some(PathBuf::from("./models")));
     }
 

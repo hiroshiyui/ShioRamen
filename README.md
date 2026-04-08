@@ -100,6 +100,8 @@ cont_batching = true
 [chat]
 model       = "./models/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf"
 temperature = 0.7   # 0.1–0.3 for coding; 0.7–1.0 for creative tasks
+# top_p          = 0.95   # nucleus sampling — lower values focus on top tokens
+# repeat_penalty = 1.1    # > 1.0 discourages repetition
 
 [paths]
 models_dir = "./models"
@@ -151,6 +153,8 @@ Options:
   -m, --model <MODEL>                GGUF model file  [config: chat.model]
       --no-spawn                     Connect to an already-running server
       --temp <TEMP>                  Sampling temperature  [default: 0.7]
+      --top-p <P>                    Top-p (nucleus) sampling  [config: chat.top_p]
+      --repeat-penalty <P>           Repetition penalty (> 1.0)  [config: chat.repeat_penalty]
       --no-tools                     Disable tool use for this session
       --resume                       Resume the most recent saved session
       (all serve options also apply)
@@ -200,6 +204,8 @@ Options:
   -f, --file <PATH>                  File(s) to include as context (repeatable)
   -m, --model <MODEL>                GGUF model file  [config: chat.model]
       --temp <TEMP>                  Sampling temperature  [default: 0.7]
+      --top-p <P>                    Top-p (nucleus) sampling  [config: chat.top_p]
+      --repeat-penalty <P>           Repetition penalty (> 1.0)  [config: chat.repeat_penalty]
       --no-spawn                     Connect to an already-running server
       (all serve options also apply)
 ```
@@ -225,6 +231,8 @@ Options:
   -y, --yes                          Apply without asking for confirmation
   -m, --model <MODEL>                GGUF model file  [config: chat.model]
       --temp <TEMP>                  Sampling temperature  [default: 0.7]
+      --top-p <P>                    Top-p (nucleus) sampling  [config: chat.top_p]
+      --repeat-penalty <P>           Repetition penalty (> 1.0)  [config: chat.repeat_penalty]
       --no-spawn                     Connect to an already-running server
       (all serve options also apply)
 ```
@@ -307,11 +315,13 @@ flash_attn    = true
 cont_batching = true
 
 [chat]
-model         = "./models/model.gguf"
-temperature   = 0.7
-show_thinking = true                   # show <think>…</think> blocks from reasoning models (dimmed); default true
-prompt_style  = "auto"                 # "auto" (detect from model size), "full", "concise", "minimal"
-system_prompt = "..."                  # optional: override the built-in system prompt (overrides prompt_style)
+model          = "./models/model.gguf"
+temperature    = 0.7
+top_p          = 0.95                  # nucleus sampling — lower values focus on top tokens
+repeat_penalty = 1.1                   # > 1.0 discourages repetition in long outputs
+show_thinking  = true                  # show <think>…</think> blocks from reasoning models (dimmed); default true
+prompt_style   = "auto"               # "auto" (detect from model size), "full", "concise", "minimal"
+system_prompt  = "..."                 # optional: override the built-in system prompt (overrides prompt_style)
 
 [paths]
 models_dir    = "./models"             # default download directory for `shio pull`

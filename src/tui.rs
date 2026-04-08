@@ -25,7 +25,7 @@ use syntect::{easy::HighlightLines, highlighting::ThemeSet, parsing::SyntaxSet};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::chat::ChatSession;
-use crate::client::{AgentTurn, LlamaClient, Message, ToolCallItem, ToolDef};
+use crate::client::{AgentTurn, LlamaClient, Message, SamplingParams, ToolCallItem, ToolDef};
 use crate::config::SkillDef;
 use crate::context;
 use crate::tools::ToolExecutor;
@@ -113,7 +113,7 @@ struct App {
     tools: Vec<ToolDef>,
     executor: Option<ToolExecutor>,
     client: LlamaClient,
-    temperature: f32,
+    sampling: SamplingParams,
 
     // Display
     entries: Vec<ChatEntry>,
@@ -220,7 +220,7 @@ async fn run_loop(
         tools: session.tools,
         executor: session.executor,
         client: session.client,
-        temperature: session.temperature,
+        sampling: session.sampling,
         entries: Vec::new(),
         streaming: None,
         thinking: None,
@@ -1348,14 +1348,14 @@ fn dispatch_turn(app: &mut App) {
 
     let client = app.client.clone();
     let msgs = app.messages.clone();
-    let temp = app.temperature;
+    let sampling = app.sampling;
     let tools = app.tools.clone();
     let executor = app.executor.clone();
     let tx = app.event_tx.clone();
 
     let ctx_size = app.ctx_size;
     app.model_task = Some(tokio::spawn(async move {
-        run_model_task(client, msgs, temp, tools, executor, tx, ctx_size).await;
+        run_model_task(client, msgs, sampling, tools, executor, tx, ctx_size).await;
     }));
 }
 
@@ -1600,16 +1600,16 @@ const PLAN_MODE_ALLOWED: &[&str] = &[
 async fn run_model_task(
     client: LlamaClient,
     mut msgs: Vec<Message>,
-    temp: f32,
+    sampling: SamplingParams,
     tools: Vec<ToolDef>,
     executor: Option<ToolExecutor>,
     tx: mpsc::UnboundedSender<TuiEvent>,
     ctx_size: u32,
 ) {
     let result = if let Some(exec) = &executor {
-        run_agent_loop(&client, &mut msgs, temp, &tools, exec, &tx, ctx_size).await
+        run_agent_loop(&client, &mut msgs, sampling, &tools, exec, &tx, ctx_size).await
     } else {
-        run_stream_turn(&client, &mut msgs, temp, &tx).await
+        run_stream_turn(&client, &mut msgs, sampling, &tx).await
     };
 
     let ev = match result {
@@ -1622,12 +1622,12 @@ async fn run_model_task(
 async fn run_stream_turn(
     client: &LlamaClient,
     msgs: &mut Vec<Message>,
-    temp: f32,
+    sampling: SamplingParams,
     tx: &mpsc::UnboundedSender<TuiEvent>,
 ) -> Result<()> {
     let tx_clone = tx.clone();
     let full_text = client
-        .chat_stream_cb(msgs, temp, move |token| {
+        .chat_stream_cb(msgs, sampling, move |token| {
             let _ = tx_clone.send(TuiEvent::StreamToken(token.to_string()));
         })
         .await?;
@@ -1659,7 +1659,7 @@ fn cap_tool_result(result: String, limit: usize) -> String {
 async fn run_agent_loop(
     client: &LlamaClient,
     msgs: &mut Vec<Message>,
-    temp: f32,
+    sampling: SamplingParams,
     tools: &[ToolDef],
     executor: &ToolExecutor,
     tx: &mpsc::UnboundedSender<TuiEvent>,
@@ -1729,7 +1729,7 @@ async fn run_agent_loop(
             for attempt in 0..MAX_EMPTY_RETRIES {
                 let tx_stream = tx.clone();
                 match client
-                    .chat_agent_stream(msgs_to_send, temp, tools_for_call, move |token| {
+                    .chat_agent_stream(msgs_to_send, sampling, tools_for_call, move |token| {
                         let _ = tx_stream.send(TuiEvent::StreamToken(token.to_string()));
                     })
                     .await

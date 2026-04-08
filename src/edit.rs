@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use crate::ServerArgs;
 use crate::agents;
-use crate::client::{LlamaClient, Message};
+use crate::client::{LlamaClient, Message, SamplingParams};
 use crate::config::{DEFAULT_TEMP, ShioConfig};
 
 const EDIT_SYSTEM_PROMPT: &str = "\
@@ -38,13 +38,25 @@ pub struct EditArgs {
     #[arg(long)]
     pub temp: Option<f32>,
 
+    /// Top-p (nucleus) sampling [config: chat.top_p]
+    #[arg(long)]
+    pub top_p: Option<f32>,
+
+    /// Repetition penalty (> 1.0 discourages repetition) [config: chat.repeat_penalty]
+    #[arg(long)]
+    pub repeat_penalty: Option<f32>,
+
     /// Skip spawning llama-server; connect to an already running instance
     #[arg(long)]
     pub no_spawn: bool,
 }
 
 pub async fn run(args: &EditArgs, cfg: &ShioConfig) -> Result<()> {
-    let temp = args.temp.or(cfg.chat.temperature).unwrap_or(DEFAULT_TEMP);
+    let sampling = SamplingParams {
+        temperature: args.temp.or(cfg.chat.temperature).unwrap_or(DEFAULT_TEMP),
+        top_p: args.top_p.or(cfg.chat.top_p),
+        repeat_penalty: args.repeat_penalty.or(cfg.chat.repeat_penalty),
+    };
 
     let original = tokio::fs::read_to_string(&args.file)
         .await
@@ -78,7 +90,7 @@ pub async fn run(args: &EditArgs, cfg: &ShioConfig) -> Result<()> {
     io::stderr().flush().ok();
 
     let client = LlamaClient::new(server.url.clone());
-    let raw = client.chat_collect(&messages, temp).await?;
+    let raw = client.chat_collect(&messages, sampling).await?;
     drop(server);
 
     eprintln!(" done.");

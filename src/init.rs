@@ -39,6 +39,12 @@ const TEMPLATE: &str = r#"# shio.toml — ShioRamen configuration
 # Sampling temperature (0.0 = deterministic, 1.0 = creative).
 # temperature = 0.7
 
+# Top-p (nucleus) sampling — lower values focus on top tokens.
+# top_p = 0.95
+
+# Repetition penalty — values > 1.0 discourage repetition.
+# repeat_penalty = 1.1
+
 # Override the built-in system prompt.
 # system_prompt = "You are a helpful assistant."
 

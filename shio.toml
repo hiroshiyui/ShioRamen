@@ -18,6 +18,8 @@ cont_batching = true   # Better throughput when multiple requests queue up
 [chat]
 model          = "./models/gemma-4-e4b-it-Q8_0.gguf"
 temperature    = 0.1   # Low temperature for precise, deterministic coding responses
+# top_p          = 0.95  # Nucleus sampling — lower values focus on top tokens
+# repeat_penalty = 1.1   # > 1.0 discourages repetition in long outputs
 show_thinking  = true  # Show <think>…</think> blocks from reasoning models (dimmed); set false to hide them
 
 # System prompt style: "auto" (detect from model size), "full" (30B+),
