@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.0.0] — 2026-04-08
+
+### Added
+- (server): `--mmproj` flag for vision model support (multimodal projector GGUF)
+- (tui): bracketed paste support — paste text and images from clipboard or file manager
+- (tui): multi-line input — Alt+Enter, Shift+Enter, or trailing `\` for newlines
+- (tui): image attachment — Ctrl+V pastes clipboard images, drag-and-drop attaches image files
+
+### Fixed
+- (server): reap zombie processes in `Drop` by calling `wait()` after `kill()`
+- (server): fail fast in health-poll loop when child process has already exited
+- (context): use `symlink_metadata()` so symlinks are properly detected and skipped
+- (tui): `append_file` and `insert_after_line` now respect `confirm_writes` setting
+- (tui): `/include` file I/O runs via `spawn_blocking` to avoid freezing the UI
+
+### Changed
+- (tui): replaced syntect with inkjet (tree-sitter) for syntax highlighting — resolves all `cargo audit` warnings
+- (deps): upgraded ratatui 0.29 → 0.30, removing unsound `lru` and unmaintained `paste` transitive deps
+- (deps): upgraded fastrand 2.4.0 → 2.4.1, tokio 1.51.0 → 1.51.1
+- (chat): simplified `extract_param_size` condition (removed redundant branch)
+
+### Documentation
+- Added paste, multi-line input, and image support roadmap to TODO
+
 ## [v0.5.1] — 2026-04-08
 
 ### Added
