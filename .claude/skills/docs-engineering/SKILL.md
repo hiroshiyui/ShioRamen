@@ -80,7 +80,49 @@ Make the minimum edits needed to make docs accurate:
 - Do not reformat sections you aren't fixing.
 - Do not add documentation for features not yet implemented.
 
-## Step 5: Verify the example config
+## Step 5: Maintain TODO.md
+
+For any `doc/TODO.md` (or equivalent task-tracking document) in the project:
+
+### 5a. Mark completed tasks
+
+Cross-reference each task/step against the actual code on disk and git history.
+A task is **done** if:
+- The files it describes exist and contain the expected content, **or**
+- `git log` shows a commit that implemented it
+
+Mark done tasks by prefixing the heading with `[x]`:
+```markdown
+### [x] A1 — Add mRuby git submodule
+```
+
+### 5b. Summarize completed phases
+
+When **all** steps in a phase are done, replace the entire phase section (which may contain
+multi-screen code listings and prose) with a compact summary block:
+
+```markdown
+## Phase A — Infrastructure ✓ DONE
+
+**Files created:** `build.rs`, `mruby_configs/shio.rb`, `mruby_configs/mcp_safe.gembox`,
+`src/ruby/{ffi.rs, glue.c, native.rs, prelude.rb, vm.rs, registry.rs, mod.rs}`
+
+**Key decisions recorded:**
+- mRuby pinned to commit `a309524d0` (same as rrcad)
+- gembox: `stdlib` + `math` + `mruby-compiler` only (security boundary)
+- `#![allow(dead_code)]` on Phase A stubs — removed in Phase B when used
+
+**Verified:** `cargo build` ✓ · 320 tests pass ✓ · `clippy -D warnings` ✓ · `cargo fmt` ✓
+```
+
+Keep the summary tight: one sentence per key decision, one line for files created, one line for verification status. Drop all code listings — they're in git.
+
+### 5c. Leave pending phases untouched
+
+Do **not** modify any phase that is not yet started or only partially done. Only summarize
+when the entire phase (every numbered step) is verifiably complete.
+
+## Step 6: Verify the example config
 
 The `shio.toml` in the repo root is an example config. Cross-check it against `src/config.rs` (or equivalent): every key present in the file must be a recognized field. Update the example file if needed.
 

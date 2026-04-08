@@ -1,0 +1,27 @@
+# MCP-safe mRuby gem box for ShioRamen.
+#
+# Deliberately omits IO, socket, filesystem, and metaprogramming gems so that
+# AI-generated Ruby DSL code running inside an MCP tool call cannot reach the
+# host filesystem or network.
+#
+# Included:
+#   stdlib   — String, Array, Hash, Comparable, Enumerable, Range, Fiber, …
+#   math     — Math module (sin, cos, sqrt, PI, …)
+#
+# Deliberately omitted (attack surface):
+#   stdlib-io  → mruby-io, mruby-socket, mruby-dir  (File, IO, Dir, Socket)
+#   metaprog   → mruby-eval, mruby-metaprog          (eval(), define_method, …)
+#   stdlib-ext → mruby-sprintf, mruby-time, mruby-random (not needed by DSL)
+#
+# Remaining surface is hardened further at runtime by the MCP security prelude
+# (Mitigation 2) which undefines :system, :exec, :spawn, :fork, :exit, etc.
+MRuby::GemBox.new do |conf|
+  conf.gembox "stdlib"
+  conf.gembox "math"
+
+  # mruby-compiler provides the C-level parser and mrb_load_string(), which
+  # ShioRamen's glue.c uses to evaluate DSL strings.  This is NOT the same as
+  # mruby-eval (Ruby-level Kernel#eval, intentionally excluded above) —
+  # mruby-compiler is the compiler back-end, not a runtime escape hatch.
+  conf.gem :core => "mruby-compiler"
+end

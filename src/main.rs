@@ -10,6 +10,7 @@ mod edit;
 mod init;
 mod lsp;
 mod pull;
+mod ruby;
 mod server;
 mod tools;
 mod tui;
