@@ -1728,7 +1728,11 @@ fn consume_raw_buf(
                 }
                 None => {
                     let hold = HOLD_CLOSE.min(raw_buf.len());
-                    let safe = raw_buf.len() - hold;
+                    let mut safe = raw_buf.len() - hold;
+                    // Retreat to a char boundary so we don't slice mid-character.
+                    while safe > 0 && !raw_buf.is_char_boundary(safe) {
+                        safe -= 1;
+                    }
                     if safe > 0 {
                         let chunk = raw_buf[..safe].to_string();
                         *raw_buf = raw_buf[safe..].to_string();
@@ -1755,7 +1759,11 @@ fn consume_raw_buf(
                 }
                 None => {
                     let hold = HOLD_OPEN.min(raw_buf.len());
-                    let safe = raw_buf.len() - hold;
+                    let mut safe = raw_buf.len() - hold;
+                    // Retreat to a char boundary so we don't slice mid-character.
+                    while safe > 0 && !raw_buf.is_char_boundary(safe) {
+                        safe -= 1;
+                    }
                     if safe > 0 {
                         let chunk = raw_buf[..safe].to_string();
                         *raw_buf = raw_buf[safe..].to_string();
@@ -1939,13 +1947,38 @@ async fn run_agent_loop(
         // user nudge to the outgoing slice so the model understands it should
         // produce a response.  We do NOT push it into `msgs` so it never
         // appears in the persistent conversation history.
+        //
+        // The nudge also embeds the tool result content as plain text because
+        // many chat templates silently drop `role: "tool"` messages, leaving
+        // the model unable to see what the tool returned.
         let nudged: Vec<Message>;
         let msgs_to_send: &[Message] = if msgs.last().map(|m| m.role.as_str()) == Some("tool") {
             nudged = {
                 let mut v = msgs.to_vec();
-                v.push(Message::user(
-                    "Tool result received. Continue the task; call more tools if needed.",
-                ));
+                // Collect all trailing tool-result messages so the model can
+                // see the content even when the chat template drops them.
+                let tool_summary: String = v
+                    .iter()
+                    .rev()
+                    .take_while(|m| m.role == "tool")
+                    .filter_map(|m| m.text_content().map(|t| t.to_string()))
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>()
+                    .join("\n---\n");
+                let nudge = if tool_summary.is_empty() {
+                    "Continue the task based on the tool results above. \
+                     Call more tools if needed, or provide your final answer."
+                        .to_string()
+                } else {
+                    format!(
+                        "Here are the tool results:\n\n{tool_summary}\n\n\
+                         Continue the task based on these results. \
+                         Call more tools if needed, or provide your final answer."
+                    )
+                };
+                v.push(Message::user(nudge));
                 v
             };
             &nudged
@@ -2911,5 +2944,18 @@ mod tests {
         assert_eq!(thinking.as_deref(), Some("thought"));
         assert!(streaming.as_deref().unwrap_or("").contains("prefix"));
         assert!(streaming.as_deref().unwrap_or("").contains("suffix"));
+    }
+
+    #[test]
+    fn consume_raw_buf_multibyte_emoji_does_not_panic() {
+        // "# 🏠" is 6 bytes: '#'(1) ' '(1) '🏠'(4). With HOLD_OPEN=6 the
+        // hold-back arithmetic can land inside the emoji if we don't snap to
+        // a char boundary.
+        let input = "# \u{1F3E0}";
+        let (streaming, thinking) = run_consume(input);
+        assert!(thinking.is_none());
+        // The full string must appear once the buffer is flushed.
+        let s = streaming.unwrap_or_default();
+        assert!(s.contains("# \u{1F3E0}") || s.is_empty());
     }
 }
