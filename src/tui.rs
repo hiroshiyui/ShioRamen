@@ -13,6 +13,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use futures_util::StreamExt;
+use inkjet::{Highlighter, Language, constants::HIGHLIGHT_NAMES, theme::Theme};
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
@@ -21,7 +22,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
-use syntect::{easy::HighlightLines, highlighting::ThemeSet, parsing::SyntaxSet};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::chat::ChatSession;
@@ -525,15 +525,62 @@ fn build_lines(
 
 // ── Syntax highlighting ───────────────────────────────────────────────────────
 
-static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
-static THEME_SET: OnceLock<ThemeSet> = OnceLock::new();
+static INKJET_THEME: OnceLock<Theme> = OnceLock::new();
 
-fn syntax_set() -> &'static SyntaxSet {
-    SYNTAX_SET.get_or_init(SyntaxSet::load_defaults_newlines)
+fn inkjet_theme() -> &'static Theme {
+    INKJET_THEME.get_or_init(|| {
+        Theme::from_helix(inkjet::theme::vendored::SOLARIZED_LIGHT)
+            .expect("vendored Solarized Light theme must parse")
+    })
 }
 
-fn theme_set() -> &'static ThemeSet {
-    THEME_SET.get_or_init(ThemeSet::load_defaults)
+/// Highlight a single line of source code using inkjet.
+/// Returns `Some(vec of (fg_color, text))` on success, `None` if the language
+/// is unknown or highlighting fails.
+fn highlight_line_inkjet(
+    line: &str,
+    lang: Option<Language>,
+    theme: &Theme,
+) -> Option<Vec<(Color, String)>> {
+    use inkjet::tree_sitter_highlight::HighlightEvent;
+
+    let lang = lang?;
+    let mut hl = Highlighter::new();
+    let source = line.to_string();
+    let events = hl.highlight_raw(lang, &source).ok()?;
+
+    let default_fg = Color::Rgb(theme.fg.r, theme.fg.g, theme.fg.b);
+    let mut result: Vec<(Color, String)> = Vec::new();
+    let mut current_fg = default_fg;
+
+    for event in events {
+        let Ok(event) = event else { continue };
+        match event {
+            HighlightEvent::HighlightStart(highlight) => {
+                let name = HIGHLIGHT_NAMES.get(highlight.0).copied().unwrap_or("");
+                current_fg = theme
+                    .get_style(name)
+                    .and_then(|s| s.fg)
+                    .map(|c| Color::Rgb(c.r, c.g, c.b))
+                    .unwrap_or(default_fg);
+            }
+            HighlightEvent::HighlightEnd => {
+                current_fg = default_fg;
+            }
+            HighlightEvent::Source { start, end } => {
+                let text = &line[start..end];
+                if !text.is_empty() {
+                    result.push((current_fg, text.to_string()));
+                }
+            }
+        }
+    }
+
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
 }
 
 /// ── Code-block backgrounds — Solarized Light: Base2 tinted with accent hues. ─
@@ -549,14 +596,13 @@ fn push_entry_lines(out: &mut Vec<Line<'static>>, entry: &ChatEntry, width: usiz
     let pfx_width = first_prefix.len(); // all prefixes are exactly 7 ASCII cols
     let text_width = width.saturating_sub(pfx_width).max(10);
 
-    let ss = syntax_set();
-    let theme = &theme_set().themes["Solarized (light)"];
+    let theme = inkjet_theme();
 
     let mut first_out = true;
     let mut in_code = false;
     let mut is_diff = false;
     let mut prose_buf: Vec<&str> = Vec::new();
-    let mut highlighter: Option<HighlightLines<'_>> = None;
+    let mut code_lang: Option<Language> = None;
 
     for raw_line in entry.text.split('\n') {
         if !in_code {
@@ -576,11 +622,8 @@ fn push_entry_lines(out: &mut Vec<Line<'static>>, entry: &ChatEntry, width: usiz
                 is_diff = lang.eq_ignore_ascii_case("diff");
                 in_code = true;
 
-                // Set up the syntax highlighter for this language.
-                let syntax = ss
-                    .find_syntax_by_token(lang)
-                    .unwrap_or_else(|| ss.find_syntax_plain_text());
-                highlighter = Some(HighlightLines::new(syntax, theme));
+                // Resolve language for inkjet.
+                code_lang = Language::from_token(lang);
 
                 let pfx = if first_out { first_prefix } else { cont_prefix };
                 first_out = false;
@@ -600,7 +643,7 @@ fn push_entry_lines(out: &mut Vec<Line<'static>>, entry: &ChatEntry, width: usiz
             // Closing fence.
             in_code = false;
             is_diff = false;
-            highlighter = None;
+            code_lang = None;
             let pfx = if first_out { first_prefix } else { cont_prefix };
             first_out = false;
             out.push(Line::from(vec![
@@ -613,31 +656,15 @@ fn push_entry_lines(out: &mut Vec<Line<'static>>, entry: &ChatEntry, width: usiz
             first_out = false;
             let bg = code_line_bg(raw_line, is_diff);
 
-            // highlight_line expects a trailing newline when using the
-            // `load_defaults_newlines` syntax set.
-            let line_nl = format!("{raw_line}\n");
-            let spans = match highlighter
-                .as_mut()
-                .and_then(|h| h.highlight_line(&line_nl, ss).ok())
-            {
+            let spans = match highlight_line_inkjet(raw_line, code_lang, theme) {
                 Some(ranges) => {
                     let mut spans: Vec<Span<'static>> = vec![Span::styled(pfx.to_string(), style)];
                     let mut col = 0usize;
-                    for (syn_style, text) in &ranges {
-                        // Strip the trailing newline syntect appended.
-                        let text = text.trim_end_matches('\n');
-                        if text.is_empty() {
-                            continue;
-                        }
-                        let fg = Color::Rgb(
-                            syn_style.foreground.r,
-                            syn_style.foreground.g,
-                            syn_style.foreground.b,
-                        );
+                    for (fg, text) in &ranges {
                         col += text.width();
                         spans.push(Span::styled(
                             text.to_string(),
-                            Style::default().fg(fg).bg(bg),
+                            Style::default().fg(*fg).bg(bg),
                         ));
                     }
                     // Trailing pad so the background fills the whole column.

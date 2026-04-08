@@ -20,11 +20,11 @@ toml        = "0.8"
 similar     = "2"
 glob        = "0.3"
 regex       = "1"
-ratatui          = "0.29"
+ratatui          = { version = "0.30", features = ["crossterm_0_28"] }
 crossterm        = { version = "0.28", features = ["event-stream"] }
 textwrap         = "0.16"
 unicode-width    = "0.2"
-syntect          = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"] }
+inkjet           = { version = "0.11", default-features = false, features = ["theme"] }
 dirs             = "5"
 arboard          = "3"
 base64           = "0.22"
