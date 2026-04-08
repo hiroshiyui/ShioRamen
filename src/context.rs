@@ -76,7 +76,7 @@ fn collect_dir_depth(dir: &Path, out: &mut Vec<(PathBuf, String)>, depth: usize)
         let name_str = name.to_string_lossy();
 
         // Use symlink_metadata to detect symlinks without following them.
-        let meta = match entry.metadata() {
+        let meta = match std::fs::symlink_metadata(entry.path()) {
             Ok(m) => m,
             Err(_) => continue,
         };

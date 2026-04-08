@@ -38,9 +38,12 @@ cargo fmt --check 2>&1
 cargo build 2>&1
 cargo test 2>&1
 cargo clippy -- -D warnings 2>&1
+cargo audit 2>&1
 ```
 
-Record failures. These are **P0 blockers** — report them immediately.
+Record failures from fmt, build, test, and clippy as **P0 blockers** — report them immediately.
+
+`cargo audit` findings are severity-dependent: critical/high advisories are **P0**, medium are **P1**, low/informational are **P2**. If `cargo-audit` is not installed, note it and move on.
 
 ## Step 4: Review for issues
 
@@ -134,6 +137,7 @@ Write a structured report:
 - `cargo fmt --check`: clean
 - `cargo test`: 41 passed, 0 failed
 - `cargo clippy`: clean
+- `cargo audit`: no known vulnerabilities
 
 ### No issues found in
 - src/config.rs, src/main.rs, src/pull.rs

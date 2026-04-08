@@ -83,6 +83,15 @@ impl ServerProcess {
         // Poll until ready (max 120 s).
         for elapsed in 1..=120 {
             sleep(Duration::from_secs(1)).await;
+
+            // Fail fast if the child has already exited (e.g. binary crash).
+            if let Ok(Some(status)) = child.try_wait() {
+                anyhow::bail!(
+                    "llama-server exited immediately with {status} — \
+                     check the model path and server binary"
+                );
+            }
+
             if health_check(&url).await {
                 eprintln!("  Server ready after {elapsed}s");
                 return Ok(Self {
@@ -105,6 +114,7 @@ impl Drop for ServerProcess {
     fn drop(&mut self) {
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }

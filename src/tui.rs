@@ -1371,7 +1371,7 @@ async fn submit(app: &mut App) {
         }
         _ if input.starts_with("/include ") => {
             let path_str = input["/include ".len()..].trim();
-            cmd_include(app, path_str);
+            cmd_include(app, path_str).await;
             return;
         }
         _ => {}
@@ -1400,9 +1400,17 @@ async fn submit(app: &mut App) {
     dispatch_turn(app);
 }
 
-fn cmd_include(app: &mut App, path_str: &str) {
-    let path = std::path::Path::new(path_str);
-    match context::collect(path) {
+async fn cmd_include(app: &mut App, path_str: &str) {
+    let path_buf = std::path::PathBuf::from(path_str);
+    let result = tokio::task::spawn_blocking(move || context::collect(&path_buf)).await;
+    let result = match result {
+        Ok(inner) => inner,
+        Err(e) => {
+            app.push_entry(EntryKind::Error, &format!("include: {e}"));
+            return;
+        }
+    };
+    match result {
         Err(e) => {
             app.push_entry(EntryKind::Error, &format!("include: {e}"));
         }
@@ -2072,7 +2080,8 @@ async fn run_agent_loop(
 
 fn needs_confirm(call: &ToolCallItem, exec: &ToolExecutor) -> bool {
     match call.function.name.as_str() {
-        "write_file" | "patch_file" | "delete_file" | "move_file" => exec.confirm_writes,
+        "write_file" | "patch_file" | "delete_file" | "move_file" | "append_file"
+        | "insert_after_line" => exec.confirm_writes,
         "run_shell" => exec.confirm_shell,
         _ => false,
     }
@@ -2695,7 +2704,13 @@ mod tests {
 
     #[test]
     fn needs_confirm_patch_and_delete_and_move_follow_confirm_writes() {
-        for name in &["patch_file", "delete_file", "move_file"] {
+        for name in &[
+            "patch_file",
+            "delete_file",
+            "move_file",
+            "append_file",
+            "insert_after_line",
+        ] {
             assert!(needs_confirm(
                 &make_call_for_confirm(name),
                 &exec(true, false)

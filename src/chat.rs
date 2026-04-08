@@ -145,9 +145,7 @@ fn extract_param_size(name: &str) -> Option<f64> {
             // (to avoid matching "32768" from context sizes).
             if i < bytes.len()
                 && bytes[i].eq_ignore_ascii_case(&b'b')
-                && (i + 1 >= bytes.len()
-                    || !bytes[i + 1].is_ascii_alphabetic()
-                    || matches!(bytes[i + 1], b'-' | b'_' | b'.'))
+                && (i + 1 >= bytes.len() || !bytes[i + 1].is_ascii_alphabetic())
             {
                 let num_str = &name[start..i];
                 if let Ok(n) = num_str.parse::<f64>() {
