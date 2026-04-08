@@ -1492,10 +1492,37 @@ fn try_expand_skill(app: &App, input: &str) -> Option<String> {
     Some(expand_skill_prompt(&skill.prompt, raw_args))
 }
 
-/// Estimate the serialized byte size of a message, including any tool_calls
-/// JSON that content-only counting would miss.
+/// Estimate the token-budget cost of a message in bytes.
+///
+/// For text-only messages this is the serialized JSON length.  For multimodal
+/// messages that contain `image_url` parts, the base64 data URL is *not*
+/// counted as tokens — llama-server decodes the image and feeds it through
+/// the multimodal projector, which produces a fixed number of embedding
+/// tokens (~256-576) regardless of pixel dimensions or file size.  We
+/// estimate each image at 576 tokens × 4 bytes = 2 304 bytes.
 fn msg_size(m: &Message) -> usize {
-    serde_json::to_string(m).map_or(0, |s| s.len())
+    use crate::client::{ContentPart, MessageContent};
+
+    const IMAGE_TOKEN_ESTIMATE: usize = 576 * 4; // bytes
+
+    match &m.content {
+        Some(MessageContent::Parts(parts)) => {
+            let mut size = 0;
+            for part in parts {
+                match part {
+                    ContentPart::ImageUrl { .. } => size += IMAGE_TOKEN_ESTIMATE,
+                    ContentPart::Text { text } => size += text.len(),
+                }
+            }
+            // Add overhead for role, tool_calls, etc.
+            size += m.role.len() + 32;
+            if let Some(tc) = &m.tool_calls {
+                size += serde_json::to_string(tc).map_or(0, |s| s.len());
+            }
+            size
+        }
+        _ => serde_json::to_string(m).map_or(0, |s| s.len()),
+    }
 }
 
 /// Drop the oldest non-system messages from `msgs` until the total content
