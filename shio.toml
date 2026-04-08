@@ -86,3 +86,7 @@ models_dir = "./models"
 enabled        = true   # let the model read/write files and run commands
 confirm_writes = true   # ask [y/N] before writing files
 confirm_shell  = true   # ask [y/N] before running shell commands
+
+# Shell command sandboxing (both empty = unrestricted)
+shell_allowlist = ["cargo", "git", "grep", "find", "ls", "cat", "head", "wc"]
+shell_denylist  = ["rm", "curl", "wget", "ssh", "scp", "sudo", "su"]

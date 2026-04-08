@@ -62,6 +62,17 @@ pub struct ToolsSection {
     pub confirm_writes: Option<bool>,
     /// Ask for confirmation before running shell commands. Default: true.
     pub confirm_shell: Option<bool>,
+    /// If set, only shell commands whose first token matches one of these entries
+    /// are allowed.  All other commands are rejected before execution.
+    /// Example: `["cargo", "git", "grep", "ls"]`
+    #[serde(default)]
+    pub shell_allowlist: Vec<String>,
+    /// Shell commands whose first token matches one of these entries are rejected
+    /// before execution.  Checked after the allowlist (if both are set, a command
+    /// must pass the allowlist *and* not appear on the denylist).
+    /// Example: `["rm", "curl", "wget", "ssh"]`
+    #[serde(default)]
+    pub shell_denylist: Vec<String>,
 }
 
 /// `[lsp]` section — override which LSP server to use per language or extension.

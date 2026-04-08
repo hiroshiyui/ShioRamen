@@ -319,6 +319,10 @@ enabled        = true   # let the model read/write files and run commands
 confirm_writes = true   # ask [y/N] before the model writes files
 confirm_shell  = true   # ask [y/N] before the model runs shell commands
 
+# Shell command sandboxing (optional — both empty = unrestricted)
+# shell_allowlist = ["cargo", "git", "grep", "ls"]   # only these commands allowed
+# shell_denylist  = ["rm", "curl", "wget", "ssh"]     # these commands always blocked
+
 [lsp.servers]
 rust   = "rust-analyzer"                        # language name → LSP server command
 python = "pylsp"

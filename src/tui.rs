@@ -1807,6 +1807,8 @@ async fn run_agent_loop(
                             confirm_shell: false,
                             lsp: executor.lsp.clone(),
                             max_tool_result_chars: executor.max_tool_result_chars,
+                            shell_allowlist: executor.shell_allowlist.clone(),
+                            shell_denylist: executor.shell_denylist.clone(),
                             vm: executor.vm.clone(),
                         };
                         let call2 = call.clone();

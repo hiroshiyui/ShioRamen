@@ -236,6 +236,8 @@ async fn main() -> Result<()> {
                         confirm_shell: cfg.tools.confirm_shell.unwrap_or(true),
                         lsp: cfg.lsp.servers.clone(),
                         max_tool_result_chars,
+                        shell_allowlist: cfg.tools.shell_allowlist.clone(),
+                        shell_denylist: cfg.tools.shell_denylist.clone(),
                         ..Default::default()
                     })
                 } else {

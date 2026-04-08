@@ -19,12 +19,21 @@ thread_local! {
     /// `shio_native_lsp_query` to pass user-configured servers to `lsp::query`.
     static LSP_CONFIG_JSON: std::cell::RefCell<String> =
         const { std::cell::RefCell::new(String::new()) };
+    static SHELL_ALLOWLIST: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static SHELL_DENYLIST: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Called by `ToolExecutor::dispatch` before entering the Ruby VM so that
 /// `shio_native_lsp_query` can resolve user-configured LSP server commands.
 pub(crate) fn set_lsp_config_json(json: &str) {
     LSP_CONFIG_JSON.with(|c| *c.borrow_mut() = json.to_string());
+}
+
+pub(crate) fn set_shell_policy(allowlist: &[String], denylist: &[String]) {
+    SHELL_ALLOWLIST.with(|c| *c.borrow_mut() = allowlist.to_vec());
+    SHELL_DENYLIST.with(|c| *c.borrow_mut() = denylist.to_vec());
 }
 
 pub(super) unsafe fn set_err(error_out: *mut *const c_char, msg: &str) {
@@ -614,6 +623,14 @@ pub unsafe extern "C" fn shio_native_run_shell(
 ) -> *const c_char {
     let _ = error_out; // errors returned as strings, not C errors
     let cmd = unsafe { CStr::from_ptr(cmd) }.to_string_lossy();
+
+    // Check shell allowlist/denylist before execution.
+    let allow = SHELL_ALLOWLIST.with(|c| c.borrow().clone());
+    let deny = SHELL_DENYLIST.with(|c| c.borrow().clone());
+    if let Err(msg) = crate::tools::check_shell_policy(&cmd, &allow, &deny) {
+        return set_result(format!("Error: {msg}"));
+    }
+
     match std::process::Command::new("sh")
         .args(["-c", &*cmd])
         .output()

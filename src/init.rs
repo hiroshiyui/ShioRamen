@@ -56,6 +56,13 @@ const TEMPLATE: &str = r#"# shio.toml — ShioRamen configuration
 # Ask for confirmation before running shell commands.
 # confirm_shell = true
 
+# If set, only commands whose first token matches this list are allowed.
+# All other commands are blocked before execution.
+# shell_allowlist = ["cargo", "git", "grep", "find", "ls", "cat", "head", "wc"]
+
+# Commands whose first token matches this list are always blocked.
+# shell_denylist = ["rm", "curl", "wget", "ssh", "scp", "sudo", "su"]
+
 [lsp.servers]
 # Map language names or file extensions to LSP server commands.
 # rust   = "rust-analyzer"

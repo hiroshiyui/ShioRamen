@@ -68,7 +68,7 @@ CLI flags always override config file values, which override hardcoded defaults.
 | `[server]` | `bin`, `host`, `port`, `ngl`, `ctx`, `cache_type_k`, `cache_type_v`, `flash_attn`, `cont_batching` |
 | `[chat]` | `model`, `temperature`, `system_prompt`, `show_thinking` |
 | `[paths]` | `models_dir` |
-| `[tools]` | `enabled`, `confirm_writes`, `confirm_shell` |
+| `[tools]` | `enabled`, `confirm_writes`, `confirm_shell`, `shell_allowlist`, `shell_denylist` |
 | `[lsp.servers]` | `<lang_or_ext> = "<command>"` (e.g. `rust = "rust-analyzer"`) |
 | `[skills.<name>]` | `description`, `prompt` (with optional `{args}` placeholder) |
 
@@ -154,17 +154,30 @@ The model runs on a background task. Communication is via `mpsc` channel:
 ### ToolExecutor
 
 ```
-confirm_writes: bool        — ask [y/N] before file writes
-confirm_shell:  bool        — ask [y/N] before shell commands
-lsp: HashMap<String,String> — lang/ext → LSP command overrides
+confirm_writes: bool          — ask [y/N] before file writes
+confirm_shell:  bool          — ask [y/N] before shell commands
+lsp: HashMap<String,String>   — lang/ext → LSP command overrides
 max_tool_result_chars: usize
-vm: Arc<Mutex<ShioVm>>     — mRuby VM for all dispatch
+shell_allowlist: Vec<String>  — if non-empty, only these commands allowed
+shell_denylist:  Vec<String>  — these commands always blocked
+vm: Arc<Mutex<ShioVm>>       — mRuby VM for all dispatch
 ```
+
+### Shell sandboxing
+
+Before `run_shell` executes a command, `check_shell_policy` splits it on shell
+metacharacters (`;`, `|`, `&&`, `` ` ``, `$(…)`) and extracts the first token of
+each segment. Each token is checked against the allowlist and denylist:
+
+- **Allowlist non-empty:** every token must appear in the list, or the command is rejected.
+- **Denylist non-empty:** any token on the list causes the command to be rejected.
+- **Both set:** command must pass the allowlist *and* not appear on the denylist.
+- **Both empty:** all commands allowed (default, backward-compatible).
 
 ### Dispatch flow
 
 1. Parse `arguments` JSON; unwrap one level if model wraps under function name
-2. Set `LSP_CONFIG_JSON` thread-local (for `lsp` tool)
+2. Set thread-locals: `LSP_CONFIG_JSON`, `SHELL_ALLOWLIST`, `SHELL_DENYLIST`
 3. `vm.call_tool(name, args_json)` — Ruby handler runs, returns result string
 
 ### Rust-side utilities
