@@ -3,7 +3,7 @@
 A local AI coding assistant powered by [llama.cpp](https://github.com/ggml-org/llama.cpp).
 Runs entirely offline — no cloud API, no data leaving your machine.
 
-![Running ShioRamen](./スクリーンショット_20260405_222935.png)
+![Running ShioRamen](./doc/スクリーンショット_20260408_204333.png)
 
 ## Features
 
