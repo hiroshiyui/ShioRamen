@@ -1192,6 +1192,10 @@ const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp"];
 /// image file paths (e.g. drag-and-drop from a file manager), read and attach
 /// them; otherwise insert the text verbatim.
 fn handle_paste(app: &mut App, text: String) {
+    // Terminals send \r or \r\n in bracketed paste; normalise to \n so the
+    // multi-line input area renders correctly.
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+
     // Terminals deliver drag-and-drop as pasted file paths, one per line.
     // Check if *every* non-empty line is an image file that exists on disk.
     let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
