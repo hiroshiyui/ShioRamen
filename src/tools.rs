@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use std::io::{self, Write};
-use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -25,19 +24,6 @@ macro_rules! require_str {
             None => return format!("Error: missing '{}' argument", $field),
         }
     };
-}
-
-/// Create all parent directories for `path` if they do not yet exist.
-///
-/// Returns `Err(message)` on I/O failure, `Ok(())` otherwise.
-fn ensure_parent_dirs(path: &str) -> Result<(), String> {
-    if let Some(parent) = Path::new(path).parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Error creating directories for {path}: {e}"))?;
-    }
-    Ok(())
 }
 
 // ── Tool definitions (sent to the model) ─────────────────────────────────────
@@ -614,8 +600,6 @@ impl ToolExecutor {
             "patch_file" => self.patch_file(args),
             "fetch_url" => self.fetch_url(args),
             "web_search" => self.web_search(args),
-            "save_memory" => self.save_memory(args),
-            "write_todos" => self.write_todos(args),
             "lsp" => self.lsp_query(args),
             // Plan mode control is handled by the TUI agent loop, not here.
             "enter_plan_mode" | "exit_plan_mode" => {
@@ -1060,75 +1044,12 @@ impl ToolExecutor {
         out.trim_end().to_string()
     }
 
-    fn save_memory(&self, args: &Value) -> String {
-        let memory = require_str!(args, "memory");
-
-        let memory_file = args["file"].as_str().unwrap_or("SHIO.md");
-        let existing = std::fs::read_to_string(memory_file).unwrap_or_default();
-
-        // Skip exact duplicates.
-        if existing.contains(memory) {
-            return format!("Already in {memory_file} (skipped duplicate)");
-        }
-
-        let new_content = if existing.is_empty() {
-            format!("# Shio Memory\n\n- {memory}\n")
-        } else {
-            format!("{}\n- {memory}\n", existing.trim_end())
-        };
-
-        // Write atomically: write to a temp file next to the target, then rename.
-        // This prevents losing updates from two concurrent saves and avoids a
-        // partial write leaving the memory file in a corrupted state.
-        let tmp_path = format!("{memory_file}.tmp");
-        if let Err(e) = std::fs::write(&tmp_path, &new_content) {
-            return format!("Error saving memory: {e}");
-        }
-        match std::fs::rename(&tmp_path, memory_file) {
-            Ok(()) => format!("Saved to {memory_file}: {memory}"),
-            Err(e) => {
-                let _ = std::fs::remove_file(&tmp_path);
-                format!("Error saving memory: {e}")
-            }
-        }
-    }
-
     fn lsp_query(&self, args: &Value) -> String {
         let operation = args["operation"].as_str().unwrap_or("hover");
         let file = require_str!(args, "file");
         let line = args["line"].as_u64().unwrap_or(1) as u32;
         let column = args["column"].as_u64().unwrap_or(1) as u32;
         crate::lsp::query(operation, file, line, column, &self.lsp)
-    }
-
-    fn write_todos(&self, args: &Value) -> String {
-        let todos = match args["todos"].as_array() {
-            Some(t) => t,
-            None => return "Error: missing 'todos' array".into(),
-        };
-
-        let file = args["file"].as_str().unwrap_or("TODO.md");
-
-        let mut content = String::from("# TODO\n\n");
-        for todo in todos {
-            let task = todo["task"].as_str().unwrap_or("(unnamed task)");
-            let status = todo["status"].as_str().unwrap_or("pending");
-            let checkbox = match status {
-                "completed" => "[x]",
-                "in_progress" => "[-]",
-                _ => "[ ]",
-            };
-            content.push_str(&format!("- {checkbox} {task}\n"));
-        }
-
-        if let Err(e) = ensure_parent_dirs(file) {
-            return e;
-        }
-
-        match std::fs::write(file, &content) {
-            Ok(()) => format!("Wrote {} todo(s) to {file}", todos.len()),
-            Err(e) => format!("Error writing {file}: {e}"),
-        }
     }
 }
 
@@ -2099,15 +2020,19 @@ mod tests {
         let path_str = path.to_str().unwrap();
         let ex = executor(false, false);
 
-        let result =
-            ex.save_memory(&serde_json::json!({ "memory": "prefer snake_case", "file": path_str }));
+        let result = ex.vm.lock().unwrap().call_tool(
+            "save_memory",
+            &serde_json::json!({ "memory": "prefer snake_case", "file": path_str }).to_string(),
+        );
         assert!(result.contains("Saved"), "{result}");
         let content = fs::read_to_string(&path).unwrap();
         assert!(content.contains("prefer snake_case"), "{content}");
 
         // Duplicate is skipped.
-        let result2 =
-            ex.save_memory(&serde_json::json!({ "memory": "prefer snake_case", "file": path_str }));
+        let result2 = ex.vm.lock().unwrap().call_tool(
+            "save_memory",
+            &serde_json::json!({ "memory": "prefer snake_case", "file": path_str }).to_string(),
+        );
         assert!(result2.contains("skipped"), "{result2}");
 
         let _ = fs::remove_file(&path);
@@ -2116,7 +2041,11 @@ mod tests {
     #[test]
     fn save_memory_requires_memory_arg() {
         let ex = executor(false, false);
-        let result = ex.save_memory(&serde_json::json!({}));
+        let result = ex
+            .vm
+            .lock()
+            .unwrap()
+            .call_tool("save_memory", &serde_json::json!({}).to_string());
         assert!(result.starts_with("Error"), "{result}");
     }
 
@@ -2172,14 +2101,18 @@ mod tests {
     fn write_todos_creates_file_with_checkboxes() {
         let path = std::env::temp_dir().join("shio_todos_test.md");
         let ex = executor(false, false);
-        let result = ex.write_todos(&serde_json::json!({
-            "todos": [
-                { "task": "first task", "status": "completed" },
-                { "task": "second task", "status": "in_progress" },
-                { "task": "third task" }
-            ],
-            "file": path.to_str().unwrap()
-        }));
+        let result = ex.vm.lock().unwrap().call_tool(
+            "write_todos",
+            &serde_json::json!({
+                "todos": [
+                    { "task": "first task", "status": "completed" },
+                    { "task": "second task", "status": "in_progress" },
+                    { "task": "third task" }
+                ],
+                "file": path.to_str().unwrap()
+            })
+            .to_string(),
+        );
         assert!(result.contains("3"), "{result}");
         let content = fs::read_to_string(&path).unwrap();
         assert!(content.contains("[x] first task"), "{content}");
@@ -2191,7 +2124,11 @@ mod tests {
     #[test]
     fn write_todos_requires_todos() {
         let ex = executor(false, false);
-        let result = ex.write_todos(&serde_json::json!({}));
+        let result = ex
+            .vm
+            .lock()
+            .unwrap()
+            .call_tool("write_todos", &serde_json::json!({}).to_string());
         assert!(result.starts_with("Error"), "{result}");
     }
 

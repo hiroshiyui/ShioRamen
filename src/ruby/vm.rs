@@ -145,6 +145,14 @@ impl ShioVm {
                 "grep_files",
                 include_str!("../../tools/builtin/grep_files.rb"),
             ),
+            (
+                "save_memory",
+                include_str!("../../tools/builtin/save_memory.rb"),
+            ),
+            (
+                "write_todos",
+                include_str!("../../tools/builtin/write_todos.rb"),
+            ),
         ] {
             self.eval(code)
                 .map_err(|e| anyhow!("builtin tool {name} failed: {e}"))?;
