@@ -153,6 +153,14 @@ impl ShioVm {
                 "write_todos",
                 include_str!("../../tools/builtin/write_todos.rb"),
             ),
+            (
+                "fetch_url",
+                include_str!("../../tools/builtin/fetch_url.rb"),
+            ),
+            (
+                "web_search",
+                include_str!("../../tools/builtin/web_search.rb"),
+            ),
         ] {
             self.eval(code)
                 .map_err(|e| anyhow!("builtin tool {name} failed: {e}"))?;

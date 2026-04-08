@@ -351,3 +351,245 @@ pub unsafe extern "C" fn shio_native_grep(
     grep_path_native(std::path::Path::new(p), &re, &mut results);
     set_result(results.join("\n"))
 }
+
+// ── Shio.fetch_url ────────────────────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn shio_native_fetch_url(
+    url: *const c_char,
+    max_chars: std::ffi::c_int,
+    error_out: *mut *const c_char,
+) -> *const c_char {
+    let url = match unsafe { CStr::from_ptr(url) }.to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            unsafe { set_err(error_out, "url is not valid UTF-8") };
+            return ptr::null();
+        }
+    };
+    let max_chars = if max_chars <= 0 {
+        8_000usize
+    } else {
+        max_chars as usize
+    };
+
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        unsafe {
+            set_err(
+                error_out,
+                &format!("only http:// and https:// URLs are supported, got: {url}"),
+            )
+        };
+        return ptr::null();
+    }
+
+    if crate::tools::is_private_host(url) {
+        unsafe {
+            set_err(
+                error_out,
+                &format!(
+                    "requests to localhost and private network addresses are not allowed: {url}"
+                ),
+            )
+        };
+        return ptr::null();
+    }
+
+    let client = match crate::tools::http_client() {
+        Ok(c) => c,
+        Err(e) => {
+            unsafe { set_err(error_out, &e) };
+            return ptr::null();
+        }
+    };
+
+    let response = match client
+        .get(url)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            unsafe { set_err(error_out, &format!("Error fetching {url}: {e}")) };
+            return ptr::null();
+        }
+    };
+
+    if !response.status().is_success() {
+        unsafe {
+            set_err(
+                error_out,
+                &format!("server returned {} for {url}", response.status()),
+            )
+        };
+        return ptr::null();
+    }
+
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    const BODY_LIMIT: usize = 2 * 1024 * 1024;
+    let body = match response.text() {
+        Ok(t) => {
+            if t.len() > BODY_LIMIT {
+                t[..t.floor_char_boundary(BODY_LIMIT)].to_string()
+            } else {
+                t
+            }
+        }
+        Err(e) => {
+            unsafe { set_err(error_out, &format!("Error reading response body: {e}")) };
+            return ptr::null();
+        }
+    };
+
+    let text = if content_type.contains("text/html") {
+        crate::tools::strip_html(&body)
+    } else {
+        body
+    };
+
+    let text = text.trim().to_string();
+    let result = if text.len() > max_chars {
+        let limit = text.floor_char_boundary(max_chars);
+        format!(
+            "{}\n\n[… truncated at {max_chars} chars — use max_chars to get more]",
+            &text[..limit]
+        )
+    } else {
+        text
+    };
+
+    set_result(result)
+}
+
+// ── Shio.web_search ───────────────────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn shio_native_web_search(
+    query: *const c_char,
+    max_results: std::ffi::c_int,
+    error_out: *mut *const c_char,
+) -> *const c_char {
+    use std::sync::OnceLock;
+
+    let query = match unsafe { CStr::from_ptr(query) }.to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            unsafe { set_err(error_out, "query is not valid UTF-8") };
+            return ptr::null();
+        }
+    };
+    let max_results = (if max_results <= 0 {
+        5
+    } else {
+        max_results as usize
+    })
+    .min(20);
+
+    // Percent-encode the query for use in a URL.
+    let mut encoded = String::new();
+    for c in query.chars() {
+        if c == ' ' {
+            encoded.push('+');
+        } else if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {
+            encoded.push(c);
+        } else {
+            for byte in c.encode_utf8(&mut [0u8; 4]).as_bytes() {
+                encoded.push_str(&format!("%{byte:02X}"));
+            }
+        }
+    }
+
+    let search_url = format!("https://lite.duckduckgo.com/lite/?q={encoded}");
+
+    let client = match crate::tools::http_client() {
+        Ok(c) => c,
+        Err(e) => {
+            unsafe { set_err(error_out, &e) };
+            return ptr::null();
+        }
+    };
+
+    let body = match client
+        .get(&search_url)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .and_then(|r| r.text())
+    {
+        Ok(b) => b,
+        Err(e) => {
+            unsafe { set_err(error_out, &format!("Error fetching search results: {e}")) };
+            return ptr::null();
+        }
+    };
+
+    static RE_RESULT: OnceLock<regex::Regex> = OnceLock::new();
+    static RE_SNIPPET: OnceLock<regex::Regex> = OnceLock::new();
+    static RE_UDDG: OnceLock<regex::Regex> = OnceLock::new();
+
+    let re_result = RE_RESULT.get_or_init(|| {
+        regex::Regex::new(r#"(?s)<a[^>]+href="[^"]*uddg=[^"]*"[^>]*>(.*?)</a>"#).unwrap()
+    });
+    let re_snippet = RE_SNIPPET.get_or_init(|| {
+        regex::Regex::new(r#"(?s)<td[^>]*class="result-snippet"[^>]*>(.*?)</td>"#).unwrap()
+    });
+    let re_uddg = RE_UDDG.get_or_init(|| regex::Regex::new(r"uddg=([^&\s]+)").unwrap());
+
+    let results: Vec<(String, String)> = re_result
+        .captures_iter(&body)
+        .filter_map(|cap| {
+            let full = cap.get(0)?.as_str();
+            let title = crate::tools::strip_html(cap.get(1)?.as_str())
+                .trim()
+                .to_string();
+            if title.is_empty() {
+                return None;
+            }
+            let real_url = re_uddg
+                .captures(full)
+                .and_then(|c| c.get(1))
+                .map(|m| crate::tools::percent_decode(m.as_str()))
+                .unwrap_or_default();
+            if real_url.is_empty() {
+                return None;
+            }
+            Some((title, real_url))
+        })
+        .take(max_results)
+        .collect();
+
+    if results.is_empty() {
+        return set_result(format!(
+            "No results found for: {query}\n\
+             (try rephrasing or use fetch_url with a known URL)"
+        ));
+    }
+
+    let snippets: Vec<String> = re_snippet
+        .captures_iter(&body)
+        .map(|cap| {
+            crate::tools::strip_html(cap.get(1).map_or("", |m| m.as_str()))
+                .trim()
+                .to_string()
+        })
+        .take(max_results)
+        .collect();
+
+    let mut out = format!("Web search results for \"{query}\":\n\n");
+    for (i, (title, url)) in results.iter().enumerate() {
+        out.push_str(&format!("{}. {title}\n   {url}\n", i + 1));
+        if let Some(snippet) = snippets.get(i)
+            && !snippet.is_empty()
+        {
+            out.push_str(&format!("   {snippet}\n"));
+        }
+        out.push('\n');
+    }
+
+    set_result(out.trim_end().to_string())
+}

@@ -57,6 +57,8 @@ extern void        shio_native_write_file(const char* path, const char* content,
 extern void        shio_native_append_file(const char* path, const char* content, const char** error_out);
 extern const char* shio_native_glob(const char* pattern, const char** error_out);
 extern const char* shio_native_grep(const char* pattern, const char* path, int case_insensitive, const char** error_out);
+extern const char* shio_native_fetch_url(const char* url, int max_chars, const char** error_out);
+extern const char* shio_native_web_search(const char* query, int max_results, const char** error_out);
 
 /* ── mRuby shim: Shio.current_dir ─────────────────────────────────────────── */
 
@@ -181,6 +183,32 @@ static mrb_value shio_rb_grep(mrb_state* mrb, mrb_value self) {
     return mrb_str_new_cstr(mrb, result);
 }
 
+/* ── mRuby shim: Shio.fetch_url(url, max_chars) ──────────────────────────── */
+
+static mrb_value shio_rb_fetch_url(mrb_state* mrb, mrb_value self) {
+    (void)self;
+    const char* url_arg;
+    mrb_int max_chars;
+    mrb_get_args(mrb, "zi", &url_arg, &max_chars);
+    const char* err = NULL;
+    const char* result = shio_native_fetch_url(url_arg, (int)max_chars, &err);
+    if (err) mrb_raise(mrb, E_RUNTIME_ERROR, err);
+    return mrb_str_new_cstr(mrb, result);
+}
+
+/* ── mRuby shim: Shio.web_search(query, max_results) ─────────────────────── */
+
+static mrb_value shio_rb_web_search(mrb_state* mrb, mrb_value self) {
+    (void)self;
+    const char* query_arg;
+    mrb_int max_results;
+    mrb_get_args(mrb, "zi", &query_arg, &max_results);
+    const char* err = NULL;
+    const char* result = shio_native_web_search(query_arg, (int)max_results, &err);
+    if (err) mrb_raise(mrb, E_RUNTIME_ERROR, err);
+    return mrb_str_new_cstr(mrb, result);
+}
+
 /* Register the Shio native module and all its methods. */
 void shio_register_native(mrb_state* mrb) {
     struct RClass* shio = mrb_define_module(mrb, "Shio");
@@ -194,4 +222,6 @@ void shio_register_native(mrb_state* mrb) {
     mrb_define_module_function(mrb, shio, "append_file",    shio_rb_append_file,    MRB_ARGS_REQ(2));
     mrb_define_module_function(mrb, shio, "glob",           shio_rb_glob,           MRB_ARGS_REQ(1));
     mrb_define_module_function(mrb, shio, "grep",           shio_rb_grep,           MRB_ARGS_REQ(3));
+    mrb_define_module_function(mrb, shio, "fetch_url",      shio_rb_fetch_url,      MRB_ARGS_REQ(2));
+    mrb_define_module_function(mrb, shio, "web_search",     shio_rb_web_search,     MRB_ARGS_REQ(2));
 }

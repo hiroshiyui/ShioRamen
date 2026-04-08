@@ -8,9 +8,6 @@ use serde_json::Value;
 use crate::client::{FunctionSpec, ToolCallItem, ToolDef};
 use crate::ruby::vm::ShioVm;
 
-/// Default character limit for `fetch_url` responses.
-const DEFAULT_MAX_CHARS: usize = 8_000;
-
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 /// Extract a required `&str` field from a JSON args object.
@@ -512,7 +509,7 @@ pub fn all_tools() -> Vec<ToolDef> {
 /// TLS backend failed to initialise.  The client is constructed once and
 /// reused; per-request timeouts are set by each call site via
 /// `client.get(url).timeout(…)`.
-fn http_client() -> Result<&'static reqwest::blocking::Client, String> {
+pub(crate) fn http_client() -> Result<&'static reqwest::blocking::Client, String> {
     static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
     if let Some(c) = CLIENT.get() {
         return Ok(c);
@@ -598,8 +595,6 @@ impl ToolExecutor {
         match name {
             "run_shell" => self.run_shell(args),
             "patch_file" => self.patch_file(args),
-            "fetch_url" => self.fetch_url(args),
-            "web_search" => self.web_search(args),
             "lsp" => self.lsp_query(args),
             // Plan mode control is handled by the TUI agent loop, not here.
             "enter_plan_mode" | "exit_plan_mode" => {
@@ -867,183 +862,6 @@ impl ToolExecutor {
         }
     }
 
-    fn fetch_url(&self, args: &Value) -> String {
-        let url = require_str!(args, "url");
-        let max_chars = args["max_chars"]
-            .as_u64()
-            .unwrap_or(DEFAULT_MAX_CHARS as u64) as usize;
-
-        // Only allow http/https — no file://, ftp://, etc.
-        if !url.starts_with("http://") && !url.starts_with("https://") {
-            return format!("Error: only http:// and https:// URLs are supported, got: {url}");
-        }
-
-        // Block requests to localhost and private IP ranges to prevent SSRF.
-        if is_private_host(url) {
-            return format!(
-                "Error: requests to localhost and private network addresses are not allowed: {url}"
-            );
-        }
-
-        let client = match http_client() {
-            Ok(c) => c,
-            Err(e) => return e,
-        };
-
-        let response = match client
-            .get(url)
-            .timeout(std::time::Duration::from_secs(10))
-            .send()
-        {
-            Ok(r) => r,
-            Err(e) => return format!("Error fetching {url}: {e}"),
-        };
-
-        if !response.status().is_success() {
-            return format!("Error: server returned {} for {url}", response.status());
-        }
-
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-
-        // Read up to 2 MB to avoid filling memory on huge pages.
-        // Truncate at a char boundary so we never split a multi-byte codepoint.
-        let body = match response.text() {
-            Ok(t) => {
-                const BODY_LIMIT: usize = 2 * 1024 * 1024;
-                if t.len() > BODY_LIMIT {
-                    t[..t.floor_char_boundary(BODY_LIMIT)].to_string()
-                } else {
-                    t
-                }
-            }
-            Err(e) => return format!("Error reading response body: {e}"),
-        };
-
-        let text = if content_type.contains("text/html") {
-            strip_html(&body)
-        } else {
-            body
-        };
-
-        // Trim and truncate at a char boundary so we never split a multi-byte codepoint.
-        let text = text.trim().to_string();
-        if text.len() > max_chars {
-            let limit = text.floor_char_boundary(max_chars);
-            format!(
-                "{}\n\n[… truncated at {max_chars} chars — use max_chars to get more]",
-                &text[..limit]
-            )
-        } else {
-            text
-        }
-    }
-
-    fn web_search(&self, args: &Value) -> String {
-        static RE_RESULT: OnceLock<regex::Regex> = OnceLock::new();
-        static RE_SNIPPET: OnceLock<regex::Regex> = OnceLock::new();
-        static RE_UDDG: OnceLock<regex::Regex> = OnceLock::new();
-
-        let query = require_str!(args, "query");
-        let max_results = args["max_results"].as_u64().unwrap_or(5).min(20) as usize;
-
-        // Percent-encode the query for use in a URL.
-        let mut encoded = String::new();
-        for c in query.chars() {
-            if c == ' ' {
-                encoded.push('+');
-            } else if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {
-                encoded.push(c);
-            } else {
-                for byte in c.encode_utf8(&mut [0u8; 4]).as_bytes() {
-                    encoded.push_str(&format!("%{byte:02X}"));
-                }
-            }
-        }
-
-        let search_url = format!("https://lite.duckduckgo.com/lite/?q={encoded}");
-
-        let client = match http_client() {
-            Ok(c) => c,
-            Err(e) => return e,
-        };
-
-        let body = match client
-            .get(&search_url)
-            .timeout(std::time::Duration::from_secs(15))
-            .send()
-            .and_then(|r| r.text())
-        {
-            Ok(b) => b,
-            Err(e) => return format!("Error fetching search results: {e}"),
-        };
-
-        // DDG lite wraps result links in <a href="...uddg=REAL_URL...">Title</a>.
-        let re_result = RE_RESULT.get_or_init(|| {
-            regex::Regex::new(r#"(?s)<a[^>]+href="[^"]*uddg=[^"]*"[^>]*>(.*?)</a>"#).unwrap()
-        });
-        // Snippets appear in <td class="result-snippet">…</td>.
-        let re_snippet = RE_SNIPPET.get_or_init(|| {
-            regex::Regex::new(r#"(?s)<td[^>]*class="result-snippet"[^>]*>(.*?)</td>"#).unwrap()
-        });
-        // Extract the real URL from the uddg= redirect parameter.
-        let re_uddg = RE_UDDG.get_or_init(|| regex::Regex::new(r"uddg=([^&\s]+)").unwrap());
-
-        let results: Vec<(String, String)> = re_result
-            .captures_iter(&body)
-            .filter_map(|cap| {
-                let full = cap.get(0)?.as_str();
-                let title = strip_html(cap.get(1)?.as_str()).trim().to_string();
-                if title.is_empty() {
-                    return None;
-                }
-                let real_url = re_uddg
-                    .captures(full)
-                    .and_then(|c| c.get(1))
-                    .map(|m| percent_decode(m.as_str()))
-                    .unwrap_or_default();
-                if real_url.is_empty() {
-                    return None;
-                }
-                Some((title, real_url))
-            })
-            .take(max_results)
-            .collect();
-
-        if results.is_empty() {
-            return format!(
-                "No results found for: {query}\n\
-                 (try rephrasing or use fetch_url with a known URL)"
-            );
-        }
-
-        let snippets: Vec<String> = re_snippet
-            .captures_iter(&body)
-            .map(|cap| {
-                strip_html(cap.get(1).map_or("", |m| m.as_str()))
-                    .trim()
-                    .to_string()
-            })
-            .take(max_results)
-            .collect();
-
-        let mut out = format!("Web search results for \"{query}\":\n\n");
-        for (i, (title, url)) in results.iter().enumerate() {
-            out.push_str(&format!("{}. {title}\n   {url}\n", i + 1));
-            if let Some(snippet) = snippets.get(i)
-                && !snippet.is_empty()
-            {
-                out.push_str(&format!("   {snippet}\n"));
-            }
-            out.push('\n');
-        }
-        out.trim_end().to_string()
-    }
-
     fn lsp_query(&self, args: &Value) -> String {
         let operation = args["operation"].as_str().unwrap_or("hover");
         let file = require_str!(args, "file");
@@ -1057,7 +875,7 @@ impl ToolExecutor {
 
 /// Decode a percent-encoded URL string (e.g. `%2F` → `/`, `+` → space).
 /// Handles multi-byte UTF-8 sequences correctly.
-fn percent_decode(s: &str) -> String {
+pub(crate) fn percent_decode(s: &str) -> String {
     let input = s.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(input.len());
     let mut i = 0;
@@ -1092,7 +910,7 @@ fn percent_decode(s: &str) -> String {
 /// 5. Collapse runs of whitespace.
 ///
 /// All regexes are compiled once and reused across calls via `OnceLock`.
-fn strip_html(html: &str) -> String {
+pub(crate) fn strip_html(html: &str) -> String {
     static RE_SCRIPT: OnceLock<regex::Regex> = OnceLock::new();
     static RE_STYLE: OnceLock<regex::Regex> = OnceLock::new();
     static RE_BLOCK: OnceLock<regex::Regex> = OnceLock::new();
@@ -1149,7 +967,7 @@ fn strip_html(html: &str) -> String {
 /// Return `true` if the URL's host is localhost, a loopback address, or a
 /// private/link-local IP range — any destination that should not be reachable
 /// from an SSRF attack.
-fn is_private_host(url: &str) -> bool {
+pub(crate) fn is_private_host(url: &str) -> bool {
     // Strip scheme.
     let without_scheme = url
         .strip_prefix("https://")
@@ -1941,15 +1759,22 @@ mod tests {
     #[test]
     fn fetch_url_rejects_non_http_schemes() {
         let ex = executor(false, false);
-        let result = ex.fetch_url(&serde_json::json!({ "url": "file:///etc/passwd" }));
-        assert!(result.starts_with("Error:"), "{result}");
+        let result = ex.vm.lock().unwrap().call_tool(
+            "fetch_url",
+            &serde_json::json!({ "url": "file:///etc/passwd" }).to_string(),
+        );
+        assert!(result.starts_with("Error"), "{result}");
         assert!(result.contains("http"), "{result}");
     }
 
     #[test]
     fn fetch_url_requires_url_argument() {
         let ex = executor(false, false);
-        let result = ex.fetch_url(&serde_json::json!({}));
+        let result = ex
+            .vm
+            .lock()
+            .unwrap()
+            .call_tool("fetch_url", &serde_json::json!({}).to_string());
         assert!(result.starts_with("Error"), "{result}");
     }
 
@@ -2007,7 +1832,11 @@ mod tests {
     #[test]
     fn web_search_requires_query() {
         let ex = executor(false, false);
-        let result = ex.web_search(&serde_json::json!({}));
+        let result = ex
+            .vm
+            .lock()
+            .unwrap()
+            .call_tool("web_search", &serde_json::json!({}).to_string());
         assert!(result.starts_with("Error"), "{result}");
     }
 
