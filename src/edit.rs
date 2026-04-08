@@ -105,9 +105,18 @@ pub async fn run(args: &EditArgs, cfg: &ShioConfig) -> Result<()> {
         }
     }
 
+    // Write a backup before overwriting so the user can recover.
+    let bak = args.file.with_extension({
+        let mut ext = args.file.extension().unwrap_or_default().to_os_string();
+        ext.push(".bak");
+        ext
+    });
+    std::fs::write(&bak, &original)
+        .with_context(|| format!("Cannot write backup: {}", bak.display()))?;
+
     std::fs::write(&args.file, updated)
         .with_context(|| format!("Cannot write file: {}", args.file.display()))?;
-    eprintln!("Saved: {}", args.file.display());
+    eprintln!("Saved: {} (backup: {})", args.file.display(), bak.display());
     Ok(())
 }
 

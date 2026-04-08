@@ -154,10 +154,12 @@ pub struct LlamaClient {
 
 impl LlamaClient {
     pub fn new(base_url: String) -> Self {
-        Self {
-            http: Client::new(),
-            base_url,
-        }
+        let http = Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|_| Client::new());
+        Self { http, base_url }
     }
 
     /// One agentic turn: send messages (with tools), return either text or tool calls.
@@ -291,7 +293,11 @@ impl LlamaClient {
         let mut line_buf = String::new();
         let mut full_text = String::new();
 
-        while let Some(chunk) = byte_stream.next().await {
+        let mut done = false;
+        while !done {
+            let Some(chunk) = byte_stream.next().await else {
+                break;
+            };
             byte_buf.extend_from_slice(&chunk?);
             // Decode only up to the last newline so we never split a multi-byte
             // UTF-8 sequence across chunks.
@@ -313,6 +319,7 @@ impl LlamaClient {
                     continue;
                 };
                 if data == "[DONE]" {
+                    done = true;
                     break;
                 }
 

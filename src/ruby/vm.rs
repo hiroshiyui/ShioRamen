@@ -243,6 +243,7 @@ fn value_to_ruby(v: &Value) -> String {
                 .replace('"', "\\\"")
                 .replace('\n', "\\n")
                 .replace('\r', "\\r")
+                .replace("#{", "\\#{")
         ),
         Value::Number(n) => n.to_string(),
         Value::Bool(b) => b.to_string(),

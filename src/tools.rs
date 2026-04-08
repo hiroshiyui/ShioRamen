@@ -19,6 +19,8 @@ pub(crate) fn http_client() -> Result<&'static reqwest::blocking::Client, String
     }
     let built = reqwest::blocking::Client::builder()
         .user_agent("ShioRamen/0.1 (local AI assistant)")
+        // Disable automatic redirects to prevent SSRF bypass via 302 to private hosts.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| format!("Error: failed to initialise HTTP client: {e}"))?;
     // get_or_init guarantees only one value is stored even under contention;
@@ -245,7 +247,7 @@ pub(crate) fn is_private_host(url: &str) -> bool {
     let host_lc = host.to_ascii_lowercase();
 
     // Textual localhost / unspecified.
-    if matches!(host_lc.as_str(), "localhost" | "::1" | "0.0.0.0") {
+    if matches!(host_lc.as_str(), "localhost" | "::1" | "::" | "0.0.0.0") {
         return true;
     }
     // .local mDNS names resolve to the LAN.
@@ -263,14 +265,104 @@ pub(crate) fn is_private_host(url: &str) -> bool {
             || (o[0] == 169 && o[1] == 254); // 169.254.0.0/16 IMDS / link-local
     }
 
-    // IPv6: loopback, unique-local (fc00::/7), and link-local (fe80::/10).
+    // IPv6: loopback, unspecified, unique-local (fc00::/7), link-local (fe80::/10),
+    // and IPv4-mapped addresses (::ffff:x.x.x.x) — re-check the embedded IPv4.
     if let Ok(ipv6) = host.parse::<std::net::Ipv6Addr>() {
+        if ipv6.is_loopback() || ipv6.is_unspecified() {
+            return true;
+        }
         let segs = ipv6.segments();
-        return ipv6.is_loopback()                          // ::1
-            || (segs[0] & 0xfe00) == 0xfc00               // fc00::/7  unique local
-            || (segs[0] & 0xffc0) == 0xfe80; // fe80::/10 link-local
+        if (segs[0] & 0xfe00) == 0xfc00 || (segs[0] & 0xffc0) == 0xfe80 {
+            return true;
+        }
+        // IPv4-mapped IPv6 (::ffff:x.x.x.x) — extract the IPv4 and re-check.
+        if let Some(ipv4) = ipv6.to_ipv4_mapped() {
+            let o = ipv4.octets();
+            return o[0] == 127
+                || o[0] == 10
+                || (o[0] == 172 && (16..=31).contains(&o[1]))
+                || (o[0] == 192 && o[1] == 168)
+                || (o[0] == 169 && o[1] == 254)
+                || o == [0, 0, 0, 0];
+        }
+        return false;
     }
 
+    false
+}
+
+/// Resolve the URL's hostname via DNS and check whether *any* resolved IP
+/// falls into a private range.  Returns `true` (blocked) if resolution
+/// yields at least one private IP, or if the hostname cannot be resolved
+/// (fail-closed).
+pub(crate) fn resolves_to_private(url: &str) -> bool {
+    let without_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    let authority = without_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(without_scheme);
+    let host_with_port = authority.rsplit('@').next().unwrap_or(authority);
+
+    // Ensure we have host:port for ToSocketAddrs.
+    let addr_str = if host_with_port.contains(':') && !host_with_port.starts_with('[') {
+        // Already has a port or is bare IPv6 — try as-is, then with default port.
+        host_with_port.to_string()
+    } else if host_with_port.starts_with('[') {
+        // Bracketed IPv6 — may or may not have port.
+        if host_with_port.contains("]:") {
+            host_with_port.to_string()
+        } else {
+            format!("{}:80", host_with_port)
+        }
+    } else {
+        format!("{host_with_port}:80")
+    };
+
+    use std::net::ToSocketAddrs;
+    let Ok(addrs) = addr_str.to_socket_addrs() else {
+        // Resolution failed — fail-closed: block the request.
+        return true;
+    };
+    for addr in addrs {
+        match addr.ip() {
+            std::net::IpAddr::V4(ip) => {
+                let o = ip.octets();
+                if o[0] == 127
+                    || o[0] == 10
+                    || (o[0] == 172 && (16..=31).contains(&o[1]))
+                    || (o[0] == 192 && o[1] == 168)
+                    || (o[0] == 169 && o[1] == 254)
+                    || o == [0, 0, 0, 0]
+                {
+                    return true;
+                }
+            }
+            std::net::IpAddr::V6(ip) => {
+                if ip.is_loopback() || ip.is_unspecified() {
+                    return true;
+                }
+                let segs = ip.segments();
+                if (segs[0] & 0xfe00) == 0xfc00 || (segs[0] & 0xffc0) == 0xfe80 {
+                    return true;
+                }
+                if let Some(ipv4) = ip.to_ipv4_mapped() {
+                    let o = ipv4.octets();
+                    if o[0] == 127
+                        || o[0] == 10
+                        || (o[0] == 172 && (16..=31).contains(&o[1]))
+                        || (o[0] == 192 && o[1] == 168)
+                        || (o[0] == 169 && o[1] == 254)
+                        || o == [0, 0, 0, 0]
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
     false
 }
 
@@ -802,6 +894,28 @@ mod tests {
         let _ = fs::remove_file(&path);
     }
 
+    // ── value_to_ruby string interpolation safety ──────────────────────────
+
+    #[test]
+    fn ruby_string_interpolation_is_escaped() {
+        // Verify that Ruby #{} interpolation in tool args is escaped, not evaluated.
+        let path = std::env::temp_dir().join("shio_interp_test.txt");
+        let _ = fs::remove_file(&path);
+        let ex = executor(false, false);
+        // If #{} were NOT escaped, mRuby would try to evaluate `1+1` and write "2".
+        let content = "before #{1+1} after";
+        ex.vm.lock().unwrap().call_tool(
+            "write_file",
+            &serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "content": content
+            })
+            .to_string(),
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), content);
+        let _ = fs::remove_file(&path);
+    }
+
     // ── delete_file ───────────────────────────────────────────────────────────
 
     #[test]
@@ -1208,6 +1322,37 @@ mod tests {
     fn is_private_host_strips_port_correctly() {
         assert!(is_private_host("http://192.168.0.1:3000/api"));
         assert!(!is_private_host("http://93.184.216.34:443/"));
+    }
+
+    #[test]
+    fn is_private_host_ipv4_mapped_ipv6_loopback() {
+        assert!(is_private_host("http://[::ffff:127.0.0.1]/"));
+        assert!(is_private_host("http://[::ffff:127.0.0.1]:8080/"));
+    }
+
+    #[test]
+    fn is_private_host_ipv4_mapped_ipv6_private() {
+        assert!(is_private_host("http://[::ffff:10.0.0.1]/"));
+        assert!(is_private_host("http://[::ffff:192.168.1.1]/"));
+        assert!(is_private_host("http://[::ffff:169.254.169.254]/"));
+    }
+
+    #[test]
+    fn is_private_host_ipv4_mapped_ipv6_public_returns_false() {
+        assert!(!is_private_host("http://[::ffff:93.184.216.34]/"));
+    }
+
+    #[test]
+    fn is_private_host_ipv6_unspecified() {
+        assert!(is_private_host("http://[::]/"));
+        assert!(is_private_host("http://[::]:8080/"));
+    }
+
+    #[test]
+    fn resolves_to_private_blocks_localhost() {
+        // "localhost" should resolve to 127.0.0.1 or ::1 on all platforms.
+        assert!(resolves_to_private("http://localhost/"));
+        assert!(resolves_to_private("http://localhost:8080/path"));
     }
 
     // ── write_file — parent directory auto-creation ───────────────────────────

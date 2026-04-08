@@ -127,7 +127,7 @@ struct App {
     raw_buf: String,
     /// Whether to display `<think>` blocks (from config).
     show_thinking: bool,
-    scroll: u16,
+    scroll: u32,
     auto_scroll: bool,
 
     // Input
@@ -353,8 +353,8 @@ fn render(f: &mut Frame, app: &App) {
         app.streaming.as_deref(),
         msg_width,
     );
-    let total = all_lines.len() as u16;
-    let visible = chunks[1].height;
+    let total = all_lines.len() as u32;
+    let visible = chunks[1].height as u32;
 
     let scroll_y = if app.auto_scroll {
         total.saturating_sub(visible)
@@ -362,7 +362,10 @@ fn render(f: &mut Frame, app: &App) {
         app.scroll.min(total.saturating_sub(visible))
     };
 
-    f.render_widget(Paragraph::new(all_lines).scroll((scroll_y, 0)), chunks[1]);
+    f.render_widget(
+        Paragraph::new(all_lines).scroll((scroll_y as u16, 0)),
+        chunks[1],
+    );
 
     // ── Status line ────────────────────────────────────────────────────────────
     let (status_text, status_style) = match &app.status {
@@ -928,9 +931,9 @@ fn send_confirm(app: &mut App, yes: bool) {
     }
 }
 
-fn view_scroll(app: &mut App, delta: i16) {
+fn view_scroll(app: &mut App, delta: i32) {
     app.auto_scroll = false;
-    app.scroll = (app.scroll as i32 + delta as i32).max(0) as u16;
+    app.scroll = (app.scroll as i64 + delta as i64).max(0) as u32;
 }
 
 fn hist_prev(app: &mut App) {
@@ -1098,27 +1101,21 @@ fn char_end_at(s: &str, pos: usize) -> usize {
 }
 
 fn prev_word(s: &str, pos: usize) -> usize {
-    let bytes = s.as_bytes();
-    let mut i = pos;
-    while i > 0 && bytes[i - 1] == b' ' {
-        i -= 1;
+    // Work on char boundaries to avoid panicking on multi-byte UTF-8 input.
+    let before = &s[..pos];
+    let trimmed = before.trim_end_matches(' ');
+    match trimmed.rfind(' ') {
+        Some(i) => i + 1,
+        None => 0,
     }
-    while i > 0 && bytes[i - 1] != b' ' {
-        i -= 1;
-    }
-    i
 }
 
 fn next_word(s: &str, pos: usize) -> usize {
-    let bytes = s.as_bytes();
-    let mut i = pos;
-    while i < bytes.len() && bytes[i] != b' ' {
-        i += 1;
-    }
-    while i < bytes.len() && bytes[i] == b' ' {
-        i += 1;
-    }
-    i
+    let after = &s[pos..];
+    let skip_non_space = after.find(' ').unwrap_or(after.len());
+    let rest = &after[skip_non_space..];
+    let skip_space = rest.len() - rest.trim_start_matches(' ').len();
+    pos + skip_non_space + skip_space
 }
 
 // ── Input submission ──────────────────────────────────────────────────────────

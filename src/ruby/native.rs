@@ -394,7 +394,7 @@ pub unsafe extern "C" fn shio_native_fetch_url(
         return ptr::null();
     }
 
-    if crate::tools::is_private_host(url) {
+    if crate::tools::is_private_host(url) || crate::tools::resolves_to_private(url) {
         unsafe {
             set_err(
                 error_out,

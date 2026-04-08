@@ -55,7 +55,18 @@ pub fn collect(root: &Path) -> Result<Vec<(PathBuf, String)>> {
     Ok(files)
 }
 
+/// Maximum directory recursion depth to prevent runaway traversal via symlink
+/// loops or extremely deep trees.
+const MAX_DEPTH: usize = 20;
+
 fn collect_dir(dir: &Path, out: &mut Vec<(PathBuf, String)>) -> Result<()> {
+    collect_dir_depth(dir, out, 0)
+}
+
+fn collect_dir_depth(dir: &Path, out: &mut Vec<(PathBuf, String)>, depth: usize) -> Result<()> {
+    if depth > MAX_DEPTH {
+        return Ok(());
+    }
     for entry in std::fs::read_dir(dir)
         .with_context(|| format!("Cannot read directory: {}", dir.display()))?
     {
@@ -64,17 +75,27 @@ fn collect_dir(dir: &Path, out: &mut Vec<(PathBuf, String)>) -> Result<()> {
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
 
-        if path.is_dir() {
+        // Use symlink_metadata to detect symlinks without following them.
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+
+        if meta.file_type().is_symlink() {
+            continue; // skip symlinks to avoid escaping the project tree
+        }
+
+        if meta.is_dir() {
             if !SKIP_DIRS.contains(&name_str.as_ref()) {
-                collect_dir(&path, out)?;
+                collect_dir_depth(&path, out, depth + 1)?;
             }
             continue;
         }
 
-        if !path.is_file() {
+        if !meta.is_file() {
             continue;
         }
-        if entry.metadata().map(|m| m.len()).unwrap_or(0) > MAX_FILE_BYTES {
+        if meta.len() > MAX_FILE_BYTES {
             continue;
         }
 

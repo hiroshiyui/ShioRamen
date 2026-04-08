@@ -100,19 +100,34 @@ async fn download(url: &str, dest: &Path) -> Result<()> {
         .error_for_status()
         .with_context(|| format!("Server error from {url}"))?;
 
+    // Download into a .part file first; rename on success so an interrupted
+    // download doesn't leave a partial file that looks complete.
+    let part = dest.with_extension("gguf.part");
     let total = response.content_length();
-    let mut file = std::fs::File::create(dest)
-        .with_context(|| format!("Cannot create file: {}", dest.display()))?;
+    let mut file = std::fs::File::create(&part)
+        .with_context(|| format!("Cannot create file: {}", part.display()))?;
     let mut received: u64 = 0;
     let mut stream = response.bytes_stream();
 
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.context("Stream read error")?;
-        file.write_all(&chunk).context("File write error")?;
-        received += chunk.len() as u64;
-        render_progress(received, total);
+    let result: Result<()> = async {
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.context("Stream read error")?;
+            file.write_all(&chunk).context("File write error")?;
+            received += chunk.len() as u64;
+            render_progress(received, total);
+        }
+        Ok(())
+    }
+    .await;
+
+    if let Err(e) = result {
+        // Clean up the partial file on failure.
+        let _ = std::fs::remove_file(&part);
+        return Err(e);
     }
 
+    std::fs::rename(&part, dest)
+        .with_context(|| format!("Cannot rename {} → {}", part.display(), dest.display()))?;
     Ok(())
 }
 
