@@ -125,7 +125,6 @@ struct CompletionChoice {
 #[derive(Deserialize)]
 struct CompletionMessage {
     content: Option<String>,
-    tool_calls: Option<Vec<ToolCallItem>>,
 }
 
 // Streaming response
@@ -142,6 +141,32 @@ struct ChunkChoice {
 #[derive(Deserialize)]
 struct Delta {
     content: Option<String>,
+    tool_calls: Option<Vec<DeltaToolCall>>,
+}
+
+/// A single tool-call delta within an SSE chunk.
+/// `index` identifies which tool call in the batch is being built.
+/// The first chunk for a given index carries `id` and `function.name`;
+/// subsequent chunks append to `function.arguments`.
+#[derive(Deserialize)]
+struct DeltaToolCall {
+    index: usize,
+    id: Option<String>,
+    function: Option<DeltaFunction>,
+}
+
+#[derive(Deserialize)]
+struct DeltaFunction {
+    name: Option<String>,
+    arguments: Option<String>,
+}
+
+/// Accumulator for building a `ToolCallItem` from streaming deltas.
+#[derive(Default)]
+struct ToolCallBuilder {
+    id: String,
+    name: String,
+    arguments: String,
 }
 
 // ── Client ───────────────────────────────────────────────────────────────────
@@ -162,64 +187,148 @@ impl LlamaClient {
         Self { http, base_url }
     }
 
-    /// One agentic turn: send messages (with tools), return either text or tool calls.
-    /// Uses non-streaming so the full response can be inspected before acting.
-    pub async fn chat_agent(
+    /// Streaming agentic turn: tokens are delivered via `on_token` as they arrive,
+    /// and tool-call deltas are accumulated internally.  Returns `AgentTurn::Text`
+    /// or `AgentTurn::ToolCalls` once the stream ends.
+    ///
+    /// Falls back to `chat_agent` (non-streaming) if the streaming response cannot
+    /// be parsed, so embedded-tool-call models still work.
+    pub async fn chat_agent_stream<F>(
         &self,
         messages: &[Message],
         temperature: f32,
         tools: &[ToolDef],
-    ) -> Result<AgentTurn> {
+        mut on_token: F,
+    ) -> Result<AgentTurn>
+    where
+        F: FnMut(&str),
+    {
         let request = ChatRequest {
             model: "local",
             messages,
-            stream: false,
+            stream: true,
             temperature,
             tools: Some(tools),
             tool_choice: Some("auto"),
         };
-        let body: ChatResponse = self
+
+        let response = self
             .http
             .post(format!("{}/v1/chat/completions", self.base_url))
             .json(&request)
             .send()
             .await?
-            .error_for_status()?
-            .json()
-            .await?;
+            .error_for_status()?;
 
-        let choice = body
-            .choices
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("empty response from server"))?;
+        let mut byte_stream = response.bytes_stream();
+        let mut byte_buf: Vec<u8> = Vec::new();
+        let mut line_buf = String::new();
+        let mut full_text = String::new();
 
-        // Prefer tool_calls if present and non-empty, regardless of finish_reason.
-        // Some local models (Gemma, Qwen, …) set finish_reason="stop" even when
-        // returning tool calls, so we cannot rely on finish_reason alone.
-        if let Some(calls) = choice.message.tool_calls
-            && !calls.is_empty()
-        {
+        // Accumulate tool-call deltas keyed by index.
+        let mut tool_builders: Vec<ToolCallBuilder> = Vec::new();
+
+        let mut done = false;
+        while !done {
+            let Some(chunk) = byte_stream.next().await else {
+                break;
+            };
+            byte_buf.extend_from_slice(&chunk?);
+            let split_at = byte_buf
+                .iter()
+                .rposition(|&b| b == b'\n')
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            if split_at == 0 {
+                continue;
+            }
+            let to_decode = byte_buf.drain(..split_at).collect::<Vec<_>>();
+            line_buf.push_str(&String::from_utf8_lossy(&to_decode));
+            while let Some(pos) = line_buf.find('\n') {
+                let raw = line_buf[..pos].trim().to_string();
+                line_buf.drain(..=pos);
+
+                let Some(data) = raw.strip_prefix("data: ") else {
+                    continue;
+                };
+                if data == "[DONE]" {
+                    done = true;
+                    break;
+                }
+
+                let Ok(sc) = serde_json::from_str::<StreamChunk>(data) else {
+                    continue;
+                };
+                let Some(choice) = sc.choices.first() else {
+                    continue;
+                };
+
+                // Text content → stream to caller.
+                if let Some(token) = choice.delta.content.as_deref()
+                    && !token.is_empty()
+                {
+                    on_token(token);
+                    full_text.push_str(token);
+                }
+
+                // Tool-call deltas → accumulate.
+                if let Some(tc_deltas) = &choice.delta.tool_calls {
+                    for dtc in tc_deltas {
+                        // Grow the builder vec if needed.
+                        while tool_builders.len() <= dtc.index {
+                            tool_builders.push(ToolCallBuilder::default());
+                        }
+                        let builder = &mut tool_builders[dtc.index];
+                        if let Some(id) = &dtc.id {
+                            builder.id = id.clone();
+                        }
+                        if let Some(func) = &dtc.function {
+                            if let Some(name) = &func.name {
+                                builder.name.push_str(name);
+                            }
+                            if let Some(args) = &func.arguments {
+                                builder.arguments.push_str(args);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // If we accumulated any tool calls, return them.
+        if !tool_builders.is_empty() && tool_builders.iter().any(|b| !b.name.is_empty()) {
+            let calls: Vec<ToolCallItem> = tool_builders
+                .into_iter()
+                .enumerate()
+                .filter(|(_, b)| !b.name.is_empty())
+                .map(|(i, b)| ToolCallItem {
+                    id: if b.id.is_empty() {
+                        format!("call_{i}")
+                    } else {
+                        b.id
+                    },
+                    kind: "function".into(),
+                    function: ToolCallFunction {
+                        name: b.name,
+                        arguments: b.arguments,
+                    },
+                })
+                .collect();
             return Ok(AgentTurn::ToolCalls(calls));
         }
 
-        // A non-tool-call turn must have a non-empty text response.
-        let text = choice
-            .message
-            .content
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| anyhow!("model returned no content and no tool calls"))?;
+        // No tool calls — treat as text.
+        if full_text.is_empty() {
+            anyhow::bail!("model returned no content and no tool calls");
+        }
 
-        // Some local models (e.g. peg-gemma4 template) embed tool calls directly
-        // in the text content using template markers instead of the tool_calls
-        // field.  Special tokens like <|"|> stand in for `"` to avoid escaping
-        // issues.  Try to extract those before treating the response as plain text.
-        let embedded = extract_embedded_tool_calls(&text);
+        // Check for embedded tool calls (peg-gemma4 style).
+        let embedded = extract_embedded_tool_calls(&full_text);
         if !embedded.is_empty() {
             return Ok(AgentTurn::ToolCalls(embedded));
         }
 
-        Ok(AgentTurn::Text(text))
+        Ok(AgentTurn::Text(full_text))
     }
 
     /// Non-streaming completion without printing; returns the full response.

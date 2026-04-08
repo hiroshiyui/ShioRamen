@@ -10,12 +10,11 @@ Implemented configurable `shell_allowlist` / `shell_denylist` in `[tools]` confi
 Commands are checked by first token before execution; pipelines and chained
 commands are split and each segment is checked independently.
 
-## 2. Streaming in the agentic loop
+## ~~2. Streaming in the agentic loop~~ ✓ DONE
 
-`chat_agent` uses `stream: false`, so during tool-use turns the user sees nothing
-until the full response arrives. For large models or complex reasoning this feels
-like a hang. Stream the agentic turn and parse tool calls incrementally to improve
-perceived responsiveness.
+Replaced `chat_agent` (non-streaming) with `chat_agent_stream` which streams
+tokens to the TUI via `StreamToken` events while accumulating tool-call deltas
+internally. The user now sees reasoning text in real-time during agentic turns.
 
 ## 3. Session persistence
 

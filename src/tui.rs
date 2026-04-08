@@ -1378,7 +1378,12 @@ fn handle_model_event(app: &mut App, ev: TuiEvent) {
         }
         TuiEvent::AssistantText(text) => {
             finalize_streaming(app);
-            app.push_entry(EntryKind::Assistant, &replace_latex(text));
+            // When text was already streamed via StreamToken events,
+            // finalize_streaming has already created the entry and text
+            // arrives empty — skip the duplicate push.
+            if !text.is_empty() {
+                app.push_entry(EntryKind::Assistant, &replace_latex(text));
+            }
             app.auto_scroll = true;
         }
         TuiEvent::TurnDone(new_msgs) => {
@@ -1706,14 +1711,21 @@ async fn run_agent_loop(
             msgs
         };
 
-        // Some local models occasionally return an empty response (no content,
-        // no tool calls).  Retry a few times before surfacing the error.
+        // Stream the agentic turn — tokens are sent to the TUI as they arrive,
+        // while tool-call deltas are accumulated internally by the client.
+        // Retry on empty responses (some local models emit EOS too eagerly).
         let turn = {
             const MAX_EMPTY_RETRIES: usize = 3;
             let mut last_err = anyhow::anyhow!("unreachable");
             let mut turn_opt = None;
             for attempt in 0..MAX_EMPTY_RETRIES {
-                match client.chat_agent(msgs_to_send, temp, tools_for_call).await {
+                let tx_stream = tx.clone();
+                match client
+                    .chat_agent_stream(msgs_to_send, temp, tools_for_call, move |token| {
+                        let _ = tx_stream.send(TuiEvent::StreamToken(token.to_string()));
+                    })
+                    .await
+                {
                     Ok(t) => {
                         turn_opt = Some(t);
                         break;
@@ -1737,7 +1749,8 @@ async fn run_agent_loop(
         };
         match turn {
             AgentTurn::Text(text) => {
-                let _ = tx.send(TuiEvent::AssistantText(text.clone()));
+                // Text was already streamed via StreamToken events; now finalize.
+                let _ = tx.send(TuiEvent::AssistantText(String::new()));
                 msgs.push(Message::assistant(&text));
                 return Ok(());
             }
