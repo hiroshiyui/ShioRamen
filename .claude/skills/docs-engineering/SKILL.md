@@ -117,7 +117,14 @@ multi-screen code listings and prose) with a compact summary block:
 
 Keep the summary tight: one sentence per key decision, one line for files created, one line for verification status. Drop all code listings — they're in git.
 
-### 5c. Leave pending phases untouched
+### 5c. Remove completed items
+
+Once a task or phase has been fully summarized (per 5b), **delete** the completed entries from
+`doc/TODO.md` to keep the file focused on remaining work. If a completed item contains useful
+reference information (key decisions, gotchas, API notes), move that content to
+`doc/reference_manual.md` before removing it from `TODO.md`.
+
+### 5d. Leave pending phases untouched
 
 Do **not** modify any phase that is not yet started or only partially done. Only summarize
 when the entire phase (every numbered step) is verifiably complete.

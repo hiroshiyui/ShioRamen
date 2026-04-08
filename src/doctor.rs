@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::config::{DEFAULT_HOST, DEFAULT_PORT, DEFAULT_SERVER_BIN, ShioConfig};
+use crate::ruby::vm::ShioVm;
 
 #[derive(clap::Args, Debug)]
 pub struct DoctorArgs {
@@ -77,6 +78,9 @@ pub async fn run(args: &DoctorArgs, cfg: &ShioConfig) {
     // 4. Server health ------------------------------------------------------
     let url = format!("http://{host}:{port}");
     check_server(&url, &mut failures).await;
+
+    // 5. mRuby VM + tools ---------------------------------------------------
+    check_vm(&mut failures);
 
     // Summary ---------------------------------------------------------------
     println!();
@@ -160,6 +164,37 @@ async fn check_server(url: &str, failures: &mut usize) {
     }
 }
 
+/// Number of built-in tools that must be registered after `ShioVm::new()`.
+const EXPECTED_BUILTIN_TOOLS: usize = 22;
+
+fn check_vm(failures: &mut usize) {
+    match ShioVm::new() {
+        Ok(mut vm) => match vm.tool_schemas() {
+            Ok(schemas) => {
+                let count = schemas.len();
+                if count >= EXPECTED_BUILTIN_TOOLS {
+                    ok!(
+                        "mRuby VM: initialised, {count} tools registered (expected ≥ {EXPECTED_BUILTIN_TOOLS})"
+                    );
+                } else {
+                    fail!(
+                        "mRuby VM: only {count} tools registered (expected ≥ {EXPECTED_BUILTIN_TOOLS})"
+                    );
+                    *failures += 1;
+                }
+            }
+            Err(e) => {
+                fail!("mRuby VM: initialised but tool_schemas() failed: {e}");
+                *failures += 1;
+            }
+        },
+        Err(e) => {
+            fail!("mRuby VM: failed to initialise: {e}");
+            *failures += 1;
+        }
+    }
+}
+
 fn fmt_bytes(bytes: u64) -> String {
     const GB: u64 = 1024 * 1024 * 1024;
     const MB: u64 = 1024 * 1024;
@@ -229,5 +264,65 @@ mod tests {
     fn fmt_bytes_boundary() {
         assert!(fmt_bytes(1024 * 1024 * 1024 - 1).ends_with("MB"));
         assert!(fmt_bytes(1024 * 1024 * 1024).ends_with("GB"));
+    }
+
+    // ── check_vm ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn check_vm_initialises_and_registers_tools() {
+        let mut failures = 0;
+        check_vm(&mut failures);
+        assert_eq!(failures, 0, "VM should initialise and register all tools");
+    }
+
+    #[test]
+    fn vm_registers_expected_builtin_tools() {
+        let mut vm = ShioVm::new().expect("ShioVm should initialise");
+        let schemas = vm.tool_schemas().expect("tool_schemas should succeed");
+        let names: Vec<&str> = schemas.iter().map(|(n, _, _)| n.as_str()).collect();
+
+        // Verify all 22 built-in tools are present.
+        for expected in [
+            "get_working_directory",
+            "create_directory",
+            "read_file",
+            "list_directory",
+            "delete_file",
+            "move_file",
+            "write_file",
+            "append_file",
+            "insert_after_line",
+            "read_file_range",
+            "read_many_files",
+            "search_files",
+            "grep_files",
+            "save_memory",
+            "write_todos",
+            "fetch_url",
+            "web_search",
+            "patch_file",
+            "run_shell",
+            "lsp",
+            "enter_plan_mode",
+            "exit_plan_mode",
+        ] {
+            assert!(
+                names.contains(&expected),
+                "missing built-in tool: {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn vm_tool_schemas_have_descriptions_and_parameters() {
+        let mut vm = ShioVm::new().expect("ShioVm should initialise");
+        let schemas = vm.tool_schemas().expect("tool_schemas should succeed");
+        for (name, desc, params) in &schemas {
+            assert!(!desc.is_empty(), "tool {name} has empty description");
+            assert!(
+                params.is_object(),
+                "tool {name} parameters is not an object"
+            );
+        }
     }
 }

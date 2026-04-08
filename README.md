@@ -310,7 +310,8 @@ cont_batching = true
 model         = "./models/model.gguf"
 temperature   = 0.7
 show_thinking = true                   # show <think>…</think> blocks from reasoning models (dimmed); default true
-system_prompt = "..."                  # optional: override the built-in system prompt
+prompt_style  = "auto"                 # "auto" (detect from model size), "full", "concise", "minimal"
+system_prompt = "..."                  # optional: override the built-in system prompt (overrides prompt_style)
 
 [paths]
 models_dir    = "./models"             # default download directory for `shio pull`

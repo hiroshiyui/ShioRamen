@@ -1765,8 +1765,12 @@ async fn run_agent_loop(
             AgentTurn::ToolCalls(calls) => {
                 msgs.push(Message::assistant_tool_calls(calls.clone()));
 
+                // ── Phase 1: plan-mode control & confirmations (sequential) ──
+                // Pre-resolved results for control tools; None = needs execution.
+                let mut pre_results: Vec<Option<String>> = Vec::with_capacity(calls.len());
+                let mut abort = false;
+
                 for call in &calls {
-                    // Display the call.
                     let label = fmt_call(call);
                     let _ = tx.send(TuiEvent::ToolStart(label));
 
@@ -1780,6 +1784,7 @@ async fn run_agent_loop(
                             "Plan mode activated. You can now read files and explore the \
                              codebase. Write tools are disabled until you call exit_plan_mode.",
                         ));
+                        pre_results.push(Some(String::new())); // already handled
                         continue;
                     }
                     if call.function.name == "exit_plan_mode" {
@@ -1790,6 +1795,7 @@ async fn run_agent_loop(
                             &call.id,
                             "Plan mode deactivated. All tools are now available.",
                         ));
+                        pre_results.push(Some(String::new()));
                         continue;
                     }
 
@@ -1803,6 +1809,7 @@ async fn run_agent_loop(
                             "Error: write tools are disabled in plan mode. \
                              Call exit_plan_mode first.",
                         ));
+                        pre_results.push(Some(String::new()));
                         continue;
                     }
 
@@ -1813,16 +1820,31 @@ async fn run_agent_loop(
                         let _ = tx.send(TuiEvent::NeedsConfirm { prompt, reply_tx });
                         let allowed = reply_rx.await.unwrap_or(false);
                         if !allowed {
-                            // User denied — abort the entire turn so the model
-                            // cannot loop back and retry the same operation.
                             let _ = tx.send(TuiEvent::ToolDone("Denied by user.".to_string()));
                             let _ = tx.send(TuiEvent::TurnDone(msgs.clone()));
-                            return Ok(());
+                            abort = true;
+                            break;
                         }
                     }
 
-                    // Execute the tool (use spawn_blocking to avoid blocking the async runtime).
-                    let result = {
+                    pre_results.push(None); // needs execution
+                }
+
+                if abort {
+                    return Ok(());
+                }
+
+                // ── Phase 2: execute approved tools concurrently ─────────────
+                // Spawn all pending tool calls in parallel.  The VM mutex
+                // serialises Ruby dispatch today, but native-only tools (or
+                // future per-tool VMs) benefit from true concurrency.
+                let mut handles: Vec<Option<tokio::task::JoinHandle<String>>> =
+                    Vec::with_capacity(calls.len());
+
+                for (call, pre) in calls.iter().zip(pre_results.iter()) {
+                    if pre.is_some() {
+                        handles.push(None); // already handled in phase 1
+                    } else {
                         let exec = ToolExecutor {
                             confirm_writes: false,
                             confirm_shell: false,
@@ -1833,10 +1855,21 @@ async fn run_agent_loop(
                             vm: executor.vm.clone(),
                         };
                         let call2 = call.clone();
-                        tokio::task::spawn_blocking(move || exec.execute_quiet(&call2))
-                            .await
-                            .unwrap_or_else(|e| format!("internal error: {e}"))
+                        handles.push(Some(tokio::task::spawn_blocking(move || {
+                            exec.execute_quiet(&call2)
+                        })));
+                    }
+                }
+
+                // ── Phase 3: collect results in order ────────────────────────
+                for (i, handle_opt) in handles.into_iter().enumerate() {
+                    let Some(handle) = handle_opt else {
+                        continue; // already pushed to msgs in phase 1
                     };
+                    let call = &calls[i];
+                    let result = handle
+                        .await
+                        .unwrap_or_else(|e| format!("internal error: {e}"));
 
                     // Show a one-line preview of the result.
                     let preview = result
