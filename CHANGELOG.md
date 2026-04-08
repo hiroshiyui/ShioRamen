@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.1.0] — 2026-04-08
+
+### Added
+- (vision): multimodal support — image token budgeting for vision models
+
+### Fixed
+- (tui): normalize `\r\n` and `\r` to `\n` in bracketed paste
+- (tools): `ToolExecutor` now provides fallible `try_new()` so production code propagates VM init errors instead of panicking
+- (tools): deduplicate IPv4 private-range checks into shared `is_private_ipv4()` helper
+- (tools): avoid unnecessary `args.clone()` in `execute_quiet`
+- (tui): replace magic numbers in `consume_raw_buf` with named constants for think-tag lengths
+- (tui): sort `fmt_call` keys for deterministic argument display
+- (session): `find_latest()` now propagates `read_dir` errors instead of silently swallowing them
+- (ruby/vm): escape null bytes in `value_to_ruby` to prevent CString truncation
+
+### Documentation
+- README: document Shift+Enter, Ctrl+J, and Ctrl+V keybindings
+- reference_manual: add mmproj, top_p, repeat_penalty, prompt_style config fields
+- TODO: clear completed tasks
+
+### Maintenance
+- Test count: 349 (unchanged)
+
 ## [v1.0.0] — 2026-04-08
 
 ### Added
