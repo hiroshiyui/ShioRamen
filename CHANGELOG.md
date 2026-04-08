@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.5.0] — 2026-04-08
+
+### Added
+- (doctor): mRuby VM health check — verifies VM initialisation and ≥ 22 built-in tools registered
+- (chat): session persistence — auto-save on exit, resume with `shio chat --resume`
+- (chat): model-aware prompt styles — `prompt_style` config key selects "full", "concise", or "minimal" system prompt based on model size
+- (client): streaming in agentic turns — tokens streamed to TUI in real-time during tool-use loops
+- (tools): shell command sandboxing — configurable `shell_allowlist` / `shell_denylist` in `[tools]`
+- (tui): parallel tool execution — approved tools now run concurrently via `spawn_blocking`
+
+### Documentation
+- README: added `prompt_style` to `[chat]` config reference
+- `doc/TODO.md`: cleaned up completed task entries
+
+### Maintenance
+- Test count: 318 → 348 (30 new tests for VM checks, session persistence, streaming, shell policy)
+- `docs-engineering` skill: added §5c rule for removing completed TODO items
+
 ## [v0.4.0] — 2026-04-08
 
 ### Added
