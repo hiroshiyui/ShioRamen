@@ -253,15 +253,14 @@ async fn main() -> Result<()> {
             let tools_requested = !args.no_tools && cfg.tools.enabled.unwrap_or(true);
             let executor = if tools_requested {
                 if prompt_trust()? {
-                    Some(tools::ToolExecutor {
-                        confirm_writes: cfg.tools.confirm_writes.unwrap_or(true),
-                        confirm_shell: cfg.tools.confirm_shell.unwrap_or(true),
-                        lsp: cfg.lsp.servers.clone(),
-                        max_tool_result_chars,
-                        shell_allowlist: cfg.tools.shell_allowlist.clone(),
-                        shell_denylist: cfg.tools.shell_denylist.clone(),
-                        ..Default::default()
-                    })
+                    let mut exec = tools::ToolExecutor::try_new()?;
+                    exec.confirm_writes = cfg.tools.confirm_writes.unwrap_or(true);
+                    exec.confirm_shell = cfg.tools.confirm_shell.unwrap_or(true);
+                    exec.lsp = cfg.lsp.servers.clone();
+                    exec.max_tool_result_chars = max_tool_result_chars;
+                    exec.shell_allowlist = cfg.tools.shell_allowlist.clone();
+                    exec.shell_denylist = cfg.tools.shell_denylist.clone();
+                    Some(exec)
                 } else {
                     eprintln!("  Tools disabled for this session.\n");
                     None

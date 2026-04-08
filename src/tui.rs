@@ -1705,12 +1705,19 @@ fn consume_raw_buf(
     streaming: &mut Option<String>,
     thinking: &mut Option<String>,
 ) {
+    const THINK_OPEN: &str = "<think>";
+    const THINK_CLOSE: &str = "</think>";
+    // Hold-back: tag length minus 1 so a partial tag at the buffer tail is
+    // never flushed prematurely.
+    const HOLD_OPEN: usize = THINK_OPEN.len() - 1; // 6
+    const HOLD_CLOSE: usize = THINK_CLOSE.len() - 1; // 7
+
     loop {
         if *in_think {
-            match raw_buf.find("</think>") {
+            match raw_buf.find(THINK_CLOSE) {
                 Some(pos) => {
                     let chunk = raw_buf[..pos].to_string();
-                    *raw_buf = raw_buf[pos + 8..].to_string(); // 8 == "</think>".len()
+                    *raw_buf = raw_buf[pos + THINK_CLOSE.len()..].to_string();
                     *in_think = false;
                     if !chunk.is_empty() {
                         match thinking {
@@ -1720,8 +1727,7 @@ fn consume_raw_buf(
                     }
                 }
                 None => {
-                    // Hold back last 7 bytes (</think>.len() - 1) for partial-tag safety.
-                    let hold = 7usize.min(raw_buf.len());
+                    let hold = HOLD_CLOSE.min(raw_buf.len());
                     let safe = raw_buf.len() - hold;
                     if safe > 0 {
                         let chunk = raw_buf[..safe].to_string();
@@ -1735,10 +1741,10 @@ fn consume_raw_buf(
                 }
             }
         } else {
-            match raw_buf.find("<think>") {
+            match raw_buf.find(THINK_OPEN) {
                 Some(pos) => {
                     let chunk = raw_buf[..pos].to_string();
-                    *raw_buf = raw_buf[pos + 7..].to_string(); // 7 == "<think>".len()
+                    *raw_buf = raw_buf[pos + THINK_OPEN.len()..].to_string();
                     *in_think = true;
                     if !chunk.is_empty() {
                         match streaming {
@@ -1748,8 +1754,7 @@ fn consume_raw_buf(
                     }
                 }
                 None => {
-                    // Hold back last 6 bytes (<think>.len() - 1) for partial-tag safety.
-                    let hold = 6usize.min(raw_buf.len());
+                    let hold = HOLD_OPEN.min(raw_buf.len());
                     let safe = raw_buf.len() - hold;
                     if safe > 0 {
                         let chunk = raw_buf[..safe].to_string();
@@ -2167,15 +2172,17 @@ fn fmt_call(call: &ToolCallItem) -> String {
         serde_json::from_str(&call.function.arguments).unwrap_or_default();
     let name = &call.function.name;
     if let Some(map) = args.as_object() {
-        let parts: Vec<String> = map
+        let mut keys: Vec<&String> = map.keys().collect();
+        keys.sort();
+        let parts: Vec<String> = keys
             .iter()
-            .take(2)
-            .filter_map(|(k, v)| {
-                v.as_str().map(|s| {
+            .filter_map(|k| {
+                map[k.as_str()].as_str().map(|s| {
                     let s: String = s.chars().take(60).collect();
                     format!("{k}=\"{s}\"")
                 })
             })
+            .take(2)
             .collect();
         format!("{name}({})", parts.join(", "))
     } else {

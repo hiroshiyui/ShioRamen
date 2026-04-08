@@ -66,8 +66,8 @@ CLI flags always override config file values, which override hardcoded defaults.
 
 | Section | Fields |
 |---|---|
-| `[server]` | `bin`, `host`, `port`, `ngl`, `ctx`, `cache_type_k`, `cache_type_v`, `flash_attn`, `cont_batching` |
-| `[chat]` | `model`, `temperature`, `system_prompt`, `show_thinking` |
+| `[server]` | `bin`, `host`, `port`, `ngl`, `ctx`, `cache_type_k`, `cache_type_v`, `flash_attn`, `cont_batching`, `mmproj` |
+| `[chat]` | `model`, `temperature`, `top_p`, `repeat_penalty`, `system_prompt`, `show_thinking`, `prompt_style` |
 | `[paths]` | `models_dir` |
 | `[tools]` | `enabled`, `confirm_writes`, `confirm_shell`, `shell_allowlist`, `shell_denylist` |
 | `[lsp.servers]` | `<lang_or_ext> = "<command>"` (e.g. `rust = "rust-analyzer"`) |

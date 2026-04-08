@@ -167,7 +167,8 @@ Options:
 | Key / Command | Action |
 |---------------|--------|
 | `Enter` | Send message |
-| `Alt+Enter` | Insert a literal newline (multi-line input) |
+| `Alt+Enter` / `Shift+Enter` / `Ctrl+J` | Insert a literal newline (multi-line input) |
+| `Ctrl+V` | Paste from clipboard (text or image) |
 | `Esc` | Abort the current model turn (while model is thinking) |
 | `Ctrl+C` / `Ctrl+D` | Quit |
 | `PgUp` / `PgDn` | Scroll chat history up / down (10 lines) |

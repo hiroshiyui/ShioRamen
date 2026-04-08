@@ -240,6 +240,7 @@ fn value_to_ruby(v: &Value) -> String {
         Value::String(s) => format!(
             "\"{}\"",
             s.replace('\\', "\\\\")
+                .replace('\0', "\\0")
                 .replace('"', "\\\"")
                 .replace('\n', "\\n")
                 .replace('\r', "\\r")

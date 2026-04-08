@@ -56,17 +56,15 @@ pub fn find_latest() -> Result<Option<PathBuf>> {
     }
     // Scan for any .json file and pick the newest.
     let mut best: Option<(PathBuf, std::time::SystemTime)> = None;
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                continue;
-            }
-            if let Ok(meta) = entry.metadata() {
-                let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
-                if best.as_ref().is_none_or(|(_, t)| mtime > *t) {
-                    best = Some((path, mtime));
-                }
+    for entry in std::fs::read_dir(&dir)?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        if let Ok(meta) = entry.metadata() {
+            let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+            if best.as_ref().is_none_or(|(_, t)| mtime > *t) {
+                best = Some((path, mtime));
             }
         }
     }

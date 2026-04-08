@@ -52,17 +52,26 @@ pub struct ToolExecutor {
     pub(crate) vm: Arc<Mutex<ShioVm>>,
 }
 
-impl Default for ToolExecutor {
-    fn default() -> Self {
-        Self {
+impl ToolExecutor {
+    /// Create a new `ToolExecutor` with default settings.
+    ///
+    /// Returns an error if the mRuby VM fails to initialise.
+    pub fn try_new() -> anyhow::Result<Self> {
+        Ok(Self {
             confirm_writes: false,
             confirm_shell: false,
             lsp: std::collections::HashMap::new(),
             max_tool_result_chars: DEFAULT_MAX_TOOL_RESULT_CHARS,
             shell_allowlist: Vec::new(),
             shell_denylist: Vec::new(),
-            vm: Arc::new(Mutex::new(ShioVm::new().expect("ShioVm init failed"))),
-        }
+            vm: Arc::new(Mutex::new(ShioVm::new()?)),
+        })
+    }
+}
+
+impl Default for ToolExecutor {
+    fn default() -> Self {
+        Self::try_new().expect("ShioVm init failed")
     }
 }
 
@@ -78,7 +87,7 @@ impl ToolExecutor {
         // Some local models wrap all arguments under the function name, e.g.
         // {"patch_file": {"path": "…"}} instead of {"path": "…"}.  Unwrap one
         // level when that pattern is detected.
-        if let Value::Object(ref map) = args.clone()
+        if let Value::Object(map) = &args
             && map.len() == 1
             && let Some(inner) = map.get(call.function.name.as_str())
             && inner.is_object()
@@ -276,6 +285,17 @@ pub(crate) fn strip_html(html: &str) -> String {
     s.trim().to_string()
 }
 
+/// Return `true` if the given IPv4 octets belong to a private, loopback,
+/// link-local, or unspecified range.
+fn is_private_ipv4(o: [u8; 4]) -> bool {
+    o[0] == 127                                 // 127.0.0.0/8 loopback
+        || o[0] == 10                            // 10.0.0.0/8
+        || (o[0] == 172 && (16..=31).contains(&o[1])) // 172.16.0.0/12
+        || (o[0] == 192 && o[1] == 168)         // 192.168.0.0/16
+        || (o[0] == 169 && o[1] == 254)         // 169.254.0.0/16 IMDS / link-local
+        || o == [0, 0, 0, 0] // unspecified
+}
+
 /// Return `true` if the URL's host is localhost, a loopback address, or a
 /// private/link-local IP range — any destination that should not be reachable
 /// from an SSRF attack.
@@ -328,12 +348,7 @@ pub(crate) fn is_private_host(url: &str) -> bool {
 
     // IPv4 private / loopback / link-local ranges.
     if let Ok(ipv4) = host.parse::<std::net::Ipv4Addr>() {
-        let o = ipv4.octets();
-        return o[0] == 127                                    // 127.0.0.0/8 loopback
-            || o[0] == 10                                     // 10.0.0.0/8
-            || (o[0] == 172 && (16..=31).contains(&o[1]))    // 172.16.0.0/12
-            || (o[0] == 192 && o[1] == 168)                  // 192.168.0.0/16
-            || (o[0] == 169 && o[1] == 254); // 169.254.0.0/16 IMDS / link-local
+        return is_private_ipv4(ipv4.octets());
     }
 
     // IPv6: loopback, unspecified, unique-local (fc00::/7), link-local (fe80::/10),
@@ -346,15 +361,8 @@ pub(crate) fn is_private_host(url: &str) -> bool {
         if (segs[0] & 0xfe00) == 0xfc00 || (segs[0] & 0xffc0) == 0xfe80 {
             return true;
         }
-        // IPv4-mapped IPv6 (::ffff:x.x.x.x) — extract the IPv4 and re-check.
         if let Some(ipv4) = ipv6.to_ipv4_mapped() {
-            let o = ipv4.octets();
-            return o[0] == 127
-                || o[0] == 10
-                || (o[0] == 172 && (16..=31).contains(&o[1]))
-                || (o[0] == 192 && o[1] == 168)
-                || (o[0] == 169 && o[1] == 254)
-                || o == [0, 0, 0, 0];
+            return is_private_ipv4(ipv4.octets());
         }
         return false;
     }
@@ -400,14 +408,7 @@ pub(crate) fn resolves_to_private(url: &str) -> bool {
     for addr in addrs {
         match addr.ip() {
             std::net::IpAddr::V4(ip) => {
-                let o = ip.octets();
-                if o[0] == 127
-                    || o[0] == 10
-                    || (o[0] == 172 && (16..=31).contains(&o[1]))
-                    || (o[0] == 192 && o[1] == 168)
-                    || (o[0] == 169 && o[1] == 254)
-                    || o == [0, 0, 0, 0]
-                {
+                if is_private_ipv4(ip.octets()) {
                     return true;
                 }
             }
@@ -419,17 +420,10 @@ pub(crate) fn resolves_to_private(url: &str) -> bool {
                 if (segs[0] & 0xfe00) == 0xfc00 || (segs[0] & 0xffc0) == 0xfe80 {
                     return true;
                 }
-                if let Some(ipv4) = ip.to_ipv4_mapped() {
-                    let o = ipv4.octets();
-                    if o[0] == 127
-                        || o[0] == 10
-                        || (o[0] == 172 && (16..=31).contains(&o[1]))
-                        || (o[0] == 192 && o[1] == 168)
-                        || (o[0] == 169 && o[1] == 254)
-                        || o == [0, 0, 0, 0]
-                    {
-                        return true;
-                    }
+                if let Some(ipv4) = ip.to_ipv4_mapped()
+                    && is_private_ipv4(ipv4.octets())
+                {
+                    return true;
                 }
             }
         }
