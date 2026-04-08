@@ -2,11 +2,12 @@
 use std::io::{self, Write};
 use std::path::Path;
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::Value;
 
 use crate::client::{FunctionSpec, ToolCallItem, ToolDef};
+use crate::ruby::vm::ShioVm;
 
 /// Default character limit for `fetch_url` responses.
 const DEFAULT_MAX_CHARS: usize = 8_000;
@@ -46,8 +47,8 @@ pub fn all_tools() -> Vec<ToolDef> {
         ToolDef {
             kind: "function",
             function: FunctionSpec {
-                name: "read_file",
-                description: "Read the full contents of a file from the filesystem.",
+                name: "read_file".into(),
+                description: "Read the full contents of a file from the filesystem.".into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -60,8 +61,8 @@ pub fn all_tools() -> Vec<ToolDef> {
         ToolDef {
             kind: "function",
             function: FunctionSpec {
-                name: "write_file",
-                description: "Write content to a file, creating it or overwriting it.",
+                name: "write_file".into(),
+                description: "Write content to a file, creating it or overwriting it.".into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -75,13 +76,14 @@ pub fn all_tools() -> Vec<ToolDef> {
         ToolDef {
             kind: "function",
             function: FunctionSpec {
-                name: "insert_after_line",
+                name: "insert_after_line".into(),
                 description: "Insert new content immediately after a specific line number in a \
                     file. Use this when you need to add lines at a precise position — for \
                     example, right after a range you read with read_file_range. \
                     Lines are 1-indexed. The content is inserted after the given line; \
                     existing lines below that point are shifted down. \
-                    Do NOT use append_file when you know the insertion point — use this instead.",
+                    Do NOT use append_file when you know the insertion point — use this instead."
+                    .into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -96,14 +98,15 @@ pub fn all_tools() -> Vec<ToolDef> {
         ToolDef {
             kind: "function",
             function: FunctionSpec {
-                name: "append_file",
+                name: "append_file".into(),
                 description: "Append content to the end of a file, creating it if it does not \
                     exist. Use this ONLY when you need to add content at the very end and \
                     do not know or care about the insertion line number. \
                     If you know which line to insert after (e.g. from read_file_range), \
                     use insert_after_line instead. \
                     Do NOT use this to replace, rewrite, or refactor existing lines — \
-                    use patch_file for in-place edits.",
+                    use patch_file for in-place edits."
+                    .into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -117,8 +120,8 @@ pub fn all_tools() -> Vec<ToolDef> {
         ToolDef {
             kind: "function",
             function: FunctionSpec {
-                name: "list_directory",
-                description: "List files and directories inside a directory.",
+                name: "list_directory".into(),
+                description: "List files and directories inside a directory.".into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -133,8 +136,8 @@ pub fn all_tools() -> Vec<ToolDef> {
         ToolDef {
             kind: "function",
             function: FunctionSpec {
-                name: "run_shell",
-                description: "Run a shell command and return its stdout and stderr.",
+                name: "run_shell".into(),
+                description: "Run a shell command and return its stdout and stderr.".into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -150,8 +153,8 @@ pub fn all_tools() -> Vec<ToolDef> {
         ToolDef {
             kind: "function",
             function: FunctionSpec {
-                name: "search_files",
-                description: "Find files by glob pattern (e.g. \"src/**/*.rs\").",
+                name: "search_files".into(),
+                description: "Find files by glob pattern (e.g. \"src/**/*.rs\").".into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -168,8 +171,8 @@ pub fn all_tools() -> Vec<ToolDef> {
         ToolDef {
             kind: "function",
             function: FunctionSpec {
-                name: "grep_files",
-                description: "Search for a regex pattern in files and return matching lines with line numbers.",
+                name: "grep_files".into(),
+                description: "Search for a regex pattern in files and return matching lines with line numbers.".into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -187,10 +190,11 @@ pub fn all_tools() -> Vec<ToolDef> {
         ToolDef {
             kind: "function",
             function: FunctionSpec {
-                name: "read_file_range",
+                name: "read_file_range".into(),
                 description: "Read a specific range of lines from a file. \
                     Prefer this over read_file for large files when you already \
-                    know which section you need (e.g. from grep_files results).",
+                    know which section you need (e.g. from grep_files results)."
+                    .into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -212,7 +216,7 @@ pub fn all_tools() -> Vec<ToolDef> {
         ToolDef {
             kind: "function",
             function: FunctionSpec {
-                name: "patch_file",
+                name: "patch_file".into(),
                 description: "Apply a targeted find-and-replace edit to a file. \
                     Finds the exact string old_str (must appear exactly once) and \
                     replaces it with new_str. Use this for ALL in-place edits: \
@@ -220,7 +224,8 @@ pub fn all_tools() -> Vec<ToolDef> {
                     Safer than write_file for focused edits because the rest of the file is untouched. \
                     old_str must be the exact text from the file as returned by read_file or \
                     read_file_range (which outputs raw lines with no line-number prefixes). \
-                    new_str is written verbatim.",
+                    new_str is written verbatim."
+                    .into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -241,8 +246,8 @@ pub fn all_tools() -> Vec<ToolDef> {
         ToolDef {
             kind: "function",
             function: FunctionSpec {
-                name: "delete_file",
-                description: "Delete a file from the filesystem.",
+                name: "delete_file".into(),
+                description: "Delete a file from the filesystem.".into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -255,8 +260,8 @@ pub fn all_tools() -> Vec<ToolDef> {
         ToolDef {
             kind: "function",
             function: FunctionSpec {
-                name: "move_file",
-                description: "Move or rename a file or directory.",
+                name: "move_file".into(),
+                description: "Move or rename a file or directory.".into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -270,10 +275,11 @@ pub fn all_tools() -> Vec<ToolDef> {
         ToolDef {
             kind: "function",
             function: FunctionSpec {
-                name: "fetch_url",
+                name: "fetch_url".into(),
                 description: "Fetch the text content of an HTTP or HTTPS URL. \
                     HTML pages are stripped to readable text. \
-                    Use this whenever the user shares a URL or asks about a web page.",
+                    Use this whenever the user shares a URL or asks about a web page."
+                    .into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -293,10 +299,11 @@ pub fn all_tools() -> Vec<ToolDef> {
         ToolDef {
             kind: "function",
             function: FunctionSpec {
-                name: "create_directory",
+                name: "create_directory".into(),
                 description: "Create a directory and any missing parent directories \
                     (equivalent to `mkdir -p`). Safe to call even if the directory \
-                    already exists.",
+                    already exists."
+                    .into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -312,10 +319,11 @@ pub fn all_tools() -> Vec<ToolDef> {
         ToolDef {
             kind: "function",
             function: FunctionSpec {
-                name: "get_working_directory",
+                name: "get_working_directory".into(),
                 description: "Return the current working directory. \
                     Call this to resolve relative paths or orient yourself \
-                    before constructing file paths.",
+                    before constructing file paths."
+                    .into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {}
@@ -325,11 +333,12 @@ pub fn all_tools() -> Vec<ToolDef> {
         ToolDef {
             kind: "function",
             function: FunctionSpec {
-                name: "web_search",
+                name: "web_search".into(),
                 description: "Search the web using DuckDuckGo and return a list of results \
                     with titles, URLs, and snippets. Use this when you need current \
                     information, documentation, or examples that may not be in your \
-                    training data.",
+                    training data."
+                    .into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -349,11 +358,12 @@ pub fn all_tools() -> Vec<ToolDef> {
         ToolDef {
             kind: "function",
             function: FunctionSpec {
-                name: "save_memory",
+                name: "save_memory".into(),
                 description: "Append a fact or note to SHIO.md for future reference. \
                     Use this to persist important information across sessions: \
                     user preferences, project conventions, architectural decisions, \
-                    or anything you want to remember.",
+                    or anything you want to remember."
+                    .into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -373,11 +383,12 @@ pub fn all_tools() -> Vec<ToolDef> {
         ToolDef {
             kind: "function",
             function: FunctionSpec {
-                name: "read_many_files",
+                name: "read_many_files".into(),
                 description: "Read the contents of multiple files in a single call. \
                     Returns each file's content separated by a header showing its path. \
                     More efficient than calling read_file repeatedly when you need \
-                    several related files at once.",
+                    several related files at once."
+                    .into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -394,9 +405,10 @@ pub fn all_tools() -> Vec<ToolDef> {
         ToolDef {
             kind: "function",
             function: FunctionSpec {
-                name: "write_todos",
+                name: "write_todos".into(),
                 description: "Write a task list to TODO.md, replacing the file's entire contents. \
-                    Useful for tracking multi-step plans or progress on complex tasks.",
+                    Useful for tracking multi-step plans or progress on complex tasks."
+                    .into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -431,11 +443,12 @@ pub fn all_tools() -> Vec<ToolDef> {
         ToolDef {
             kind: "function",
             function: FunctionSpec {
-                name: "lsp",
+                name: "lsp".into(),
                 description: "Query a Language Server Protocol (LSP) server for semantic \
                     information about source code: type signatures, documentation (hover), \
                     jump-to-definition, find-all-references, and diagnostics (errors/warnings). \
-                    The server is started and cached automatically; no setup required.",
+                    The server is started and cached automatically; no setup required."
+                    .into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -468,11 +481,12 @@ pub fn all_tools() -> Vec<ToolDef> {
         ToolDef {
             kind: "function",
             function: FunctionSpec {
-                name: "enter_plan_mode",
+                name: "enter_plan_mode".into(),
                 description: "Switch to plan mode, restricting tool access to read-only operations \
                     (read_file, search_files, grep_files, lsp, fetch_url, web_search, etc.). \
                     Use this before making changes: explore the codebase, understand the structure, \
-                    draft a plan, then call exit_plan_mode to restore full tool access.",
+                    draft a plan, then call exit_plan_mode to restore full tool access."
+                    .into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -487,10 +501,11 @@ pub fn all_tools() -> Vec<ToolDef> {
         ToolDef {
             kind: "function",
             function: FunctionSpec {
-                name: "exit_plan_mode",
+                name: "exit_plan_mode".into(),
                 description: "Exit plan mode and restore access to all tools \
                     (write_file, patch_file, run_shell, etc.). \
-                    Call this when you have finished exploring and are ready to make changes.",
+                    Call this when you have finished exploring and are ready to make changes."
+                    .into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -541,6 +556,8 @@ pub struct ToolExecutor {
     /// Maximum characters returned from a single tool call before truncation.
     /// Computed from `ctx_size` at startup so the cap scales with the context window.
     pub max_tool_result_chars: usize,
+    /// mRuby VM for Ruby-hosted tool handlers (Phase B+).
+    pub(crate) vm: Arc<Mutex<ShioVm>>,
 }
 
 impl Default for ToolExecutor {
@@ -550,6 +567,7 @@ impl Default for ToolExecutor {
             confirm_shell: false,
             lsp: std::collections::HashMap::new(),
             max_tool_result_chars: DEFAULT_MAX_TOOL_RESULT_CHARS,
+            vm: Arc::new(Mutex::new(ShioVm::new().expect("ShioVm init failed"))),
         }
     }
 }
@@ -580,6 +598,17 @@ impl ToolExecutor {
     }
 
     fn dispatch(&self, name: &str, args: &Value) -> String {
+        if std::env::var("SHIO_USE_RUBY").is_ok() {
+            let args_json = args.to_string();
+            let result = match self.vm.lock() {
+                Ok(mut guard) => guard.call_tool(name, &args_json),
+                Err(_) => "Error: VM mutex poisoned".to_string(),
+            };
+            // Fall through only when the tool is not yet registered in Ruby.
+            if !result.starts_with("Error: unknown tool:") {
+                return result;
+            }
+        }
         match name {
             "read_file" => self.read_file(args),
             "write_file" => self.write_file(args),
@@ -607,6 +636,15 @@ impl ToolExecutor {
             }
             _ => format!("Unknown tool: {name}"),
         }
+    }
+
+    /// Returns tool definitions for the model — Ruby-registered tools merged
+    /// with the static Rust definitions for tools not yet migrated.
+    /// In Phase B this always returns `all_tools()`; Phase C progressively
+    /// replaces Rust entries with Ruby-sourced ones; Phase D removes the rest.
+    #[allow(dead_code)] // unused until Phase D wires this in place of all_tools()
+    pub fn tool_defs(&self) -> Vec<ToolDef> {
+        all_tools()
     }
 
     // ── Individual tools ──────────────────────────────────────────────────────

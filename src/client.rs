@@ -85,8 +85,8 @@ pub struct ToolDef {
 
 #[derive(Debug, Serialize, Clone)]
 pub struct FunctionSpec {
-    pub name: &'static str,
-    pub description: &'static str,
+    pub name: String,
+    pub description: String,
     pub parameters: serde_json::Value,
 }
 

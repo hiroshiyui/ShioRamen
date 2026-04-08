@@ -40,147 +40,22 @@ User-extensible: drop a `.rb` file in `~/.config/shio/tools/` to add or override
 
 ---
 
-## Phase B — Parallel dispatch + ToolDef plumbing
+## Phase B — Parallel dispatch + ToolDef plumbing ✓ DONE
 
-Still no tools migrated. This phase wires the VM into `ToolExecutor` so the Ruby path
-can be tested alongside the existing Rust dispatch before any migration begins.
+**Changes made:**
+- `src/client.rs`: `FunctionSpec.name` and `.description` changed from `&'static str` to `String`; all 22 literals in `tools.rs` updated with `.into()`
+- `src/tools.rs`: `ToolExecutor` gains `pub(crate) vm: Arc<Mutex<ShioVm>>`; `Default` impl calls `ShioVm::new().expect(...)`; `dispatch()` prefixed with `SHIO_USE_RUBY` guard that tries Ruby first and falls through on `"Error: unknown tool:"` prefix; `tool_defs()` stub added (`#[allow(dead_code)]`, returns `all_tools()`)
+- `src/tui.rs`: `PLAN_MODE_ALLOWED.contains` fixed to use `.as_str()`; shadow executor in `spawn_blocking` clones `vm: executor.vm.clone()`
+- `src/ruby/glue.c`: `shio_mrb_eval` now checks `mrb_string_p` and returns raw bytes for String results instead of `inspect`-wrapping — fixes both `call_tool` output and `tool_schemas` JSON parsing
+- `src/ruby/prelude.rb`: added `shio_tool_schemas_json` helper (one JSON object per line)
+- `src/ruby/vm.rs`: `call_tool` uses `value_to_ruby()` to convert JSON args to mRuby `{"key" => value}` literals; `tool_schemas()` reimplemented using `shio_tool_schemas_json`; added `value_to_ruby()` free function
 
-### B1 — Fix `ToolDef` lifetime
+**Key decisions:**
+- No `mruby-json` gem — JSON parsed in Rust with `serde_json`, converted to mRuby hash literals via `value_to_ruby()`
+- `mrb_string_p` check in `glue.c` is the correct fix for inspect-wrapping; `trim_matches('"')` would corrupt strings containing quotes
+- `Arc<Mutex<ShioVm>>` shared across `spawn_blocking` clones — one VM instance, mutex-guarded
 
-Currently in `src/client.rs` (around line 62–80):
-```rust
-pub struct FunctionSpec {
-    pub name: &'static str,
-    pub description: &'static str,
-    pub parameters: serde_json::Value,
-}
-```
-
-Change both fields to owned `String`:
-```rust
-pub struct FunctionSpec {
-    pub name: String,
-    pub description: String,
-    pub parameters: serde_json::Value,
-}
-```
-
-This will break every `FunctionSpec { name: "read_file", ... }` literal in `tools.rs`
-(25 of them). Fix by adding `.into()` or `"...".to_string()` on each. The compiler
-will flag every site. **Do not skip any** — fix them all before moving on.
-
-Also update `ChatSession` in `src/chat.rs`: `tools: all_tools()` stays as-is for now.
-
-### B2 — Add `ShioVm` to `ToolExecutor`
-
-In `src/tools.rs`, add a `vm` field to `ToolExecutor`:
-
-```rust
-use std::sync::{Arc, Mutex};
-use crate::ruby::vm::ShioVm;
-
-pub struct ToolExecutor {
-    pub confirm_writes: bool,
-    pub confirm_shell: bool,
-    pub lsp: std::collections::HashMap<String, String>,
-    pub max_tool_result_chars: usize,
-    pub(crate) vm: Arc<Mutex<ShioVm>>,  // NEW
-}
-```
-
-`ToolExecutor` is currently `Clone` (used in `tui.rs` — check `tui.rs` for `executor.clone()`).
-`Arc<Mutex<ShioVm>>` is `Clone`, so this works without changes to call sites.
-
-Update `ToolExecutor::default()` and any test helper constructors to create a `ShioVm::new()`.
-`ShioVm::new()` returns `Result<ShioVm>` so use `.expect("ShioVm init failed")` in `default()`.
-
-### B3 — Add parallel dispatch behind `SHIO_USE_RUBY`
-
-In `ToolExecutor::dispatch()` (`src/tools.rs` line ~582), prepend:
-
-```rust
-fn dispatch(&self, name: &str, args: &Value) -> String {
-    if std::env::var("SHIO_USE_RUBY").is_ok() {
-        let args_json = args.to_string();
-        let result = self.vm.lock().unwrap().call_tool(name, &args_json);
-        // If the tool is registered in Ruby, it returns the result directly.
-        // If not ("unknown tool: X"), fall through to the Rust match arm.
-        if !result.starts_with("Error: unknown tool:") {
-            return result;
-        }
-    }
-    match name {
-        "read_file" => self.read_file(args),
-        // ... (existing arms unchanged)
-    }
-}
-```
-
-### B4 — Implement `parse_tool_schemas` in `vm.rs`
-
-The `shio_tool_schemas` Ruby function returns an inspect-string of a nested Ruby array.
-Rather than parsing Ruby inspect format, change the approach: have `shio_hash_to_json`
-in `prelude.rb` serialize each schema and join with a delimiter:
-
-In `prelude.rb`, add:
-```ruby
-def shio_tool_schemas_json
-  $shio_tools.map do |name, tool|
-    "{\"name\":#{shio_hash_to_json(name)}," \
-    "\"description\":#{shio_hash_to_json(tool.description)}," \
-    "\"parameters\":#{shio_hash_to_json(tool.parameters)}}"
-  end.join("\n")
-end
-```
-
-In `vm.rs`, `tool_schemas()` becomes:
-```rust
-pub fn tool_schemas(&mut self) -> Result<Vec<(String, String, serde_json::Value)>> {
-    let raw = self.eval("shio_tool_schemas_json")
-        .map_err(|e| anyhow!("shio_tool_schemas_json failed: {e}"))?;
-    // raw is one JSON object per line; empty string if no tools registered
-    if raw.trim_matches('"').is_empty() { return Ok(vec![]); }
-    raw.trim_matches('"')
-       .lines()
-       .map(|line| {
-           let v: serde_json::Value = serde_json::from_str(line)?;
-           let name = v["name"].as_str().unwrap_or("").to_string();
-           let desc = v["description"].as_str().unwrap_or("").to_string();
-           let params = v["parameters"].clone();
-           Ok((name, desc, params))
-       })
-       .collect()
-}
-```
-
-> **Note:** `shio_tool_schemas_json` returns a Ruby string (inspect-wrapped in quotes),
-> so strip the outer `"` before processing. The eval returns the `inspect` of the result,
-> which for a String is the string with outer quotes. Use `.trim_matches('"')` carefully —
-> or change `shio_mrb_eval` to return the raw string value when the result is a String,
-> rather than its `inspect`. Consider adding a `eval_raw_string` variant.
-
-### B5 — Add `tool_defs()` method to `ToolExecutor`
-
-```rust
-impl ToolExecutor {
-    /// Returns tool definitions sourced from the Ruby VM (migrated tools)
-    /// merged with the static Rust definitions (not-yet-migrated tools).
-    /// During Phase C this gradually shifts from all-Rust to all-Ruby.
-    pub fn tool_defs(&self) -> Vec<ToolDef> {
-        // Phase B: still return all_tools() — Ruby tools not yet registered
-        all_tools()
-    }
-}
-```
-
-This method will progressively take over from `all_tools()` in Phase D.
-
-### B6 — Verify Phase B
-
-```sh
-cargo test        # still passes
-SHIO_USE_RUBY=1 cargo run -- --help   # binary starts without panic
-```
+**Verified:** `cargo test` ✓ · `clippy -D warnings` ✓ · `cargo fmt` ✓ · `SHIO_USE_RUBY=1 cargo run -- --help` ✓
 
 ---
 

@@ -236,6 +236,7 @@ async fn main() -> Result<()> {
                         confirm_shell: cfg.tools.confirm_shell.unwrap_or(true),
                         lsp: cfg.lsp.servers.clone(),
                         max_tool_result_chars,
+                        ..Default::default()
                     })
                 } else {
                     eprintln!("  Tools disabled for this session.\n");

@@ -4,6 +4,7 @@ use std::ffi::{CStr, CString};
 use std::ptr;
 
 use anyhow::{Result, anyhow};
+use serde_json::Value;
 
 use super::ffi;
 
@@ -48,25 +49,46 @@ impl ShioVm {
     }
 
     /// Execute a registered tool by name with a JSON args string.
-    /// Returns the tool result string, or an error message.
+    /// Returns the tool result string, or an error message prefixed with
+    /// `"Error: unknown tool: <name>"` when the tool is not registered in Ruby
+    /// (so the caller can fall through to the Rust dispatch arm).
     pub fn call_tool(&mut self, name: &str, args_json: &str) -> String {
-        // Escape both strings for safe embedding in Ruby source.
         let safe_name = name.replace('\\', "\\\\").replace('"', "\\\"");
-        let safe_args = args_json.replace('\\', "\\\\").replace('"', "\\\"");
+        // Parse JSON on the Rust side and convert to a Ruby Hash literal with
+        // string keys ("key" => value) so mRuby tool handlers can use args["key"].
+        let ruby_args = match serde_json::from_str::<Value>(args_json) {
+            Ok(v) => value_to_ruby(&v),
+            Err(_) => "{}".to_string(),
+        };
         let code = format!(
-            "begin\n  t = $shio_tools[\"{safe_name}\"]\n  raise \"unknown tool: {safe_name}\" unless t\n  t.call({safe_args})\nrescue => e\n  \"Error: #{{e.message}}\"\nend"
+            "begin\n  t = $shio_tools[\"{safe_name}\"]\n  raise \"unknown tool: {safe_name}\" unless t\n  t.call({ruby_args})\nrescue => e\n  \"Error: #{{e.message}}\"\nend"
         );
         self.eval(&code).unwrap_or_else(|e| format!("Error: {e}"))
     }
 
-    /// Export all registered tool schemas as Vec<(name, description, params_json)>.
-    pub fn tool_schemas(&mut self) -> Result<Vec<(String, String, String)>> {
+    /// Export all registered tool schemas as `Vec<(name, description, parameters)>`.
+    ///
+    /// Calls the Ruby helper `shio_tool_schemas_json` which returns one JSON
+    /// object per line (newline-joined).  Each object has keys `name`,
+    /// `description`, and `parameters`.  Returns an empty vec when no tools
+    /// are loaded yet.
+    pub fn tool_schemas(&mut self) -> Result<Vec<(String, String, serde_json::Value)>> {
         let raw = self
-            .eval("shio_tool_schemas.inspect")
-            .map_err(|e| anyhow!("shio_tool_schemas failed: {e}"))?;
-        // shio_tool_schemas returns an Array of [name, description, params_json].
-        // In Phase A this returns [] since no tools are loaded yet.
-        parse_tool_schemas(&raw)
+            .eval("shio_tool_schemas_json")
+            .map_err(|e| anyhow!("shio_tool_schemas_json failed: {e}"))?;
+        if raw.is_empty() {
+            return Ok(vec![]);
+        }
+        raw.lines()
+            .map(|line| {
+                let v: serde_json::Value = serde_json::from_str(line)
+                    .map_err(|e| anyhow!("failed to parse tool schema line: {e}\nline: {line}"))?;
+                let name = v["name"].as_str().unwrap_or("").to_string();
+                let desc = v["description"].as_str().unwrap_or("").to_string();
+                let params = v["parameters"].clone();
+                Ok((name, desc, params))
+            })
+            .collect()
     }
 
     fn load_builtin_tools(&mut self) -> Result<()> {
@@ -104,7 +126,38 @@ impl Drop for ShioVm {
     }
 }
 
-fn parse_tool_schemas(_raw: &str) -> Result<Vec<(String, String, String)>> {
-    // TODO: implement in Phase B when tool_schemas() is actually used.
-    Ok(vec![])
+/// Convert a `serde_json::Value` into a Ruby literal that mRuby can eval.
+///
+/// Objects become `{"key" => value}` Hash literals with string keys so that
+/// tool handler blocks can look up arguments with `args["key"]`.
+fn value_to_ruby(v: &Value) -> String {
+    match v {
+        Value::Object(map) => {
+            let pairs: Vec<String> = map
+                .iter()
+                .map(|(k, v)| {
+                    format!(
+                        "{} => {}",
+                        value_to_ruby(&Value::String(k.clone())),
+                        value_to_ruby(v)
+                    )
+                })
+                .collect();
+            format!("{{{}}}", pairs.join(", "))
+        }
+        Value::Array(arr) => {
+            let items: Vec<String> = arr.iter().map(value_to_ruby).collect();
+            format!("[{}]", items.join(", "))
+        }
+        Value::String(s) => format!(
+            "\"{}\"",
+            s.replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('\n', "\\n")
+                .replace('\r', "\\r")
+        ),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => "nil".to_string(),
+    }
 }

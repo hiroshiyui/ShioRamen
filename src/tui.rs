@@ -1682,7 +1682,7 @@ async fn run_agent_loop(
             plan_mode_tools.get_or_insert_with(|| {
                 tools
                     .iter()
-                    .filter(|t| PLAN_MODE_ALLOWED.contains(&t.function.name))
+                    .filter(|t| PLAN_MODE_ALLOWED.contains(&t.function.name.as_str()))
                     .cloned()
                     .collect()
             })
@@ -1810,6 +1810,7 @@ async fn run_agent_loop(
                             confirm_shell: false,
                             lsp: executor.lsp.clone(),
                             max_tool_result_chars: executor.max_tool_result_chars,
+                            vm: executor.vm.clone(),
                         };
                         let call2 = call.clone();
                         tokio::task::spawn_blocking(move || exec.execute_quiet(&call2))

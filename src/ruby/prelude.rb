@@ -32,6 +32,18 @@ def shio_tool_schemas
   end
 end
 
+# Called by ShioVm::tool_schemas() to export all registered tool definitions
+# as one JSON object per line (newline-joined).  Each line is a complete JSON
+# object: {"name":..., "description":..., "parameters":...}.
+# Returns an empty string when no tools are registered.
+def shio_tool_schemas_json
+  $shio_tools.map do |name, tool|
+    "{\"name\":#{shio_hash_to_json(name)}," \
+    "\"description\":#{shio_hash_to_json(tool.description)}," \
+    "\"parameters\":#{shio_hash_to_json(tool.parameters)}}"
+  end.join("\n")
+end
+
 # Minimal JSON serializer — handles String, Integer, Float, TrueClass,
 # FalseClass, NilClass, Array, Hash only (sufficient for JSON Schema objects).
 def shio_hash_to_json(val)

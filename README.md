@@ -21,6 +21,7 @@ Runs entirely offline — no cloud API, no data leaving your machine.
 ## Requirements
 
 - Rust (stable) — see [`rust-toolchain.toml`](rust-toolchain.toml)
+- Ruby + rake (for building the embedded mRuby VM — `rake` must be on `$PATH`)
 - A built `llama-server` binary in `./bin/` (see [Build llama.cpp](#build-llamacpp))
 - A GGUF model file (see [`shio pull`](#pull))
 - NVIDIA GPU recommended; CPU-only works but is slow
@@ -256,6 +257,7 @@ Check that all required components are present and working.
 ```
 shio doctor [OPTIONS]
 
+Options:
   -m, --model <MODEL>        GGUF model file to verify  [config: chat.model]
       --server-bin <PATH>    llama-server binary to check  [default: ./bin/llama-server]
       --host <HOST>          Server host to probe  [default: 127.0.0.1]
@@ -306,6 +308,7 @@ cont_batching = true
 [chat]
 model         = "./models/model.gguf"
 temperature   = 0.7
+show_thinking = true                   # show <think>…</think> blocks from reasoning models (dimmed); default true
 system_prompt = "..."                  # optional: override the built-in system prompt
 
 [paths]

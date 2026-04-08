@@ -13,12 +13,17 @@
 
 /* Evaluate Ruby source code.
  *
- * On success:  returns a pointer to a NUL-terminated inspect-string of the
- *              result value (owned by the mRuby GC — valid until next GC).
+ * On success:  If the result is a Ruby String, returns a pointer to its raw
+ *              NUL-terminated bytes (owned by the mRuby GC).
+ *              For all other result types, returns the inspect-string.
  *              *error_out is set to NULL.
  * On failure:  returns NULL.
  *              *error_out is set to a NUL-terminated error message string
  *              (also owned by the mRuby GC).
+ *
+ * Returning String results raw (not inspect-wrapped) means:
+ *   - Tool handler results arrive in Rust without surrounding quotes.
+ *   - shio_tool_schemas_json output can be split on "\n" directly.
  *
  * The caller must copy either string before triggering another mRuby
  * allocation or GC cycle.
@@ -32,6 +37,9 @@ const char* shio_mrb_eval(mrb_state* mrb, const char* code, const char** error_o
         *error_out = mrb_string_value_cstr(mrb, &msg);
         mrb->exc = NULL;
         return NULL;
+    }
+    if (mrb_string_p(result)) {
+        return mrb_string_value_cstr(mrb, &result);
     }
     mrb_value inspected = mrb_inspect(mrb, result);
     return mrb_string_value_cstr(mrb, &inspected);
