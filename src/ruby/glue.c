@@ -59,6 +59,7 @@ extern const char* shio_native_glob(const char* pattern, const char** error_out)
 extern const char* shio_native_grep(const char* pattern, const char* path, int case_insensitive, const char** error_out);
 extern const char* shio_native_fetch_url(const char* url, int max_chars, const char** error_out);
 extern const char* shio_native_web_search(const char* query, int max_results, const char** error_out);
+extern const char* shio_native_run_shell(const char* cmd, const char** error_out);
 extern const char* shio_native_lsp_query(const char* op, const char* file, int line, int col, const char** error_out);
 
 /* ── mRuby shim: Shio.current_dir ─────────────────────────────────────────── */
@@ -210,6 +211,18 @@ static mrb_value shio_rb_web_search(mrb_state* mrb, mrb_value self) {
     return mrb_str_new_cstr(mrb, result);
 }
 
+/* ── mRuby shim: Shio.run_shell(cmd) ─────────────────────────────────────── */
+
+static mrb_value shio_rb_run_shell(mrb_state* mrb, mrb_value self) {
+    (void)self;
+    const char* cmd_arg;
+    mrb_get_args(mrb, "z", &cmd_arg);
+    const char* err = NULL;
+    const char* result = shio_native_run_shell(cmd_arg, &err);
+    if (err) mrb_raise(mrb, E_RUNTIME_ERROR, err);
+    return mrb_str_new_cstr(mrb, result);
+}
+
 /* ── mRuby shim: Shio.lsp_query(op, file, line, col) ─────────────────────── */
 
 static mrb_value shio_rb_lsp_query(mrb_state* mrb, mrb_value self) {
@@ -240,5 +253,6 @@ void shio_register_native(mrb_state* mrb) {
     mrb_define_module_function(mrb, shio, "grep",           shio_rb_grep,           MRB_ARGS_REQ(3));
     mrb_define_module_function(mrb, shio, "fetch_url",      shio_rb_fetch_url,      MRB_ARGS_REQ(2));
     mrb_define_module_function(mrb, shio, "web_search",     shio_rb_web_search,     MRB_ARGS_REQ(2));
+    mrb_define_module_function(mrb, shio, "run_shell",       shio_rb_run_shell,      MRB_ARGS_REQ(1));
     mrb_define_module_function(mrb, shio, "lsp_query",      shio_rb_lsp_query,      MRB_ARGS_REQ(4));
 }

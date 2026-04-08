@@ -605,6 +605,49 @@ pub unsafe extern "C" fn shio_native_web_search(
     set_result(out.trim_end().to_string())
 }
 
+// ── Shio.run_shell(cmd) ──────────────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn shio_native_run_shell(
+    cmd: *const c_char,
+    error_out: *mut *const c_char,
+) -> *const c_char {
+    let _ = error_out; // errors returned as strings, not C errors
+    let cmd = unsafe { CStr::from_ptr(cmd) }.to_string_lossy();
+    match std::process::Command::new("sh")
+        .args(["-c", &*cmd])
+        .output()
+    {
+        Err(e) => set_result(format!("Error running command: {e}")),
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let mut result = String::new();
+            if !stdout.is_empty() {
+                result.push_str(&stdout);
+            }
+            if !stderr.is_empty() {
+                if !result.is_empty() {
+                    result.push('\n');
+                }
+                result.push_str("[stderr]\n");
+                result.push_str(&stderr);
+            }
+            if !out.status.success() {
+                result.push_str(&format!(
+                    "\n[exit code: {}]",
+                    out.status.code().unwrap_or(-1)
+                ));
+            }
+            if result.is_empty() {
+                set_result("(no output)".to_string())
+            } else {
+                set_result(result)
+            }
+        }
+    }
+}
+
 // ── Shio.lsp_query(operation, file, line, col) ───────────────────────────────
 
 #[unsafe(no_mangle)]

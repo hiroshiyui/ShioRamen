@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::client::{LlamaClient, Message, ToolDef};
 use crate::config::SkillDef;
-use crate::tools::{ToolExecutor, all_tools};
+use crate::tools::ToolExecutor;
 
 pub const DEFAULT_SYSTEM_PROMPT: &str = "\
 You are ShioRamen, a sharp, focused local coding assistant running entirely offline. \
@@ -84,12 +84,13 @@ impl ChatSession {
         ctx_size: u32,
         show_thinking: bool,
     ) -> Self {
+        let tools = executor.as_ref().map_or_else(Vec::new, |e| e.tool_defs());
         Self {
             client,
             messages: vec![Message::system(system_prompt)],
             temperature,
             executor,
-            tools: all_tools(),
+            tools,
             skills,
             ctx_size,
             show_thinking,
@@ -131,11 +132,11 @@ mod tests {
     }
 
     #[test]
-    fn new_session_without_executor_has_tools_but_no_executor() {
+    fn new_session_without_executor_has_no_tools_and_no_executor() {
         let session = make_session(None);
         assert!(session.executor.is_none());
-        // Tools are always populated (used by /tools command)
-        assert!(!session.tools.is_empty());
+        // No executor → no VM → tools list is empty.
+        assert!(session.tools.is_empty());
     }
 
     #[test]

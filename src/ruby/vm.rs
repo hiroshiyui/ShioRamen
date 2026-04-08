@@ -165,6 +165,10 @@ impl ShioVm {
                 "patch_file",
                 include_str!("../../tools/builtin/patch_file.rb"),
             ),
+            (
+                "run_shell",
+                include_str!("../../tools/builtin/run_shell.rb"),
+            ),
             ("lsp", include_str!("../../tools/builtin/lsp.rb")),
             (
                 "enter_plan_mode",
