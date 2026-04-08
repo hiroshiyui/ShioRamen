@@ -16,18 +16,18 @@ Replaced `chat_agent` (non-streaming) with `chat_agent_stream` which streams
 tokens to the TUI via `StreamToken` events while accumulating tool-call deltas
 internally. The user now sees reasoning text in real-time during agentic turns.
 
-## 3. Session persistence
+## ~~3. Session persistence~~ ✓ DONE
 
-Conversations are lost on exit. Add `~/.local/share/shio/sessions/` with
-JSON-serialized message history (auto-saved, loadable with `shio chat --resume`)
-for multi-session workflows.
+Sessions auto-save to `~/.local/share/shio/sessions/latest.json` on exit.
+Resume with `shio chat --resume`. The system prompt is always refreshed
+from the current config; only user/assistant/tool messages are restored.
 
-## 4. Model-aware prompt tuning
+## ~~4. Model-aware prompt tuning~~ ✓ DONE
 
-`DEFAULT_SYSTEM_PROMPT` is one-size-fits-all, but tool-call formatting varies
-between model families (Qwen, Gemma, Llama, etc.). A `[chat].prompt_style` config
-key that selects a prompt template per model family could reduce the "model doesn't
-call tools correctly" friction.
+Added `[chat].prompt_style` config key with three built-in styles: `"full"`
+(detailed, for 30B+), `"concise"` (mid-size 7B–30B), `"minimal"` (< 7B).
+`"auto"` (default) detects from model filename parameter count. Explicit
+`system_prompt` always takes precedence.
 
 ## 5. Verify mRuby VM in `shio doctor`
 

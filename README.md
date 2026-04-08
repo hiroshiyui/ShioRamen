@@ -152,6 +152,7 @@ Options:
       --no-spawn                     Connect to an already-running server
       --temp <TEMP>                  Sampling temperature  [default: 0.7]
       --no-tools                     Disable tool use for this session
+      --resume                       Resume the most recent saved session
       (all serve options also apply)
 ```
 

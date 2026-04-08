@@ -47,6 +47,11 @@ pub struct ChatSection {
     /// Show `<think>…</think>` blocks from reasoning models in a dimmed style.
     /// Default: true.
     pub show_thinking: Option<bool>,
+    /// System prompt style: "full" (default, detailed tool guidance), "concise"
+    /// (shorter for capable mid-size models), "minimal" (bare essentials for
+    /// small models), or "auto" (detect from model filename).
+    /// Ignored when `system_prompt` is set explicitly.
+    pub prompt_style: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]

@@ -12,6 +12,7 @@ mod lsp;
 mod pull;
 mod ruby;
 mod server;
+mod session;
 mod tools;
 mod tui;
 
@@ -189,6 +190,10 @@ struct ChatArgs {
     /// Disable tool use for this session [config: tools.enabled]
     #[arg(long)]
     no_tools: bool,
+
+    /// Resume the most recent saved session
+    #[arg(long)]
+    resume: bool,
 }
 
 #[tokio::main]
@@ -249,7 +254,7 @@ async fn main() -> Result<()> {
             };
             let client = LlamaClient::new(server.url.clone());
             let show_thinking = cfg.chat.show_thinking.unwrap_or(true);
-            let session = ChatSession::new(
+            let mut session = ChatSession::new(
                 client,
                 temp,
                 system_prompt,
@@ -258,6 +263,34 @@ async fn main() -> Result<()> {
                 ctx_size,
                 show_thinking,
             );
+
+            // Resume a previous session if requested.
+            if args.resume {
+                match session::find_latest() {
+                    Ok(Some(path)) => {
+                        match session::load(&path) {
+                            Ok(msgs) => {
+                                let count = msgs.len().saturating_sub(1); // exclude system prompt
+                                session.resume(msgs);
+                                eprintln!(
+                                    "  Resumed session from {} ({count} message(s))\n",
+                                    path.display()
+                                );
+                            }
+                            Err(e) => {
+                                eprintln!("  ⚠️  Cannot resume session: {e}\n");
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        eprintln!("  No saved session found.\n");
+                    }
+                    Err(e) => {
+                        eprintln!("  ⚠️  Cannot find sessions: {e}\n");
+                    }
+                }
+            }
+
             session.run().await?;
             drop(server);
         }
@@ -288,15 +321,34 @@ async fn main() -> Result<()> {
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
-/// Resolve the effective system prompt: config file override → built-in default,
-/// then augmented with any AGENTS.md files found in the working directory tree.
+/// Resolve the effective system prompt:
+/// 1. Explicit `system_prompt` in config → use verbatim.
+/// 2. Otherwise, select a built-in style via `prompt_style`:
+///    - `"full"` / `"concise"` / `"minimal"` → use that style directly
+///    - `"auto"` (default) → detect from model filename
+/// 3. Augment with any AGENTS.md files found in the working directory tree.
 pub(crate) fn resolve_system_prompt(cfg: &ShioConfig) -> String {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let base = cfg
-        .chat
-        .system_prompt
-        .clone()
-        .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string());
+    let base = if let Some(custom) = &cfg.chat.system_prompt {
+        custom.clone()
+    } else {
+        let style_name = cfg.chat.prompt_style.as_deref().unwrap_or("auto");
+        let style = if style_name == "auto" {
+            // Auto-detect from model filename.
+            let model_str = cfg
+                .chat
+                .model
+                .as_ref()
+                .and_then(|p| p.to_str())
+                .unwrap_or("");
+            chat::detect_prompt_style(model_str)
+        } else {
+            style_name
+        };
+        chat::prompt_for_style(style)
+            .unwrap_or(DEFAULT_SYSTEM_PROMPT)
+            .to_string()
+    };
     agents::augment_system_prompt(&base, &cwd)
 }
 

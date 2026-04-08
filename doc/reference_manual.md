@@ -27,6 +27,7 @@ src/
   doctor.rs                         ← `shio doctor` component health check
   pull.rs                           ← `shio pull` GGUF model download
   init.rs                           ← `shio init` config scaffolding
+  session.rs                        ← session save/load/find (auto-save on exit)
   ruby/
     mod.rs
     ffi.rs                          ← extern "C": mrb_open/close, shio_mrb_eval

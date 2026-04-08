@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 /// A single message in the conversation. `content` is None when the assistant
 /// responds with tool_calls instead of text. `tool_call_id` is set for tool-
 /// result messages (role = "tool").
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Message {
     pub role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -69,6 +69,7 @@ pub struct ToolCallItem {
 }
 
 /// The function name + JSON-encoded arguments inside a ToolCallItem.
+#[allow(clippy::derived_hash_with_manual_eq)]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ToolCallFunction {
     pub name: String,

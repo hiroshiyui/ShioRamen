@@ -20,6 +20,10 @@ model          = "./models/gemma-4-e4b-it-Q8_0.gguf"
 temperature    = 0.1   # Low temperature for precise, deterministic coding responses
 show_thinking  = true  # Show <think>…</think> blocks from reasoning models (dimmed); set false to hide them
 
+# System prompt style: "auto" (detect from model size), "full" (30B+),
+# "concise" (7B–30B), "minimal" (< 7B). Ignored when system_prompt is set.
+# prompt_style = "auto"
+
 system_prompt = """
 You are ShioRamen, a sharp, focused local coding assistant running entirely offline. \
 Be concise and accurate. Provide working code with minimal prose unless the user asks \

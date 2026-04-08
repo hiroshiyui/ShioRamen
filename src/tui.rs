@@ -306,6 +306,14 @@ async fn run_loop(
         h.abort();
     }
 
+    // Auto-save session to disk (best-effort — don't fail the exit).
+    if app.messages.len() > 1
+        && let Ok(path) = crate::session::latest_path()
+        && let Err(e) = crate::session::save(&app.messages, &path)
+    {
+        eprintln!("⚠️  Could not save session: {e}");
+    }
+
     Ok(())
 }
 

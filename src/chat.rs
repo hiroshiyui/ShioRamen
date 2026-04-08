@@ -6,7 +6,11 @@ use crate::client::{LlamaClient, Message, ToolDef};
 use crate::config::SkillDef;
 use crate::tools::ToolExecutor;
 
-pub const DEFAULT_SYSTEM_PROMPT: &str = "\
+// ── System prompt styles ─────────────────────────────────────────────────────
+
+/// Full prompt — detailed tool-by-tool guidance. Best for large, capable models
+/// (30B+ parameters) with wide context windows.
+pub const PROMPT_FULL: &str = "\
 You are ShioRamen, a sharp, focused local coding assistant running entirely offline. \
 Be concise and accurate. Provide working code with minimal prose unless the user asks \
 for explanation. Always fence code blocks with the correct language identifier. \
@@ -58,6 +62,104 @@ When you decide to call a tool, call it immediately — do not emit a \
 Announcing an action without performing it forces the user to prompt \
 you again to actually do it.";
 
+/// Concise prompt — core rules without per-tool details. Good for capable
+/// mid-size models (7B–30B) where context is more constrained.
+pub const PROMPT_CONCISE: &str = "\
+You are ShioRamen, a local coding assistant running offline. Be concise. \
+Provide working code with correct language fences. Prefer standard library solutions.\n\n\
+Always read a file before editing it. Use patch_file for targeted edits, not write_file. \
+Use read_file_range for large files. Call get_working_directory before constructing paths. \
+Use lsp for type info, definitions, and diagnostics instead of guessing from source text. \
+Use fetch_url when the user shares a URL. Use web_search + fetch_url to find documentation. \
+Use save_memory to persist important project facts across sessions.\n\n\
+Call tools immediately — do not announce actions before performing them. \
+Use plain Unicode (→, ≤, ≠) instead of LaTeX notation.";
+
+/// Minimal prompt — bare essentials for small models (< 7B) where every token
+/// of context matters.
+pub const PROMPT_MINIMAL: &str = "\
+You are ShioRamen, a local coding assistant. Be concise. Use tools to read/write files \
+and run commands. Always read before editing. Use patch_file for edits. \
+Call tools immediately without announcing them.";
+
+/// Backward-compatible alias.
+pub const DEFAULT_SYSTEM_PROMPT: &str = PROMPT_FULL;
+
+/// Select the system prompt for a given style name.
+/// Returns `None` for unrecognised names so the caller can fall back.
+pub fn prompt_for_style(style: &str) -> Option<&'static str> {
+    match style {
+        "full" => Some(PROMPT_FULL),
+        "concise" => Some(PROMPT_CONCISE),
+        "minimal" => Some(PROMPT_MINIMAL),
+        _ => None,
+    }
+}
+
+/// Guess the best prompt style from a model filename.
+///
+/// Large/capable models → "full"; mid-size → "concise"; small → "minimal".
+/// Falls back to "full" for unrecognised names.
+pub fn detect_prompt_style(model_path: &str) -> &'static str {
+    let name = model_path.to_ascii_lowercase();
+
+    // Extract parameter count from common patterns like "7b", "14b", "70b", "4b".
+    let param_b = extract_param_size(&name);
+
+    if let Some(b) = param_b {
+        return if b >= 20.0 {
+            "full"
+        } else if b >= 4.0 {
+            "concise"
+        } else {
+            "minimal"
+        };
+    }
+
+    // If we can't determine size, default to full.
+    "full"
+}
+
+/// Try to extract a parameter-count number (in billions) from a model name.
+/// Matches patterns like "7b", "14B", "7B-Instruct", "4b-it", "26b-q4".
+fn extract_param_size(name: &str) -> Option<f64> {
+    // Match a number (possibly with decimal) followed by 'b', at a word boundary.
+    // Examples: "7b", "14b", "1.5b", "26b", "70b", "0.5b"
+    let bytes = name.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // Find a digit.
+        if bytes[i].is_ascii_digit() {
+            let start = i;
+            // Advance past digits and an optional decimal point + more digits.
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            if i < bytes.len() && bytes[i] == b'.' {
+                i += 1;
+                while i < bytes.len() && bytes[i].is_ascii_digit() {
+                    i += 1;
+                }
+            }
+            // Check if followed by 'b' (case-insensitive) and not by more letters
+            // (to avoid matching "32768" from context sizes).
+            if i < bytes.len()
+                && bytes[i].eq_ignore_ascii_case(&b'b')
+                && (i + 1 >= bytes.len()
+                    || !bytes[i + 1].is_ascii_alphabetic()
+                    || matches!(bytes[i + 1], b'-' | b'_' | b'.'))
+            {
+                let num_str = &name[start..i];
+                if let Ok(n) = num_str.parse::<f64>() {
+                    return Some(n);
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
 pub struct ChatSession {
     pub(crate) client: LlamaClient,
     pub(crate) messages: Vec<Message>,
@@ -95,6 +197,16 @@ impl ChatSession {
             ctx_size,
             show_thinking,
         }
+    }
+
+    /// Replace the message history with a previously saved session.
+    /// The first message (system prompt) is always kept from the current
+    /// session so config changes take effect; saved messages from index 1
+    /// onward are appended.
+    pub fn resume(&mut self, saved: Vec<crate::client::Message>) {
+        // Skip the saved system prompt (index 0) — use the current one.
+        let history = saved.into_iter().skip(1).collect::<Vec<_>>();
+        self.messages.extend(history);
     }
 
     /// Start the interactive session. Consumes `self` and hands ownership to the TUI.
@@ -172,5 +284,101 @@ mod tests {
         let session = ChatSession::new(client, 0.7, "sys".to_string(), None, skills, 0, true);
         assert_eq!(session.skills.len(), 1);
         assert!(session.skills.contains_key("commit"));
+    }
+
+    // ── prompt_for_style ─────────────────────────────────────────────────────
+
+    #[test]
+    fn prompt_for_style_returns_known_styles() {
+        assert!(prompt_for_style("full").is_some());
+        assert!(prompt_for_style("concise").is_some());
+        assert!(prompt_for_style("minimal").is_some());
+    }
+
+    #[test]
+    fn prompt_for_style_returns_none_for_unknown() {
+        assert!(prompt_for_style("turbo").is_none());
+    }
+
+    #[test]
+    fn prompt_styles_differ_in_length() {
+        let full = prompt_for_style("full").unwrap();
+        let concise = prompt_for_style("concise").unwrap();
+        let minimal = prompt_for_style("minimal").unwrap();
+        assert!(full.len() > concise.len());
+        assert!(concise.len() > minimal.len());
+    }
+
+    // ── detect_prompt_style ──────────────────────────────────────────────────
+
+    #[test]
+    fn detect_large_model_gets_full() {
+        assert_eq!(
+            detect_prompt_style("Qwen2.5-Coder-32B-Instruct-Q4_K_M.gguf"),
+            "full"
+        );
+        assert_eq!(detect_prompt_style("llama-70b-chat.gguf"), "full");
+    }
+
+    #[test]
+    fn detect_mid_model_gets_concise() {
+        assert_eq!(
+            detect_prompt_style("Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf"),
+            "concise"
+        );
+        assert_eq!(detect_prompt_style("gemma-4-12b-it-Q8_0.gguf"), "concise");
+        assert_eq!(detect_prompt_style("codestral-14b.gguf"), "concise");
+    }
+
+    #[test]
+    fn detect_small_model_gets_minimal() {
+        assert_eq!(
+            detect_prompt_style("phi-3-mini-3.8b-instruct.gguf"),
+            "minimal"
+        );
+        assert_eq!(detect_prompt_style("qwen2.5-1.5b-coder.gguf"), "minimal");
+    }
+
+    #[test]
+    fn detect_unknown_model_gets_full() {
+        assert_eq!(detect_prompt_style("mystery-model.gguf"), "full");
+    }
+
+    #[test]
+    fn detect_empty_path_gets_full() {
+        assert_eq!(detect_prompt_style(""), "full");
+    }
+
+    // ── extract_param_size ───────────────────────────────────────────────────
+
+    #[test]
+    fn extract_param_size_common_patterns() {
+        assert_eq!(extract_param_size("qwen-7b-instruct"), Some(7.0));
+        assert_eq!(extract_param_size("llama-70b"), Some(70.0));
+        assert_eq!(extract_param_size("phi-3.8b"), Some(3.8));
+        assert_eq!(extract_param_size("gemma-4-26b-q4"), Some(26.0));
+    }
+
+    #[test]
+    fn extract_param_size_no_match() {
+        assert_eq!(extract_param_size("mystery-model.gguf"), None);
+        assert_eq!(extract_param_size(""), None);
+    }
+
+    // ── resume ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn resume_skips_saved_system_prompt() {
+        let mut session = make_session(None);
+        let saved = vec![
+            Message::system("old system prompt"),
+            Message::user("hello"),
+            Message::assistant("hi"),
+        ];
+        session.resume(saved);
+        // System prompt should be the current one, not the saved one.
+        assert_eq!(session.messages[0].content.as_deref(), Some("be helpful"));
+        assert_eq!(session.messages.len(), 3); // system + user + assistant
+        assert_eq!(session.messages[1].role, "user");
     }
 }
