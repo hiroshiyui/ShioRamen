@@ -240,10 +240,10 @@ Most complex tool. The Rust implementation has three fallback strategies
 2. Line-by-line match with `trim_end()` tolerance
 3. Anchor match for large blocks (≥4 lines: first 2 + last 2 must match exactly)
 
-Keep `strip_line_number_prefix` in Rust as `Shio.strip_line_prefix(s)` — it handles
-multi-byte box-drawing characters (`│`) and the logic is fiddly. Move the three-level
-fallback orchestration to Ruby, calling `Shio.read_file`, `Shio.strip_line_prefix`,
-and `Shio.write_file`.
+No `Shio.strip_line_prefix` needed — `read_file_range` no longer emits `│` prefixes
+(changed in commit b86125d), so `old_str`/`new_str` will never carry them. Drop
+`strip_line_number_prefix` entirely when removing the Rust handler. Move the three-level
+fallback orchestration to Ruby, calling `Shio.read_file` and `Shio.write_file`.
 
 **Gotcha:** The existing tests for `patch_file` are extensive. Run them at each
 intermediate step to catch regressions before removing the Rust handler.
@@ -340,7 +340,6 @@ tools/builtin/
 | `Shio.http_get(url, max_chars)` | reqwest blocking GET | SSRF check + HTML strip inside Rust |
 | `Shio.current_dir()` | `env::current_dir()` | |
 | `Shio.lsp_query(op, file, line, col)` | `crate::lsp::query()` | |
-| `Shio.strip_line_prefix(s)` | `strip_line_number_prefix()` | handles `│` box-drawing chars |
 | `Shio.grep(pattern, path, case_insensitive)` | regex walk | skips .git/target/node_modules/vendor |
 | `Shio.glob(pattern, base)` | glob walk | returns newline-joined paths |
 
