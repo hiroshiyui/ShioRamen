@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.2.0] — 2026-04-10
+
+### Added
+- (tui): `/new` command — clears in-memory history and removes the saved session file (`~/.local/share/shio/sessions/latest.json`) for a fully fresh start
+- (tui): `/compact` command — summarizes the conversation via the model and replaces history with the summary, freeing context
+- (tui): `/model` command — fetches `/props` from llama-server and displays model name, context size, slots, and sampling defaults
+- (tui): context-usage indicator — fixed-width 10-cell bar in the title bar (green ▒ → yellow ▒ → red ▓) with percentage label
+- (tui): auto-compact — when context usage reaches 80% after a turn, the conversation is summarized in the background; the dispatch-time drop-old-messages safety net is reserved for ≥95%
+- (client): `LlamaClient::props()` — wrapper around the llama-server `/props` endpoint with `ServerProps` / `GenerationSettings` types
+
+### Fixed
+- (tui): `/compact`, `/stats`, `/model`, and `/include` no longer block the event loop — work runs on `tokio::spawn` and results flow back through the existing `event_tx` queue, so frames keep drawing and `Esc`/scroll keys still work
+- (tui): `/compact` and `/include` now refuse to start while another task is in flight, preventing concurrent mutations of `app.messages`
+- (tui): avoid doubling token count in tool-result nudge
+- (tui): fix panic on multi-byte chars and tool result visibility
+
+### Documentation
+- Move screenshots into `doc/` directory and update README
+
+### Maintenance
+- Test count: 350 (+1)
+
 ## [v1.1.0] — 2026-04-08
 
 ### Added
