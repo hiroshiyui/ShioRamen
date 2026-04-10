@@ -54,6 +54,21 @@ enum TuiEvent {
     PlanModeChanged(bool),
     /// Auto-compact finished; carries the summary text (Ok) or error (Err).
     AutoCompactDone(Result<String, String>),
+    /// A background command (e.g. /stats, /model) finished and produced text
+    /// to display.  `Ok` is rendered as an info entry, `Err` as an error.
+    BackgroundInfo(Result<String, String>),
+    /// `/include` finished walking the filesystem.  On success the handler
+    /// pushes the file blocks into `app.messages` and emits a summary.
+    IncludeResult(Result<IncludeOutcome, String>),
+}
+
+/// Result of a successful `/include` walk, prepared off the main loop so the
+/// handler only has to push it onto the conversation.
+struct IncludeOutcome {
+    path_str: String,
+    content: String,
+    count: usize,
+    total_bytes: usize,
 }
 
 // ── Chat display ──────────────────────────────────────────────────────────────
@@ -1414,35 +1429,15 @@ async fn submit(app: &mut App) {
             return;
         }
         "/compact" => {
-            cmd_compact(app).await;
+            cmd_compact(app);
             return;
         }
         "/model" => {
-            cmd_model(app).await;
+            cmd_model(app);
             return;
         }
         "/stats" => {
-            match app.client.slots().await {
-                Ok(slots) => {
-                    let lines: Vec<String> = slots
-                        .iter()
-                        .map(|s| {
-                            let state = if s.is_processing { "busy" } else { "idle" };
-                            let pct = if s.n_ctx > 0 {
-                                s.n_past * 100 / s.n_ctx
-                            } else {
-                                0
-                            };
-                            format!(
-                                "slot {}: {state}  {}/{} tokens used ({}%)",
-                                s.id, s.n_past, s.n_ctx, pct
-                            )
-                        })
-                        .collect();
-                    app.push_info(&lines.join("\n"));
-                }
-                Err(e) => app.push_entry(EntryKind::Error, &format!("stats: {e}")),
-            }
+            cmd_stats(app);
             return;
         }
         "/tools" => {
@@ -1478,7 +1473,7 @@ async fn submit(app: &mut App) {
         }
         _ if input.starts_with("/include ") => {
             let path_str = input["/include ".len()..].trim();
-            cmd_include(app, path_str).await;
+            cmd_include(app, path_str);
             return;
         }
         _ => {}
@@ -1507,49 +1502,85 @@ async fn submit(app: &mut App) {
     dispatch_turn(app);
 }
 
-async fn cmd_include(app: &mut App, path_str: &str) {
-    let path_buf = std::path::PathBuf::from(path_str);
-    let result = tokio::task::spawn_blocking(move || context::collect(&path_buf)).await;
-    let result = match result {
-        Ok(inner) => inner,
-        Err(e) => {
-            app.push_entry(EntryKind::Error, &format!("include: {e}"));
-            return;
-        }
-    };
-    match result {
-        Err(e) => {
-            app.push_entry(EntryKind::Error, &format!("include: {e}"));
-        }
-        Ok(ref files) if files.is_empty() => {
-            app.push_info(&format!("No source files found in {path_str}"));
-        }
-        Ok(files) => {
-            let count = files.len();
-            let total_bytes: usize = files.iter().map(|(_, c)| c.len()).sum();
-            let content = context::format_as_blocks(&files);
-            app.messages.push(Message::user(&content));
-            app.messages.push(Message::assistant(format!(
-                "Understood. I've loaded {count} file(s) and am ready for your questions.",
-            )));
-            app.push_info(&format!("Included {count} file(s) from {path_str}"));
-            if total_bytes > 512 * 1024 {
-                app.push_entry(
-                    EntryKind::Info,
-                    &format!(
-                        "Warning: {:.0} KB of context injected.",
-                        total_bytes as f64 / 1024.0
-                    ),
-                );
-            }
-        }
+fn cmd_include(app: &mut App, path_str: &str) {
+    // /include mutates app.messages, so it must serialize against any other
+    // task that might also touch the conversation (model turn, /compact).
+    if !matches!(app.status, AppStatus::Idle) {
+        app.push_info("Busy — wait for the current task to finish, then retry /include.");
+        return;
     }
+
+    app.push_info(&format!("Including {path_str}…"));
+    app.status = AppStatus::Waiting;
+    app.anim_frame = 0;
+
+    let path_str = path_str.to_string();
+    let path_buf = std::path::PathBuf::from(&path_str);
+    let tx = app.event_tx.clone();
+    tokio::spawn(async move {
+        // The walk + read happens on a blocking thread, but the surrounding
+        // task is independent of the main event loop, so the TUI keeps drawing.
+        let walk = tokio::task::spawn_blocking(move || context::collect(&path_buf)).await;
+        let ev = match walk {
+            Err(e) => TuiEvent::IncludeResult(Err(format!("include: {e}"))),
+            Ok(Err(e)) => TuiEvent::IncludeResult(Err(format!("include: {e}"))),
+            Ok(Ok(files)) => {
+                let count = files.len();
+                let total_bytes: usize = files.iter().map(|(_, c)| c.len()).sum();
+                let content = context::format_as_blocks(&files);
+                TuiEvent::IncludeResult(Ok(IncludeOutcome {
+                    path_str,
+                    content,
+                    count,
+                    total_bytes,
+                }))
+            }
+        };
+        let _ = tx.send(ev);
+    });
 }
 
-async fn cmd_compact(app: &mut App) {
+fn cmd_stats(app: &mut App) {
+    let client = app.client.clone();
+    let tx = app.event_tx.clone();
+    tokio::spawn(async move {
+        let ev = match client.slots().await {
+            Ok(slots) => {
+                let lines: Vec<String> = slots
+                    .iter()
+                    .map(|s| {
+                        let state = if s.is_processing { "busy" } else { "idle" };
+                        let pct = if s.n_ctx > 0 {
+                            s.n_past * 100 / s.n_ctx
+                        } else {
+                            0
+                        };
+                        format!(
+                            "slot {}: {state}  {}/{} tokens used ({}%)",
+                            s.id, s.n_past, s.n_ctx, pct
+                        )
+                    })
+                    .collect();
+                TuiEvent::BackgroundInfo(Ok(lines.join("\n")))
+            }
+            Err(e) => TuiEvent::BackgroundInfo(Err(format!("stats: {e}"))),
+        };
+        let _ = tx.send(ev);
+    });
+}
+
+fn cmd_compact(app: &mut App) {
     // Need at least one non-system message to summarize.
     if app.messages.len() <= 1 {
         app.push_info("Nothing to compact — conversation is empty.");
+        return;
+    }
+
+    // Refuse to start a compact while another async task (model turn or
+    // earlier compact) is still in flight — otherwise we would race with it
+    // and stack two AutoCompactDone events on the queue.
+    if !matches!(app.status, AppStatus::Idle) {
+        app.push_info("Busy — wait for the current task to finish, then retry /compact.");
         return;
     }
 
@@ -1557,68 +1588,69 @@ async fn cmd_compact(app: &mut App) {
     app.status = AppStatus::Waiting;
     app.anim_frame = 0;
 
-    // Build a summarization request: system prompt + conversation + instruction.
-    let mut summarize_msgs = app.messages.clone();
-    summarize_msgs.push(Message::user(
-        "Summarize our conversation so far in a concise but thorough way. \
-         Preserve key decisions, file paths, code changes, and any pending tasks. \
-         This summary will replace the conversation history to free up context.",
-    ));
-
-    let summary = app.client.chat_collect(&summarize_msgs, app.sampling).await;
-
-    match summary {
-        Ok(text) => {
-            let sys = app.messages[0].clone();
-            app.messages.clear();
-            app.messages.push(sys);
-            app.messages.push(Message::user(format!(
-                "[Conversation compacted — summary of prior context]\n\n{text}"
-            )));
-            app.messages.push(Message::assistant(
-                "Understood. I have the context from our previous conversation. How can I help?"
-                    .to_string(),
-            ));
-            app.entries.clear();
-            app.push_info("Conversation compacted into a summary.");
-        }
-        Err(e) => {
-            app.push_entry(EntryKind::Error, &format!("compact failed: {e}"));
-        }
-    }
-
-    app.status = AppStatus::Idle;
+    // Run the summarization off the main loop and deliver the result via
+    // TuiEvent::AutoCompactDone, which the event handler already knows how
+    // to process (same path as auto-compact).  This keeps the TUI responsive
+    // — frames keep drawing, the spinner animates, scroll keys still work.
+    let client = app.client.clone();
+    let msgs = app.messages.clone();
+    let sampling = app.sampling;
+    let tx = app.event_tx.clone();
+    tokio::spawn(async move {
+        let mut summarize_msgs = msgs;
+        summarize_msgs.push(Message::user(
+            "Summarize our conversation so far in a concise but thorough way. \
+             Preserve key decisions, file paths, code changes, and any pending \
+             tasks. This summary will replace the conversation history to free \
+             up context.",
+        ));
+        let result = client.chat_collect(&summarize_msgs, sampling).await;
+        let ev = match result {
+            Ok(text) => TuiEvent::AutoCompactDone(Ok(text)),
+            Err(e) => TuiEvent::AutoCompactDone(Err(e.to_string())),
+        };
+        let _ = tx.send(ev);
+    });
 }
 
-async fn cmd_model(app: &mut App) {
-    match app.client.props().await {
-        Ok(props) => {
-            let gs = &props.default_generation_settings;
-            let model_name = if gs.model.is_empty() {
-                "(unknown)".to_string()
-            } else {
-                gs.model.clone()
-            };
-            let ctx_pct = context_used_pct(&app.messages, &app.tools, app.ctx_size);
-            let ctx_line = if let Some(pct) = ctx_pct {
-                format!("{} tokens ({pct}% used)", app.ctx_size)
-            } else if app.ctx_size > 0 {
-                format!("{} tokens", app.ctx_size)
-            } else {
-                format!("{} tokens", gs.n_ctx)
-            };
-            let lines = [
-                format!("Model:          {model_name}"),
-                format!("Context:        {ctx_line}"),
-                format!("Slots:          {}", props.total_slots),
-                format!("Temperature:    {:.2}", gs.temperature),
-                format!("Top-p:          {:.2}", gs.top_p),
-                format!("Repeat penalty: {:.2}", gs.repeat_penalty),
-            ];
-            app.push_info(&lines.join("\n"));
-        }
-        Err(e) => app.push_entry(EntryKind::Error, &format!("model: {e}")),
-    }
+fn cmd_model(app: &mut App) {
+    // Snapshot the inputs we need for the context-usage line so the background
+    // task does not borrow `app`.  The percentage reflects state at the moment
+    // the command was issued, which is what the user expects.
+    let client = app.client.clone();
+    let tx = app.event_tx.clone();
+    let ctx_size = app.ctx_size;
+    let ctx_pct = context_used_pct(&app.messages, &app.tools, app.ctx_size);
+    tokio::spawn(async move {
+        let ev = match client.props().await {
+            Ok(props) => {
+                let gs = &props.default_generation_settings;
+                let model_name = if gs.model.is_empty() {
+                    "(unknown)".to_string()
+                } else {
+                    gs.model.clone()
+                };
+                let ctx_line = if let Some(pct) = ctx_pct {
+                    format!("{ctx_size} tokens ({pct}% used)")
+                } else if ctx_size > 0 {
+                    format!("{ctx_size} tokens")
+                } else {
+                    format!("{} tokens", gs.n_ctx)
+                };
+                let lines = [
+                    format!("Model:          {model_name}"),
+                    format!("Context:        {ctx_line}"),
+                    format!("Slots:          {}", props.total_slots),
+                    format!("Temperature:    {:.2}", gs.temperature),
+                    format!("Top-p:          {:.2}", gs.top_p),
+                    format!("Repeat penalty: {:.2}", gs.repeat_penalty),
+                ];
+                TuiEvent::BackgroundInfo(Ok(lines.join("\n")))
+            }
+            Err(e) => TuiEvent::BackgroundInfo(Err(format!("model: {e}"))),
+        };
+        let _ = tx.send(ev);
+    });
 }
 
 /// Expand a skill prompt template with the given args string.
@@ -1873,6 +1905,42 @@ fn handle_model_event(app: &mut App, ev: TuiEvent) {
                 }
                 Err(e) => {
                     app.push_entry(EntryKind::Error, &format!("auto-compact failed: {e}"));
+                }
+            }
+            app.status = AppStatus::Idle;
+            app.auto_scroll = true;
+        }
+        TuiEvent::BackgroundInfo(result) => match result {
+            Ok(text) => app.push_info(&text),
+            Err(e) => app.push_entry(EntryKind::Error, &e),
+        },
+        TuiEvent::IncludeResult(result) => {
+            match result {
+                Err(e) => app.push_entry(EntryKind::Error, &e),
+                Ok(outcome) if outcome.count == 0 => {
+                    app.push_info(&format!("No source files found in {}", outcome.path_str));
+                }
+                Ok(outcome) => {
+                    let IncludeOutcome {
+                        path_str,
+                        content,
+                        count,
+                        total_bytes,
+                    } = outcome;
+                    app.messages.push(Message::user(&content));
+                    app.messages.push(Message::assistant(format!(
+                        "Understood. I've loaded {count} file(s) and am ready for your questions.",
+                    )));
+                    app.push_info(&format!("Included {count} file(s) from {path_str}"));
+                    if total_bytes > 512 * 1024 {
+                        app.push_entry(
+                            EntryKind::Info,
+                            &format!(
+                                "Warning: {:.0} KB of context injected.",
+                                total_bytes as f64 / 1024.0
+                            ),
+                        );
+                    }
                 }
             }
             app.status = AppStatus::Idle;
