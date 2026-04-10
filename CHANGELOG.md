@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.3.0] — 2026-04-10
+
+### Added
+- (tui): `/resume` command — load the per-project saved session from inside the TUI without relaunching with `--resume`. Replays user/assistant turns as visible display entries so the recap is actually shown (unlike `--resume` at startup, which silently leaves the chat window blank). Tool calls and results stay in `app.messages` for full model context but are skipped from the visible replay to keep the recap concise.
+
+### Fixed
+- (session): scope sessions by current working directory — `latest_path()` and `find_latest()` previously used a single global `~/.local/share/shio/sessions/latest.json` regardless of where shio was launched, so opening a session in project B would silently overwrite project A's history. Sessions are now stored under `~/.local/share/shio/sessions/<cwd-slug>/` (Claude Code-style slugs), and `find_latest` only returns sessions belonging to the current project, so `/resume` and `--resume` can no longer cross-pollute.
+
+### Maintenance
+- Test count: 354 (+4 — slug helper and per-project sessions dir tests)
+
 ## [v1.2.0] — 2026-04-10
 
 ### Added
