@@ -5,7 +5,7 @@ port = 8080
 
 # Gemma 4 26B-A4B — tune these per model/scenario
 ngl  = 42        # GPU layers to offload; lower if VRAM is tight
-ctx  = 32768     # Context window; reduce to save VRAM (e.g. 8192 for coding)
+ctx  = 65536     # Context window; reduce to save VRAM (e.g. 8192 for coding)
 
 # KV cache quantization — trades a little quality for significant VRAM savings
 cache_type_k = "q4_0"

@@ -583,7 +583,44 @@ pub struct SlotInfo {
     pub n_past: u32,
 }
 
+/// Server properties as returned by `GET /props`.
+#[derive(Debug, Deserialize)]
+pub struct ServerProps {
+    #[serde(default)]
+    pub total_slots: u32,
+    #[serde(default)]
+    pub default_generation_settings: GenerationSettings,
+}
+
+/// The `default_generation_settings` object inside `/props`.
+#[derive(Debug, Default, Deserialize)]
+pub struct GenerationSettings {
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub n_ctx: u32,
+    #[serde(default)]
+    pub temperature: f64,
+    #[serde(default)]
+    pub top_p: f64,
+    #[serde(default)]
+    pub repeat_penalty: f64,
+}
+
 impl LlamaClient {
+    /// Fetch server properties (model name, context size, generation defaults).
+    pub async fn props(&self) -> Result<ServerProps> {
+        let resp = self
+            .http
+            .get(format!("{}/props", self.base_url))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ServerProps>()
+            .await?;
+        Ok(resp)
+    }
+
     /// Fetch the list of KV-cache slots from the server.
     pub async fn slots(&self) -> Result<Vec<SlotInfo>> {
         let resp = self

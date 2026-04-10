@@ -52,6 +52,8 @@ enum TuiEvent {
     TurnError(String),
     /// Plan mode was toggled by the model.
     PlanModeChanged(bool),
+    /// Auto-compact finished; carries the summary text (Ok) or error (Err).
+    AutoCompactDone(Result<String, String>),
 }
 
 // ── Chat display ──────────────────────────────────────────────────────────────
@@ -260,16 +262,16 @@ async fn run_loop(
 
     let welcome = match (has_tools, has_skills) {
         (true, true) => {
-            "ShioRamen ready — tool use ON.  /clear /stats /include <path> /tools /skills /exit   PgUp/Dn to scroll"
+            "ShioRamen ready — tool use ON.  /new /clear /compact /stats /include <path> /tools /skills /exit   PgUp/Dn to scroll"
         }
         (true, false) => {
-            "ShioRamen ready — tool use ON.  /clear /stats /include <path> /tools /exit   PgUp/Dn to scroll"
+            "ShioRamen ready — tool use ON.  /new /clear /compact /stats /include <path> /tools /exit   PgUp/Dn to scroll"
         }
         (false, true) => {
-            "ShioRamen ready.  /clear /stats /include <path> /skills /exit   PgUp/Dn to scroll"
+            "ShioRamen ready.  /new /clear /compact /stats /include <path> /skills /exit   PgUp/Dn to scroll"
         }
         (false, false) => {
-            "ShioRamen ready.  /clear /stats /include <path> /exit   PgUp/Dn to scroll"
+            "ShioRamen ready.  /new /clear /compact /stats /include <path> /exit   PgUp/Dn to scroll"
         }
     };
     app.push_info(welcome);
@@ -332,6 +334,40 @@ async fn run_loop(
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
 
+/// Render a fixed-width 10-character context-usage bar followed by a percentage
+/// label, returned as styled `Span`s for embedding in the title bar.
+///
+/// Example (65% used): `▒▒▒▒▒▒░░░░ 65%`
+fn render_context_bar(pct: u32) -> Vec<Span<'static>> {
+    const BAR_WIDTH: usize = 10;
+
+    let filled = ((pct as usize) * BAR_WIDTH / 100).min(BAR_WIDTH);
+    let empty = BAR_WIDTH - filled;
+
+    let (fill_char, fill_color) = if pct >= 80 {
+        ('▓', SOL_RED)
+    } else if pct >= 60 {
+        ('▒', SOL_YELLOW)
+    } else {
+        ('▒', SOL_GREEN)
+    };
+
+    let bar_bg = Style::default().bg(SOL_BASE02);
+    let mut spans = Vec::with_capacity(3);
+    if filled > 0 {
+        let s: String = std::iter::repeat_n(fill_char, filled).collect();
+        spans.push(Span::styled(s, bar_bg.fg(fill_color)));
+    }
+    if empty > 0 {
+        spans.push(Span::styled("░".repeat(empty), bar_bg.fg(SOL_BASE01)));
+    }
+    spans.push(Span::styled(
+        format!(" {pct:>3}%", pct = pct),
+        bar_bg.fg(SOL_BASE2),
+    ));
+    spans
+}
+
 fn render(f: &mut Frame, app: &App) {
     let area = f.area();
 
@@ -353,13 +389,30 @@ fn render(f: &mut Frame, app: &App) {
         (true, false) => "tools:ON",
         (false, _) => "tools:OFF",
     };
-    let title_str = format!(
+    let left = format!(
         " ShioRamen  [{mode}]  [Tab] complete  [PgUp/Dn] scroll  [F2] select  [Ctrl+C] quit"
     );
-    f.render_widget(
-        Paragraph::new(title_str).style(Style::default().bg(SOL_BASE02).fg(SOL_BASE2)),
-        chunks[0],
-    );
+    let bar_style = Style::default().bg(SOL_BASE02);
+    let title_width = chunks[0].width as usize;
+    let title_line = if let Some(pct) = context_used_pct(&app.messages, &app.tools, app.ctx_size) {
+        let bar = render_context_bar(pct);
+        let pad = title_width
+            .saturating_sub(left.len())
+            .saturating_sub(bar.iter().map(|s| s.width()).sum::<usize>());
+        let mut spans = vec![
+            Span::styled(&left, bar_style.fg(SOL_BASE2)),
+            Span::styled(" ".repeat(pad), bar_style),
+        ];
+        spans.extend(bar);
+        Line::from(spans)
+    } else {
+        let pad = title_width.saturating_sub(left.len());
+        Line::from(vec![
+            Span::styled(&left, bar_style.fg(SOL_BASE2)),
+            Span::styled(" ".repeat(pad), bar_style),
+        ])
+    };
+    f.render_widget(Paragraph::new(title_line), chunks[0]);
 
     // ── Messages area ──────────────────────────────────────────────────────────
     let msg_width = chunks[1].width.saturating_sub(1) as usize;
@@ -1042,8 +1095,11 @@ fn do_complete(app: &mut App) {
     const SLASH_CMDS: &[&str] = &[
         "/exit",
         "/quit",
+        "/new",
         "/reset",
         "/clear",
+        "/compact",
+        "/model",
         "/stats",
         "/include ",
         "/tools",
@@ -1345,6 +1401,26 @@ async fn submit(app: &mut App) {
             app.push_info("History cleared.");
             return;
         }
+        "/new" => {
+            app.messages.truncate(1);
+            app.entries.clear();
+            app.streaming = None;
+            if let Ok(path) = crate::session::latest_path()
+                && path.exists()
+            {
+                let _ = std::fs::remove_file(&path);
+            }
+            app.push_info("New session — history and saved session cleared.");
+            return;
+        }
+        "/compact" => {
+            cmd_compact(app).await;
+            return;
+        }
+        "/model" => {
+            cmd_model(app).await;
+            return;
+        }
         "/stats" => {
             match app.client.slots().await {
                 Ok(slots) => {
@@ -1470,6 +1546,81 @@ async fn cmd_include(app: &mut App, path_str: &str) {
     }
 }
 
+async fn cmd_compact(app: &mut App) {
+    // Need at least one non-system message to summarize.
+    if app.messages.len() <= 1 {
+        app.push_info("Nothing to compact — conversation is empty.");
+        return;
+    }
+
+    app.push_info("Compacting conversation…");
+    app.status = AppStatus::Waiting;
+    app.anim_frame = 0;
+
+    // Build a summarization request: system prompt + conversation + instruction.
+    let mut summarize_msgs = app.messages.clone();
+    summarize_msgs.push(Message::user(
+        "Summarize our conversation so far in a concise but thorough way. \
+         Preserve key decisions, file paths, code changes, and any pending tasks. \
+         This summary will replace the conversation history to free up context.",
+    ));
+
+    let summary = app.client.chat_collect(&summarize_msgs, app.sampling).await;
+
+    match summary {
+        Ok(text) => {
+            let sys = app.messages[0].clone();
+            app.messages.clear();
+            app.messages.push(sys);
+            app.messages.push(Message::user(format!(
+                "[Conversation compacted — summary of prior context]\n\n{text}"
+            )));
+            app.messages.push(Message::assistant(
+                "Understood. I have the context from our previous conversation. How can I help?"
+                    .to_string(),
+            ));
+            app.entries.clear();
+            app.push_info("Conversation compacted into a summary.");
+        }
+        Err(e) => {
+            app.push_entry(EntryKind::Error, &format!("compact failed: {e}"));
+        }
+    }
+
+    app.status = AppStatus::Idle;
+}
+
+async fn cmd_model(app: &mut App) {
+    match app.client.props().await {
+        Ok(props) => {
+            let gs = &props.default_generation_settings;
+            let model_name = if gs.model.is_empty() {
+                "(unknown)".to_string()
+            } else {
+                gs.model.clone()
+            };
+            let ctx_pct = context_used_pct(&app.messages, &app.tools, app.ctx_size);
+            let ctx_line = if let Some(pct) = ctx_pct {
+                format!("{} tokens ({pct}% used)", app.ctx_size)
+            } else if app.ctx_size > 0 {
+                format!("{} tokens", app.ctx_size)
+            } else {
+                format!("{} tokens", gs.n_ctx)
+            };
+            let lines = [
+                format!("Model:          {model_name}"),
+                format!("Context:        {ctx_line}"),
+                format!("Slots:          {}", props.total_slots),
+                format!("Temperature:    {:.2}", gs.temperature),
+                format!("Top-p:          {:.2}", gs.top_p),
+                format!("Repeat penalty: {:.2}", gs.repeat_penalty),
+            ];
+            app.push_info(&lines.join("\n"));
+        }
+        Err(e) => app.push_entry(EntryKind::Error, &format!("model: {e}")),
+    }
+}
+
 /// Expand a skill prompt template with the given args string.
 /// `{args}` is replaced by `args`; if the placeholder is absent and `args` is
 /// non-empty, they are appended after the prompt. The result is trimmed.
@@ -1498,6 +1649,18 @@ fn try_expand_skill(app: &App, input: &str) -> Option<String> {
 
 /// Estimate the token-budget cost of a message in bytes.
 ///
+/// Estimate the percentage of the context window currently consumed by messages.
+/// Returns `None` when `ctx_size` is unknown (0).
+fn context_used_pct(msgs: &[Message], tools: &[ToolDef], ctx_size: u32) -> Option<u32> {
+    if ctx_size == 0 {
+        return None;
+    }
+    let tools_overhead = serde_json::to_string(tools).map_or(0, |s| s.len());
+    let total: usize = msgs.iter().map(msg_size).sum::<usize>() + tools_overhead;
+    let capacity = ctx_size as usize * 4; // ~4 bytes per token estimate
+    Some(((total * 100) / capacity).min(100) as u32)
+}
+
 /// For text-only messages this is the serialized JSON length.  For multimodal
 /// messages that contain `image_url` parts, the base64 data URL is *not*
 /// counted as tokens — llama-server decodes the image and feeds it through
@@ -1561,16 +1724,16 @@ fn trim_to_budget_before(
 }
 
 fn dispatch_turn(app: &mut App) {
-    // Trim conversation history if approaching the context window limit.
-    // Budget: 80 % of ctx_size tokens, estimated at 4 bytes per token,
-    // minus the serialized size of tool definitions (fixed per-request overhead).
+    // Safety-net trim: drop old messages only when very close to the context
+    // ceiling (95%).  The normal path is auto-compact at 80% after TurnDone,
+    // so this should rarely fire.
     if app.ctx_size > 0 {
         let tools_overhead = serde_json::to_string(&app.tools).map_or(0, |s| s.len());
-        let budget = (app.ctx_size as usize * 4 * 80 / 100).saturating_sub(tools_overhead);
+        let budget = (app.ctx_size as usize * 4 * 95 / 100).saturating_sub(tools_overhead);
         let dropped = trim_to_budget(&mut app.messages, budget);
         if dropped > 0 {
             app.push_info(&format!(
-                "Context limit approaching — dropped {dropped} old message(s) from history."
+                "Context limit critical — dropped {dropped} old message(s) from history."
             ));
         }
     }
@@ -1631,6 +1794,37 @@ fn handle_model_event(app: &mut App, ev: TuiEvent) {
             // Plan mode is local to each agent turn; reset the display so the
             // next turn starts with the correct title bar.
             app.plan_mode = false;
+
+            // Auto-compact when context usage is high.
+            if let Some(pct) = context_used_pct(&app.messages, &app.tools, app.ctx_size)
+                && pct >= 80
+                && app.messages.len() > 2
+            {
+                app.push_info(&format!(
+                    "Context {pct}% full — auto-compacting conversation…"
+                ));
+                app.status = AppStatus::Waiting;
+                app.anim_frame = 0;
+                let client = app.client.clone();
+                let msgs = app.messages.clone();
+                let sampling = app.sampling;
+                let tx = app.event_tx.clone();
+                tokio::spawn(async move {
+                    let mut summarize_msgs = msgs;
+                    summarize_msgs.push(Message::user(
+                        "Summarize our conversation so far in a concise but thorough way. \
+                         Preserve key decisions, file paths, code changes, and any pending \
+                         tasks. This summary will replace the conversation history to free \
+                         up context.",
+                    ));
+                    let result = client.chat_collect(&summarize_msgs, sampling).await;
+                    let ev = match result {
+                        Ok(text) => TuiEvent::AutoCompactDone(Ok(text)),
+                        Err(e) => TuiEvent::AutoCompactDone(Err(e.to_string())),
+                    };
+                    let _ = tx.send(ev);
+                });
+            }
         }
         TuiEvent::TurnError(err) => {
             app.streaming = None;
@@ -1655,6 +1849,34 @@ fn handle_model_event(app: &mut App, ev: TuiEvent) {
                 "Plan mode OFF — all tools available."
             };
             app.push_info(msg);
+        }
+        TuiEvent::AutoCompactDone(result) => {
+            match result {
+                Ok(summary) => {
+                    let sys = app.messages[0].clone();
+                    app.messages.clear();
+                    app.messages.push(sys);
+                    app.messages.push(Message::user(format!(
+                        "[Conversation compacted — summary of prior context]\n\n{summary}"
+                    )));
+                    app.messages.push(Message::assistant(
+                        "Understood. I have the context from our previous conversation. \
+                         How can I help?"
+                            .to_string(),
+                    ));
+                    app.entries.clear();
+                    let pct =
+                        context_used_pct(&app.messages, &app.tools, app.ctx_size).unwrap_or(0);
+                    app.push_info(&format!(
+                        "Auto-compacted conversation. Context now {pct}% used."
+                    ));
+                }
+                Err(e) => {
+                    app.push_entry(EntryKind::Error, &format!("auto-compact failed: {e}"));
+                }
+            }
+            app.status = AppStatus::Idle;
+            app.auto_scroll = true;
         }
     }
 }
