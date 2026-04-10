@@ -277,16 +277,16 @@ async fn run_loop(
 
     let welcome = match (has_tools, has_skills) {
         (true, true) => {
-            "ShioRamen ready — tool use ON.  /new /clear /compact /stats /include <path> /tools /skills /exit   PgUp/Dn to scroll"
+            "ShioRamen ready — tool use ON.  /new /resume /clear /compact /stats /include <path> /tools /skills /exit   PgUp/Dn to scroll"
         }
         (true, false) => {
-            "ShioRamen ready — tool use ON.  /new /clear /compact /stats /include <path> /tools /exit   PgUp/Dn to scroll"
+            "ShioRamen ready — tool use ON.  /new /resume /clear /compact /stats /include <path> /tools /exit   PgUp/Dn to scroll"
         }
         (false, true) => {
-            "ShioRamen ready.  /new /clear /compact /stats /include <path> /skills /exit   PgUp/Dn to scroll"
+            "ShioRamen ready.  /new /resume /clear /compact /stats /include <path> /skills /exit   PgUp/Dn to scroll"
         }
         (false, false) => {
-            "ShioRamen ready.  /new /clear /compact /stats /include <path> /exit   PgUp/Dn to scroll"
+            "ShioRamen ready.  /new /resume /clear /compact /stats /include <path> /exit   PgUp/Dn to scroll"
         }
     };
     app.push_info(welcome);
@@ -1114,6 +1114,7 @@ fn do_complete(app: &mut App) {
         "/reset",
         "/clear",
         "/compact",
+        "/resume",
         "/model",
         "/stats",
         "/include ",
@@ -1428,6 +1429,10 @@ async fn submit(app: &mut App) {
             app.push_info("New session — history and saved session cleared.");
             return;
         }
+        "/resume" => {
+            cmd_resume(app);
+            return;
+        }
         "/compact" => {
             cmd_compact(app);
             return;
@@ -1567,6 +1572,78 @@ fn cmd_stats(app: &mut App) {
         };
         let _ = tx.send(ev);
     });
+}
+
+fn cmd_resume(app: &mut App) {
+    // Resume rewrites app.messages and app.entries; refuse if a model task or
+    // earlier compact is still in flight.
+    if !matches!(app.status, AppStatus::Idle) {
+        app.push_info("Busy — wait for the current task to finish, then retry /resume.");
+        return;
+    }
+
+    // File IO is local and tiny (a few KB JSON), so it stays on the main task
+    // — no observable freeze and no need for the spawn/event dance.
+    let path = match crate::session::find_latest() {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            app.push_info("No saved session for this project.");
+            return;
+        }
+        Err(e) => {
+            app.push_entry(EntryKind::Error, &format!("resume: {e}"));
+            return;
+        }
+    };
+    let saved = match crate::session::load(&path) {
+        Ok(m) => m,
+        Err(e) => {
+            app.push_entry(EntryKind::Error, &format!("resume: {e}"));
+            return;
+        }
+    };
+
+    // Discard the saved system prompt — keep the live one so config changes
+    // (prompt style, AGENTS.md, etc.) take effect when resuming.
+    let history: Vec<Message> = saved.into_iter().skip(1).collect();
+    let count = history.len();
+
+    // Replace history: live system prompt + every saved non-system message.
+    let sys = app.messages[0].clone();
+    app.messages.clear();
+    app.messages.push(sys);
+
+    // Replay user/assistant turns as visible display entries so the user can
+    // see what they are resuming.  Tool calls and tool results are kept in
+    // app.messages (so the model still has full context) but skipped here to
+    // keep the recap concise.
+    app.entries.clear();
+    app.streaming = None;
+    app.thinking = None;
+    app.in_think = false;
+    for m in &history {
+        match m.role.as_str() {
+            "user" => {
+                if let Some(text) = m.text_content() {
+                    app.push_entry(EntryKind::User, text);
+                }
+            }
+            "assistant" => {
+                if let Some(text) = m.text_content()
+                    && !text.is_empty()
+                {
+                    app.push_entry(EntryKind::Assistant, &replace_latex(text.to_string()));
+                }
+            }
+            _ => {}
+        }
+    }
+    app.messages.extend(history);
+    app.push_info(&format!(
+        "Resumed {count} message(s) from {}",
+        path.display()
+    ));
+    app.auto_scroll = true;
 }
 
 fn cmd_compact(app: &mut App) {
