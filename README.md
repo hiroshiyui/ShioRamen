@@ -361,6 +361,132 @@ shio --config /path/to/other.toml serve
 
 ---
 
+## Integrate with Continue.dev
+
+[Continue.dev](https://www.continue.dev/) is a VS Code / JetBrains extension
+that provides AI chat and inline tab-autocomplete.  Because `shio serve`
+launches `llama-server` on an OpenAI-compatible endpoint, Continue can talk
+to it as a local model — no cloud API, no data leaving your machine.
+
+### 1. Enable continuous batching in `shio.toml`
+
+Before starting the server, make sure continuous batching is on.  Without
+it, `llama-server` processes requests strictly FIFO — a long chat answer
+will block every autocomplete request that fires while it's streaming, and
+autocomplete will feel dead until the chat finishes.  With it, Continue's
+chat and autocomplete streams get independent KV-cache slots and interleave
+on the GPU, so both stay responsive at the cost of a small amount of extra
+VRAM:
+
+```toml
+[server]
+cont_batching = true
+```
+
+The same effect can be had one-off via `shio serve --cont-batching`, but
+since you'll be running the server all day as a VS Code backend, setting
+it in the config file is the saner ergonomics.
+
+### 2. Start Shio as a server
+
+Run `serve` (not `chat`) in a dedicated terminal so it stays up for as long
+as VS Code needs it:
+
+```bash
+shio serve
+```
+
+Pick a code-capable, FIM (fill-in-middle) trained model for good
+autocomplete quality.  `Qwen2.5-Coder-7B-Instruct` and
+`DeepSeek-Coder-V2-Lite-Instruct` are both solid choices.
+
+### 3. Drop this into `~/.continue/config.yaml`
+
+```yaml
+name: Shio Local
+version: 0.0.1
+schema: v1
+
+models:
+  - name: Shio Chat
+    provider: openai
+    model: local
+    apiBase: http://127.0.0.1:8080/v1
+    apiKey: dummy-key-ignored-by-llama-server
+    roles:
+      - chat
+      - edit
+      - apply
+    defaultCompletionOptions:
+      contextLength: 8192
+      maxTokens: 2048
+      temperature: 0.3
+
+  - name: Shio Autocomplete
+    provider: openai
+    model: local
+    apiBase: http://127.0.0.1:8080/v1
+    apiKey: dummy-key-ignored-by-llama-server
+    roles:
+      - autocomplete
+    defaultCompletionOptions:
+      contextLength: 8192
+      maxTokens: 256
+      temperature: 0.1
+
+context:
+  - provider: file
+  - provider: code
+  - provider: diff
+  - provider: terminal
+  - provider: problems
+  - provider: currentFile
+  - provider: docs
+```
+
+Match `contextLength` on both models to the `--ctx` you gave `shio serve`
+(default `8192`).  Setting it lower wastes capacity; setting it higher
+silently truncates on the server side.
+
+> **Older Continue versions** used `~/.continue/config.json` instead.
+> The same fields apply — wrap chat models in a `models: [...]` array
+> and put autocomplete under a top-level `tabAutocompleteModel` object.
+
+### 4. (Optional) Run two servers for fast autocomplete
+
+A single 7B model handling both chat and autocomplete works, but
+autocomplete feels much snappier with a smaller dedicated model.  If your
+GPU has the VRAM, run two `shio serve` instances on different ports:
+
+```bash
+# Terminal 1 — chat model on :8080
+shio serve --model ./models/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf \
+  --port 8080 --ngl 99 --ctx 16384 --cont-batching
+
+# Terminal 2 — small fast completion model on :8081
+shio serve --model ./models/Qwen2.5-Coder-1.5B-Q4_K_M.gguf \
+  --port 8081 --ngl 99 --ctx 4096 --cont-batching
+```
+
+Then change the `apiBase` of the `Shio Autocomplete` model in your
+Continue config to `http://127.0.0.1:8081/v1`.
+
+### Verifying it works
+
+1. Reload VS Code after editing `config.yaml`.
+2. Open Continue's sidebar (Cmd/Ctrl-L), type a question about an open
+   file, and send.  You should see tokens streaming in both the sidebar
+   and the `llama-server` request log in your terminal.
+3. Start typing a function signature in a code file — gray-text
+   suggestions should appear after a brief debounce.
+
+If chat works but autocomplete doesn't, the usual culprit is a FIM template
+mismatch.  Try switching just the autocomplete model's `provider` from
+`openai` to `llama.cpp` (Continue has a dedicated provider with native
+support for `llama-server`'s infill endpoint).
+
+---
+
 ## Development
 
 ```bash
