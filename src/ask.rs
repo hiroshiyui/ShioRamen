@@ -2,12 +2,13 @@
 use anyhow::Result;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::ServerArgs;
-use crate::build_engine;
-use crate::client::{Message, SamplingParams};
+use crate::client::{LlamaClient, Message, SamplingParams};
 use crate::config::{DEFAULT_TEMP, ShioConfig};
 use crate::context;
+use crate::engine::DynEngine;
 
 #[derive(clap::Args, Debug)]
 pub struct AskArgs {
@@ -40,11 +41,6 @@ pub struct AskArgs {
     /// Skip spawning llama-server; connect to an already running instance
     #[arg(long)]
     pub no_spawn: bool,
-
-    /// Run inference in-process via llama-cpp-2 (no llama-server).
-    /// Requires the `inprocess` Cargo feature at build time.
-    #[arg(long)]
-    pub in_process: bool,
 }
 
 pub async fn run(args: &AskArgs, cfg: &ShioConfig) -> Result<()> {
@@ -54,15 +50,10 @@ pub async fn run(args: &AskArgs, cfg: &ShioConfig) -> Result<()> {
         repeat_penalty: args.repeat_penalty.or(cfg.chat.repeat_penalty),
     };
     let system_prompt = crate::resolve_system_prompt(cfg);
-
-    let (engine, server_guard) = build_engine(
-        args.in_process,
-        args.no_spawn,
-        args.model.clone(),
-        &args.server,
-        cfg,
-    )
-    .await?;
+    let server = args
+        .server
+        .spawn_or_connect(args.no_spawn, args.model.clone(), cfg)
+        .await?;
 
     // Build user message: collect files/dirs as fenced code blocks, then append the question.
     // context::collect uses std::fs, so run it on a blocking thread to avoid
@@ -81,6 +72,7 @@ pub async fn run(args: &AskArgs, cfg: &ShioConfig) -> Result<()> {
 
     let messages = vec![Message::system(system_prompt), Message::user(content)];
 
+    let engine: DynEngine = Arc::new(LlamaClient::new(server.url.clone()));
     let mut on_token = |token: &str| {
         print!("{token}");
         std::io::stdout().flush().ok();
@@ -89,6 +81,6 @@ pub async fn run(args: &AskArgs, cfg: &ShioConfig) -> Result<()> {
         .chat_stream_cb(&messages, sampling, &mut on_token)
         .await?;
     println!();
-    drop(server_guard);
+    drop(server);
     Ok(())
 }

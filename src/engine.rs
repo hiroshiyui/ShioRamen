@@ -2,20 +2,17 @@
 //! Inference backend abstraction.
 //!
 //! The `Engine` trait decouples command code (chat, ask, edit, TUI) from the
-//! concrete inference path.  Implementations:
+//! concrete inference path.  Today the only implementation wraps
+//! [`crate::client::LlamaClient`] (HTTP → `llama-server`).  Later phases add:
 //!
-//! * [`crate::client::LlamaClient`] — HTTP → `llama-server` (always available).
-//! * [`inprocess::InProcessEngine`] — FFI to `libllama` via the `llama-cpp-2`
-//!   crate, running inference in-process with no subprocess or HTTP hop.
-//!   Gated on the `inprocess` Cargo feature so default builds stay lean and
-//!   don't require cmake or a C++ toolchain.
+//! * `InProcessEngine` — FFI to `libllama` via the `llama-cpp-2` crate,
+//!   running inference in-process with no subprocess or HTTP hop.
+//! * `shio serve` — an axum app that wraps an `InProcessEngine` behind an
+//!   OpenAI-compatible HTTP API, replacing `llama-server` for Shio's own use.
 //!
-//! Shipping both behind the same trait means command code (`chat`, `ask`,
-//! `edit`, TUI) never cares which one is active — it just holds an
-//! `Arc<dyn Engine>` and calls methods.
-
-#[cfg(feature = "inprocess")]
-pub mod inprocess;
+//! Phase 1 (this file) introduces the trait boundary without changing any
+//! behaviour: `LlamaClient` is the only implementor and every call site goes
+//! through `Arc<dyn Engine>`.
 
 use std::sync::Arc;
 
