@@ -30,5 +30,29 @@ arboard          = "3"
 base64           = "0.22"
 png              = "0.17"
 
+# In-process inference backend (optional).  Enabled by the `inprocess` Cargo
+# feature; builds the C++ llama.cpp sources bundled inside llama-cpp-2 from
+# source, so first compile is slow (several minutes) and requires cmake +
+# a C++ toolchain.  GPU backends are opt-in via the matching feature flag.
+llama-cpp-2 = { version = "0.1", optional = true, default-features = false }
+encoding_rs = { version = "0.8", optional = true }
+
 [build-dependencies]
 cc = "1"
+
+[features]
+# Default build: HTTP backend only.  Unchanged from v1.3.0.
+default = []
+
+# Link `llama-cpp-2` and build the in-process `InProcessEngine`.
+# Enable with `cargo build --features inprocess` (add cuda/metal/vulkan as
+# needed).  Without this feature `--in-process` returns a clear error at
+# runtime and no extra native code is compiled.
+inprocess = ["dep:llama-cpp-2", "dep:encoding_rs"]
+
+# GPU backends.  Each one turns on the matching feature in llama-cpp-2 and
+# implies `inprocess`.  Only one acceleration backend should be enabled at
+# a time.
+cuda    = ["inprocess", "llama-cpp-2/cuda"]
+metal   = ["inprocess", "llama-cpp-2/metal"]
+vulkan  = ["inprocess", "llama-cpp-2/vulkan"]

@@ -105,6 +105,66 @@ pub struct ServerArgs {
     pub mmproj: Option<PathBuf>,
 }
 
+/// Build a `DynEngine` from the current command's args.
+///
+/// Returns the engine plus an optional `ServerProcess` guard that must be
+/// kept alive for the engine's lifetime.  For the HTTP backend the guard is
+/// `Some` (holds the llama-server child); for the in-process backend it is
+/// `None` because inference runs directly in this process.
+///
+/// `in_process` requires the `inprocess` Cargo feature at build time —
+/// without it we return a clear error at runtime instead of compiling in a
+/// silently-broken code path.
+pub(crate) async fn build_engine(
+    in_process: bool,
+    no_spawn: bool,
+    model: Option<PathBuf>,
+    server_args: &ServerArgs,
+    cfg: &ShioConfig,
+) -> Result<(DynEngine, Option<ServerProcess>)> {
+    if in_process {
+        #[cfg(feature = "inprocess")]
+        {
+            let model = model.or_else(|| cfg.chat.model.clone()).ok_or_else(|| {
+                anyhow::anyhow!("--model <PATH> is required (or set chat.model in shio.toml)")
+            })?;
+            let ngl = server_args.ngl.or(cfg.server.ngl).unwrap_or(DEFAULT_NGL);
+            let n_ctx = server_args.ctx.or(cfg.server.ctx).unwrap_or(DEFAULT_CTX);
+            let in_cfg = engine::inprocess::InProcessConfig {
+                model_path: model,
+                n_ctx,
+                n_gpu_layers: ngl.max(0) as u32,
+                n_threads: None,
+            };
+            eprintln!(
+                "Loading model in-process ({})…",
+                in_cfg.model_path.display()
+            );
+            let engine = tokio::task::spawn_blocking(move || {
+                engine::inprocess::InProcessEngine::load(in_cfg)
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("model load task panicked: {e}"))??;
+            Ok((Arc::new(engine) as DynEngine, None))
+        }
+        #[cfg(not(feature = "inprocess"))]
+        {
+            let _ = (no_spawn, model, server_args, cfg);
+            Err(anyhow::anyhow!(
+                "--in-process requires building shio with `--features inprocess` \
+                 (e.g. `cargo install --path . --features inprocess,cuda`)"
+            ))
+        }
+    } else {
+        let server = server_args.spawn_or_connect(no_spawn, model, cfg).await?;
+        if no_spawn {
+            eprintln!("Connecting to {} ...", server.url);
+        }
+        let engine: DynEngine = Arc::new(LlamaClient::new(server.url.clone()));
+        Ok((engine, Some(server)))
+    }
+}
+
 impl ServerArgs {
     /// Build a `Config` from CLI flags, config file values, and hardcoded defaults.
     /// `model` is passed separately because it lives outside `ServerArgs`.
@@ -207,6 +267,12 @@ struct ChatArgs {
     #[arg(long)]
     no_tools: bool,
 
+    /// Run inference in-process via llama-cpp-2 (no llama-server).
+    /// Requires the `inprocess` Cargo feature at build time.  Tool use is
+    /// not yet supported on this path — pair with `--no-tools` for now.
+    #[arg(long)]
+    in_process: bool,
+
     /// Resume the most recent saved session
     #[arg(long)]
     resume: bool,
@@ -239,13 +305,14 @@ async fn main() -> Result<()> {
                 repeat_penalty: args.repeat_penalty.or(cfg.chat.repeat_penalty),
             };
             let system_prompt = resolve_system_prompt(&cfg);
-            let server = args
-                .server
-                .spawn_or_connect(args.no_spawn, args.model, &cfg)
-                .await?;
-            if args.no_spawn {
-                eprintln!("Connecting to {} ...", server.url);
-            }
+            let (engine, server_guard) = build_engine(
+                args.in_process,
+                args.no_spawn,
+                args.model.clone(),
+                &args.server,
+                &cfg,
+            )
+            .await?;
 
             println!();
             let ctx_size = args.server.ctx.or(cfg.server.ctx).unwrap_or(DEFAULT_CTX);
@@ -271,7 +338,6 @@ async fn main() -> Result<()> {
             } else {
                 None
             };
-            let engine: DynEngine = Arc::new(LlamaClient::new(server.url.clone()));
             let show_thinking = cfg.chat.show_thinking.unwrap_or(true);
             let mut session = ChatSession::new(
                 engine,
@@ -311,7 +377,7 @@ async fn main() -> Result<()> {
             }
 
             session.run().await?;
-            drop(server);
+            drop(server_guard);
         }
 
         Commands::Ask(args) => {
