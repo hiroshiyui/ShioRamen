@@ -4,13 +4,10 @@ use similar::{ChangeTag, TextDiff};
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-use std::sync::Arc;
-
 use crate::ServerArgs;
 use crate::agents;
 use crate::client::{LlamaClient, Message, SamplingParams};
 use crate::config::{DEFAULT_TEMP, ShioConfig};
-use crate::engine::DynEngine;
 
 const EDIT_SYSTEM_PROMPT: &str = "\
 You are a precise code editor. When given a file and an instruction, output ONLY \
@@ -92,8 +89,8 @@ pub async fn run(args: &EditArgs, cfg: &ShioConfig) -> Result<()> {
     eprint!("Generating...");
     io::stderr().flush().ok();
 
-    let engine: DynEngine = Arc::new(LlamaClient::new(server.url.clone()));
-    let raw = engine.chat_collect(&messages, sampling).await?;
+    let client = LlamaClient::new(server.url.clone());
+    let raw = client.chat_collect(&messages, sampling).await?;
     drop(server);
 
     eprintln!(" done.");

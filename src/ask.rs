@@ -1,14 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use anyhow::Result;
-use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use crate::ServerArgs;
 use crate::client::{LlamaClient, Message, SamplingParams};
 use crate::config::{DEFAULT_TEMP, ShioConfig};
 use crate::context;
-use crate::engine::DynEngine;
 
 #[derive(clap::Args, Debug)]
 pub struct AskArgs {
@@ -72,15 +69,8 @@ pub async fn run(args: &AskArgs, cfg: &ShioConfig) -> Result<()> {
 
     let messages = vec![Message::system(system_prompt), Message::user(content)];
 
-    let engine: DynEngine = Arc::new(LlamaClient::new(server.url.clone()));
-    let mut on_token = |token: &str| {
-        print!("{token}");
-        std::io::stdout().flush().ok();
-    };
-    engine
-        .chat_stream_cb(&messages, sampling, &mut on_token)
-        .await?;
-    println!();
+    let client = LlamaClient::new(server.url.clone());
+    client.chat_stream(&messages, sampling).await?;
     drop(server);
     Ok(())
 }
