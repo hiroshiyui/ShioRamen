@@ -20,5 +20,14 @@ define_tool(
   path    = args["path"]    or raise "missing 'path' argument"
   content = args["content"] or raise "missing 'content' argument"
   Shio.append_file(path, content)
-  "Appended #{content.length} bytes to #{path}"
+
+  # Report the new total line count so the caller has a correct anchor
+  # for any follow-up insert_after_line call. Use bytesize (not length,
+  # which returns characters in Ruby) so the byte count is accurate for
+  # non-ASCII content.
+  full = Shio.read_file(path)
+  lines = full.split("\n", -1)
+  lines.pop if full.end_with?("\n") && lines.last == ""
+  "Appended #{content.bytesize} bytes to #{path} " \
+    "(file now has #{lines.length} lines)"
 end

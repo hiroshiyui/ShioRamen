@@ -14,5 +14,12 @@ define_tool(
   path    = args["path"]    or raise "missing 'path' argument"
   content = args["content"] or raise "missing 'content' argument"
   Shio.write_file(path, content)
-  "Wrote #{content.length} bytes to #{path}"
+
+  # Report the line count so the caller has a correct anchor for any
+  # follow-up insert_after_line call. Use bytesize (not length, which
+  # returns characters in Ruby) so the byte count is accurate for
+  # non-ASCII content.
+  lines = content.split("\n", -1)
+  lines.pop if content.end_with?("\n") && lines.last == ""
+  "Wrote #{content.bytesize} bytes (#{lines.length} lines) to #{path}"
 end

@@ -22,7 +22,11 @@ define_tool(
   raise "'start_line' must be a positive integer" if start_line < 1
 
   content = Shio.read_file(path)
-  lines   = content.split("\n")
+  # split with -1 preserves trailing empty fields; otherwise Ruby drops blank
+  # lines before EOF and under-reports the line count.
+  lines   = content.split("\n", -1)
+  # A final "" element represents the terminating newline, not a real line.
+  lines.pop if content.end_with?("\n") && lines.last == ""
   total   = lines.length
 
   end_line = args["end_line"] ? [args["end_line"].to_i, total].min : total

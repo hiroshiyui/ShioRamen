@@ -26,15 +26,27 @@ define_tool(
   content  = content.end_with?("\n") ? content : content + "\n"
 
   text  = Shio.read_file(path)
-  lines = text.split("\n")
+  # split with -1 preserves trailing empty fields; otherwise Ruby drops blank
+  # lines before EOF and under-reports the line count.
+  lines = text.split("\n", -1)
+  # A final "" element represents the terminating newline, not a real line.
+  lines.pop if text.end_with?("\n") && lines.last == ""
   total = lines.length
 
   raise "line #{line_num} is out of range (file has #{total} lines)" if line_num > total
 
   lines.insert(line_num, content.chomp)
   result = lines.join("\n")
-  result += "\n" if text.end_with?("\n") || line_num == total
+  result += "\n" if text.end_with?("\n")
 
   Shio.write_file(path, result)
-  "Inserted #{content.length} bytes after line #{line_num} in #{path}"
+
+  # Report the new total line count so the caller has a correct anchor
+  # for any follow-up insert_after_line call. Also use bytesize (not length,
+  # which returns characters in Ruby) so the byte count is accurate for
+  # non-ASCII content.
+  new_lines = result.split("\n", -1)
+  new_lines.pop if result.end_with?("\n") && new_lines.last == ""
+  "Inserted #{content.bytesize} bytes after line #{line_num} in #{path} " \
+    "(file now has #{new_lines.length} lines)"
 end
