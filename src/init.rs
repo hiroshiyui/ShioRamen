@@ -51,6 +51,9 @@ const TEMPLATE: &str = r#"# shio.toml — ShioRamen configuration
 # Override the built-in system prompt.
 # system_prompt = "You are a helpful assistant."
 
+# Show <think>…</think> blocks from reasoning models in a dimmed style.
+# show_thinking = true
+
 # System prompt style: "auto" (default — detect from model size),
 # "full" (detailed, 30B+), "concise" (7B–30B), "minimal" (< 7B).
 # Ignored when system_prompt is set explicitly.

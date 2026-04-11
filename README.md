@@ -303,48 +303,61 @@ Errors if `shio.toml` already exists in the current directory.
 
 ## Config file reference (`shio.toml`)
 
-All settings are optional. CLI flags always take precedence over the config file.
+All settings are optional (except `chat.model`, which has no sensible
+fallback).  CLI flags always take precedence over the config file.
+
+In the reference block below, the trailing comment on each line tells you
+what happens when the key is omitted:
+
+- **`default`** — Shio's built-in value.  Listing the key explicitly is a
+  no-op; you can safely delete it.
+- **`recommended`** — a non-default value worth setting explicitly.  The
+  code falls back to something more conservative when the key is omitted.
+- **`optional`** — Shio omits the key from the request when unset, letting
+  `llama-server` use its own internal default (which is usually fine).
+  Listing the key lets you pin it across llama-server upgrades.
+- **`required`** — no default; Shio errors out if you don't provide it.
 
 ```toml
 [server]
-bin           = "./bin/llama-server"   # path to llama-server binary
-host          = "127.0.0.1"
-port          = 8080
-ngl           = 99                     # GPU layers to offload
-ctx           = 8192                   # context window (tokens)
-cache_type_k  = "q4_0"                 # KV key cache quantization
-cache_type_v  = "q4_0"                 # KV value cache quantization
-flash_attn    = true
-cont_batching = true
-mmproj        = "./models/mmproj.gguf"  # multimodal projector for vision models (optional)
+bin           = "./bin/llama-server"    # default — path to llama-server binary
+host          = "127.0.0.1"             # default
+port          = 8080                    # default
+ngl           = 99                      # default — GPU layers to offload
+ctx           = 8192                    # default — context window (tokens)
+cache_type_k  = "q4_0"                  # recommended (default: f16 — saves VRAM at ~1% quality cost)
+cache_type_v  = "q4_0"                  # recommended (default: f16)
+flash_attn    = true                    # recommended (default: false)
+cont_batching = true                    # recommended (default: false — required for concurrent clients e.g. Continue.dev)
+mmproj        = "./models/mmproj.gguf"  # optional — multimodal projector for vision models
 
 [chat]
-model          = "./models/model.gguf"
-temperature    = 0.7
-top_p          = 0.95                  # nucleus sampling — lower values focus on top tokens
-repeat_penalty = 1.1                   # > 1.0 discourages repetition in long outputs
-show_thinking  = true                  # show <think>…</think> blocks from reasoning models (dimmed); default true
-prompt_style   = "auto"               # "auto" (detect from model size), "full", "concise", "minimal"
-system_prompt  = "..."                 # optional: override the built-in system prompt (overrides prompt_style)
+model          = "./models/model.gguf"  # required — no default
+temperature    = 0.7                    # default
+top_p          = 0.95                   # optional — unset means llama-server's internal default (currently 0.95)
+repeat_penalty = 1.1                    # optional — unset means llama-server's internal default (currently 1.1)
+show_thinking  = true                   # default — show <think>…</think> blocks from reasoning models (dimmed)
+prompt_style   = "auto"                 # default — "auto" detects from model size; or "full" / "concise" / "minimal"
+system_prompt  = "..."                  # optional — override the built-in prompt (disables prompt_style)
 
 [paths]
-models_dir    = "./models"             # default download directory for `shio pull`
+models_dir    = "./models"              # default — download directory for `shio pull`
 
 [tools]
-enabled        = true   # let the model read/write files and run commands
-confirm_writes = true   # ask [y/N] before the model writes files
-confirm_shell  = true   # ask [y/N] before the model runs shell commands
+enabled        = true                   # default — let the model read/write files and run commands
+confirm_writes = true                   # default — ask [y/N] before the model writes files
+confirm_shell  = true                   # default — ask [y/N] before the model runs shell commands
 
 # Shell command sandboxing (optional — both empty = unrestricted)
 # shell_allowlist = ["cargo", "git", "grep", "ls"]   # only these commands allowed
-# shell_denylist  = ["rm", "curl", "wget", "ssh"]     # these commands always blocked
+# shell_denylist  = ["rm", "curl", "wget", "ssh"]    # these commands always blocked
 
-[lsp.servers]
-rust   = "rust-analyzer"                        # language name → LSP server command
+[lsp.servers]                           # optional — map language or file extension to an LSP command
+rust   = "rust-analyzer"
 python = "pylsp"
 ts     = "typescript-language-server --stdio"
 
-[skills.commit]
+[skills.commit]                         # optional — define named prompt templates invokable as /commit etc.
 description = "Write a conventional git commit message"   # shown by /skills
 prompt      = "Write a conventional git commit message for the staged changes."
 
