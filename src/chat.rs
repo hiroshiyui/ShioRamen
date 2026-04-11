@@ -2,8 +2,9 @@
 use anyhow::Result;
 use std::collections::HashMap;
 
-use crate::client::{LlamaClient, Message, SamplingParams, ToolDef};
+use crate::client::{Message, SamplingParams, ToolDef};
 use crate::config::SkillDef;
+use crate::engine::DynEngine;
 use crate::tools::ToolExecutor;
 
 // ── System prompt styles ─────────────────────────────────────────────────────
@@ -159,7 +160,7 @@ fn extract_param_size(name: &str) -> Option<f64> {
 }
 
 pub struct ChatSession {
-    pub(crate) client: LlamaClient,
+    pub(crate) engine: DynEngine,
     pub(crate) messages: Vec<Message>,
     pub(crate) sampling: SamplingParams,
     /// When Some, the agentic loop is active and these tools are offered to the model.
@@ -176,7 +177,7 @@ pub struct ChatSession {
 
 impl ChatSession {
     pub fn new(
-        client: LlamaClient,
+        engine: DynEngine,
         sampling: SamplingParams,
         system_prompt: String,
         executor: Option<ToolExecutor>,
@@ -186,7 +187,7 @@ impl ChatSession {
     ) -> Self {
         let tools = executor.as_ref().map_or_else(Vec::new, |e| e.tool_defs());
         Self {
-            client,
+            engine,
             messages: vec![Message::system(system_prompt)],
             sampling,
             executor,
@@ -217,11 +218,12 @@ impl ChatSession {
 mod tests {
     use super::*;
     use crate::client::LlamaClient;
+    use std::sync::Arc;
 
     fn make_session(executor: Option<ToolExecutor>) -> ChatSession {
-        let client = LlamaClient::new("http://127.0.0.1:1".to_string());
+        let engine: DynEngine = Arc::new(LlamaClient::new("http://127.0.0.1:1".to_string()));
         ChatSession::new(
-            client,
+            engine,
             SamplingParams {
                 temperature: 0.7,
                 top_p: None,
@@ -282,9 +284,9 @@ mod tests {
                 prompt: "prompt".to_string(),
             },
         );
-        let client = LlamaClient::new("http://127.0.0.1:1".to_string());
+        let engine: DynEngine = Arc::new(LlamaClient::new("http://127.0.0.1:1".to_string()));
         let session = ChatSession::new(
-            client,
+            engine,
             SamplingParams {
                 temperature: 0.7,
                 top_p: None,

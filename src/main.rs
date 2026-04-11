@@ -7,6 +7,7 @@ mod config;
 mod context;
 mod doctor;
 mod edit;
+mod engine;
 mod init;
 mod lsp;
 mod pull;
@@ -26,7 +27,9 @@ use config::{
     Config, DEFAULT_CTX, DEFAULT_HOST, DEFAULT_NGL, DEFAULT_PORT, DEFAULT_SERVER_BIN, DEFAULT_TEMP,
     ShioConfig,
 };
+use engine::DynEngine;
 use server::ServerProcess;
+use std::sync::Arc;
 
 /// ShioRamen — local AI coding assistant powered by llama.cpp
 #[derive(Parser, Debug)]
@@ -268,10 +271,10 @@ async fn main() -> Result<()> {
             } else {
                 None
             };
-            let client = LlamaClient::new(server.url.clone());
+            let engine: DynEngine = Arc::new(LlamaClient::new(server.url.clone()));
             let show_thinking = cfg.chat.show_thinking.unwrap_or(true);
             let mut session = ChatSession::new(
-                client,
+                engine,
                 sampling,
                 system_prompt,
                 executor,

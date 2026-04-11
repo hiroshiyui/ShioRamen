@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
+use futures_util::future::BoxFuture;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+
+use crate::engine::{Engine, TokenSink};
 
 // ── Sampling parameters ──────────────────────────────────────────────────────
 
@@ -298,23 +301,60 @@ impl LlamaClient {
             .unwrap_or_else(|_| Client::new());
         Self { http, base_url }
     }
+}
 
+impl Engine for LlamaClient {
+    fn chat_agent_stream<'a>(
+        &'a self,
+        messages: &'a [Message],
+        sampling: SamplingParams,
+        tools: &'a [ToolDef],
+        on_token: TokenSink<'a>,
+    ) -> BoxFuture<'a, Result<AgentTurn>> {
+        Box::pin(self.http_chat_agent_stream(messages, sampling, tools, on_token))
+    }
+
+    fn chat_collect<'a>(
+        &'a self,
+        messages: &'a [Message],
+        sampling: SamplingParams,
+    ) -> BoxFuture<'a, Result<String>> {
+        Box::pin(self.http_chat_collect(messages, sampling))
+    }
+
+    fn chat_stream_cb<'a>(
+        &'a self,
+        messages: &'a [Message],
+        sampling: SamplingParams,
+        on_token: TokenSink<'a>,
+    ) -> BoxFuture<'a, Result<String>> {
+        Box::pin(self.http_chat_stream_cb(messages, sampling, on_token))
+    }
+
+    fn props(&self) -> BoxFuture<'_, Result<ServerProps>> {
+        Box::pin(self.http_props())
+    }
+
+    fn slots(&self) -> BoxFuture<'_, Result<Vec<SlotInfo>>> {
+        Box::pin(self.http_slots())
+    }
+}
+
+impl LlamaClient {
     /// Streaming agentic turn: tokens are delivered via `on_token` as they arrive,
     /// and tool-call deltas are accumulated internally.  Returns `AgentTurn::Text`
     /// or `AgentTurn::ToolCalls` once the stream ends.
     ///
-    /// Falls back to `chat_agent` (non-streaming) if the streaming response cannot
-    /// be parsed, so embedded-tool-call models still work.
-    pub async fn chat_agent_stream<F>(
+    /// Falls back to non-streaming parsing if the server returns an embedded
+    /// tool call inside the content field, so local templates like peg-gemma4
+    /// still work.
+    async fn http_chat_agent_stream(
         &self,
         messages: &[Message],
         sampling: SamplingParams,
         tools: &[ToolDef],
-        mut on_token: F,
-    ) -> Result<AgentTurn>
-    where
-        F: FnMut(&str),
-    {
+        on_token: TokenSink<'_>,
+    ) -> Result<AgentTurn> {
         let request = ChatRequest {
             model: "local",
             messages,
@@ -447,7 +487,7 @@ impl LlamaClient {
 
     /// Non-streaming completion without printing; returns the full response.
     /// Used by `edit` to post-process model output.
-    pub async fn chat_collect(
+    async fn http_chat_collect(
         &self,
         messages: &[Message],
         sampling: SamplingParams,
@@ -478,30 +518,15 @@ impl LlamaClient {
             .ok_or_else(|| anyhow!("empty response from server"))
     }
 
-    /// Streaming chat; prints tokens to stdout as they arrive.
-    /// Returns the fully assembled text.
-    pub async fn chat_stream(
+    /// Streaming chat with a per-token callback.  The callback is called
+    /// synchronously for each token as it arrives.  Returns the fully
+    /// assembled text.
+    async fn http_chat_stream_cb(
         &self,
         messages: &[Message],
         sampling: SamplingParams,
+        on_token: TokenSink<'_>,
     ) -> Result<String> {
-        let text = self.chat_stream_cb(messages, sampling, print_flush).await?;
-        println!();
-        Ok(text)
-    }
-
-    /// Streaming chat with a per-token callback instead of printing.
-    /// The callback is called synchronously for each token as it arrives.
-    /// Returns the fully assembled text.
-    pub async fn chat_stream_cb<F>(
-        &self,
-        messages: &[Message],
-        sampling: SamplingParams,
-        mut on_token: F,
-    ) -> Result<String>
-    where
-        F: FnMut(&str),
-    {
         let request = ChatRequest {
             model: "local",
             messages,
@@ -609,7 +634,7 @@ pub struct GenerationSettings {
 
 impl LlamaClient {
     /// Fetch server properties (model name, context size, generation defaults).
-    pub async fn props(&self) -> Result<ServerProps> {
+    async fn http_props(&self) -> Result<ServerProps> {
         let resp = self
             .http
             .get(format!("{}/props", self.base_url))
@@ -622,7 +647,7 @@ impl LlamaClient {
     }
 
     /// Fetch the list of KV-cache slots from the server.
-    pub async fn slots(&self) -> Result<Vec<SlotInfo>> {
+    async fn http_slots(&self) -> Result<Vec<SlotInfo>> {
         let resp = self
             .http
             .get(format!("{}/slots", self.base_url))
@@ -698,12 +723,6 @@ fn extract_embedded_tool_calls(text: &str) -> Vec<ToolCallItem> {
         });
     }
     calls
-}
-
-fn print_flush(s: &str) {
-    use std::io::Write;
-    print!("{s}");
-    std::io::stdout().flush().ok();
 }
 
 #[cfg(test)]

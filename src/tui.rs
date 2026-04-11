@@ -25,9 +25,10 @@ use ratatui::{
 use tokio::sync::{mpsc, oneshot};
 
 use crate::chat::ChatSession;
-use crate::client::{AgentTurn, LlamaClient, Message, SamplingParams, ToolCallItem, ToolDef};
+use crate::client::{AgentTurn, Message, SamplingParams, ToolCallItem, ToolDef};
 use crate::config::SkillDef;
 use crate::context;
+use crate::engine::{DynEngine, Engine};
 use crate::tools::ToolExecutor;
 
 // ── Events from model task → TUI ─────────────────────────────────────────────
@@ -129,7 +130,7 @@ struct App {
     messages: Vec<Message>,
     tools: Vec<ToolDef>,
     executor: Option<ToolExecutor>,
-    client: LlamaClient,
+    engine: DynEngine,
     sampling: SamplingParams,
 
     // Display
@@ -245,7 +246,7 @@ async fn run_loop(
         messages: session.messages,
         tools: session.tools,
         executor: session.executor,
-        client: session.client,
+        engine: session.engine,
         sampling: session.sampling,
         entries: Vec::new(),
         streaming: None,
@@ -1546,7 +1547,7 @@ fn cmd_include(app: &mut App, path_str: &str) {
 }
 
 fn cmd_stats(app: &mut App) {
-    let client = app.client.clone();
+    let client = app.engine.clone();
     let tx = app.event_tx.clone();
     tokio::spawn(async move {
         let ev = match client.slots().await {
@@ -1669,7 +1670,7 @@ fn cmd_compact(app: &mut App) {
     // TuiEvent::AutoCompactDone, which the event handler already knows how
     // to process (same path as auto-compact).  This keeps the TUI responsive
     // — frames keep drawing, the spinner animates, scroll keys still work.
-    let client = app.client.clone();
+    let client = app.engine.clone();
     let msgs = app.messages.clone();
     let sampling = app.sampling;
     let tx = app.event_tx.clone();
@@ -1694,7 +1695,7 @@ fn cmd_model(app: &mut App) {
     // Snapshot the inputs we need for the context-usage line so the background
     // task does not borrow `app`.  The percentage reflects state at the moment
     // the command was issued, which is what the user expects.
-    let client = app.client.clone();
+    let client = app.engine.clone();
     let tx = app.event_tx.clone();
     let ctx_size = app.ctx_size;
     let ctx_pct = context_used_pct(&app.messages, &app.tools, app.ctx_size);
@@ -1847,7 +1848,7 @@ fn dispatch_turn(app: &mut App) {
         }
     }
 
-    let client = app.client.clone();
+    let client = app.engine.clone();
     let msgs = app.messages.clone();
     let sampling = app.sampling;
     let tools = app.tools.clone();
@@ -1914,7 +1915,7 @@ fn handle_model_event(app: &mut App, ev: TuiEvent) {
                 ));
                 app.status = AppStatus::Waiting;
                 app.anim_frame = 0;
-                let client = app.client.clone();
+                let client = app.engine.clone();
                 let msgs = app.messages.clone();
                 let sampling = app.sampling;
                 let tx = app.event_tx.clone();
@@ -2207,7 +2208,7 @@ const PLAN_MODE_ALLOWED: &[&str] = &[
 ];
 
 async fn run_model_task(
-    client: LlamaClient,
+    engine: DynEngine,
     mut msgs: Vec<Message>,
     sampling: SamplingParams,
     tools: Vec<ToolDef>,
@@ -2216,9 +2217,9 @@ async fn run_model_task(
     ctx_size: u32,
 ) {
     let result = if let Some(exec) = &executor {
-        run_agent_loop(&client, &mut msgs, sampling, &tools, exec, &tx, ctx_size).await
+        run_agent_loop(&*engine, &mut msgs, sampling, &tools, exec, &tx, ctx_size).await
     } else {
-        run_stream_turn(&client, &mut msgs, sampling, &tx).await
+        run_stream_turn(&*engine, &mut msgs, sampling, &tx).await
     };
 
     let ev = match result {
@@ -2229,17 +2230,16 @@ async fn run_model_task(
 }
 
 async fn run_stream_turn(
-    client: &LlamaClient,
+    engine: &dyn Engine,
     msgs: &mut Vec<Message>,
     sampling: SamplingParams,
     tx: &mpsc::UnboundedSender<TuiEvent>,
 ) -> Result<()> {
     let tx_clone = tx.clone();
-    let full_text = client
-        .chat_stream_cb(msgs, sampling, move |token| {
-            let _ = tx_clone.send(TuiEvent::StreamToken(token.to_string()));
-        })
-        .await?;
+    let mut on_token = move |token: &str| {
+        let _ = tx_clone.send(TuiEvent::StreamToken(token.to_string()));
+    };
+    let full_text = engine.chat_stream_cb(msgs, sampling, &mut on_token).await?;
     msgs.push(Message::assistant(&full_text));
     Ok(())
 }
@@ -2266,7 +2266,7 @@ fn cap_tool_result(result: String, limit: usize) -> String {
 }
 
 async fn run_agent_loop(
-    client: &LlamaClient,
+    engine: &dyn Engine,
     msgs: &mut Vec<Message>,
     sampling: SamplingParams,
     tools: &[ToolDef],
@@ -2369,10 +2369,11 @@ async fn run_agent_loop(
             let mut turn_opt = None;
             for attempt in 0..MAX_EMPTY_RETRIES {
                 let tx_stream = tx.clone();
-                match client
-                    .chat_agent_stream(msgs_to_send, sampling, tools_for_call, move |token| {
-                        let _ = tx_stream.send(TuiEvent::StreamToken(token.to_string()));
-                    })
+                let mut on_token = move |token: &str| {
+                    let _ = tx_stream.send(TuiEvent::StreamToken(token.to_string()));
+                };
+                match engine
+                    .chat_agent_stream(msgs_to_send, sampling, tools_for_call, &mut on_token)
                     .await
                 {
                     Ok(t) => {
