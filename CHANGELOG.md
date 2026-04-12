@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.4.0] — 2026-04-12
+
+### Added
+- (server): pass `--jinja` to llama-server, enabling tool calling support for Gemma 4 and other models that require the Jinja2 chat template engine
+- (client): parse peg-gemma4 Python function-call format (`func(key="val")`) inside `<tool_call>` markers, in addition to JSON
+- (client): repair bare newlines in embedded tool call JSON strings so local models that emit unescaped control characters still work
+- (tools): infer tool name from argument keys when the model hallucinates an unknown function name (e.g. `cloud_subprocess_filecontent` → `write_file`)
+- (server): extract `build_command()` into a testable function
+
+### Fixed
+- (tools): `patch_file` line-by-line and anchor fallbacks no longer insert a spurious blank line when `new_str` ends with `\n` and suffix lines exist
+- (tools): `insert_after_line` rejects negative line numbers instead of silently using Ruby negative indexing
+- (tools): `run_shell` enforces a 30s timeout using a background thread with pipe draining, preventing both indefinite hangs and pipe buffer deadlocks on large output
+- (tools): `read_file` reports "file appears to be binary" on `InvalidData` instead of a raw UTF-8 error
+- (tools): `tool_defs()` logs errors instead of silently returning an empty tool list
+- (tools): `save_memory` duplicate detection matches whole lines to avoid substring false positives
+- (tools): `web_search` clamps `max_results` to `[1, 20]` instead of allowing zero
+- (tools): `read_file_range` validates `end_line >= 1` explicitly
+- (tools): `write_file`, `append_file`, `insert_after_line` use `.nil?` check for content arg so JSON `false` is not misreported as missing
+- (tools): `search_files` strips trailing slash from base path
+- (tools): `grep_files` uses strict `== true` for `case_insensitive` flag
+- (tools): report accurate line counts in file-writing tools
+
+### Documentation
+- Clarify shio.toml defaults and add `show_thinking` to init template
+- Add Continue.dev integration guide
+
+### Maintenance
+- Test count: 396 (+42 — tool inference, funcall parser, argument validation, pipe deadlock regression, plan mode stubs)
+
 ## [v1.3.0] — 2026-04-10
 
 ### Added
