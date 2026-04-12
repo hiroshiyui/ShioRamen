@@ -166,6 +166,8 @@ pub struct Config {
     pub flash_attn: bool,
     pub cont_batching: bool,
     pub mmproj: Option<PathBuf>,
+    /// Enable Jinja2 chat template engine (required for tool calling).
+    pub jinja: bool,
 }
 
 impl Config {
@@ -194,6 +196,7 @@ mod tests {
             flash_attn: false,
             cont_batching: false,
             mmproj: None,
+            jinja: false,
         };
         assert_eq!(cfg.server_url(), "http://127.0.0.1:8080");
     }
@@ -212,6 +215,7 @@ mod tests {
             flash_attn: false,
             cont_batching: false,
             mmproj: None,
+            jinja: false,
         };
         assert_eq!(cfg.server_url(), "http://0.0.0.0:9090");
     }

@@ -132,6 +132,7 @@ impl ServerArgs {
             flash_attn: self.flash_attn || cfg.flash_attn.unwrap_or(false),
             cont_batching: self.cont_batching || cfg.cont_batching.unwrap_or(false),
             mmproj: self.mmproj.clone().or_else(|| cfg.mmproj.clone()),
+            jinja: true, // Required for tool calling via llama-server
         }
     }
 
