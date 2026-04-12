@@ -12,7 +12,8 @@ define_tool(
   }
 ) do |args|
   path    = args["path"]    or raise "missing 'path' argument"
-  content = args["content"] or raise "missing 'content' argument"
+  raise "missing 'content' argument" if args["content"].nil?
+  content = args["content"].to_s
   Shio.write_file(path, content)
 
   # Report the line count so the caller has a correct anchor for any

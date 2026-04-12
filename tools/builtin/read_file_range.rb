@@ -30,6 +30,7 @@ define_tool(
   total   = lines.length
 
   end_line = args["end_line"] ? [args["end_line"].to_i, total].min : total
+  raise "'end_line' must be a positive integer" if args["end_line"] && end_line < 1
 
   if start_line > end_line
     raise "start_line (#{start_line}) is after end_line (#{end_line})"

@@ -15,7 +15,7 @@ define_tool(
   }
 ) do |args|
   pattern = args["pattern"] or raise "missing 'pattern' argument"
-  base = args["path"] || "."
+  base = (args["path"] || ".").chomp("/")
   full_pattern = base == "." ? pattern : "#{base}/#{pattern}"
   result = Shio.glob(full_pattern)
   result.empty? ? "(no matches)" : result

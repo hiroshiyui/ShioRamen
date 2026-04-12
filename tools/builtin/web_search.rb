@@ -15,6 +15,6 @@ define_tool(
   }
 ) do |args|
   query       = args["query"] or raise "missing 'query' argument"
-  max_results = args["max_results"] ? [args["max_results"].to_i, 20].min : 5
+  max_results = args["max_results"] ? [[args["max_results"].to_i, 1].max, 20].min : 5
   Shio.web_search(query, max_results)
 end

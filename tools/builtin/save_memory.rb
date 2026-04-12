@@ -29,7 +29,7 @@ define_tool(
     ""
   end
 
-  next "Already in #{file} (skipped duplicate)" if existing.include?(memory)
+  next "Already in #{file} (skipped duplicate)" if existing.include?("- #{memory}\n")
 
   new_content = if existing.empty?
     "# Shio Memory\n\n- #{memory}\n"

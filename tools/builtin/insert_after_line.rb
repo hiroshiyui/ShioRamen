@@ -20,7 +20,8 @@ define_tool(
   path     = args["path"]    or raise "missing 'path' argument"
   line_arg = args["line"]
   raise "missing or invalid 'line' argument (expected integer)" if line_arg.nil?
-  content  = args["content"] or raise "missing 'content' argument"
+  raise "missing 'content' argument" if args["content"].nil?
+  content  = args["content"].to_s
 
   line_num = line_arg.to_i
   raise "line must be >= 0 (got #{line_num})" if line_num < 0

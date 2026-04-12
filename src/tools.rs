@@ -589,6 +589,20 @@ mod tests {
         let _ = fs::remove_file(&path);
     }
 
+    #[test]
+    fn write_file_empty_content_creates_empty_file() {
+        let path = std::env::temp_dir().join("shio_write_empty.txt");
+        let _ = fs::remove_file(&path);
+        let ex = executor(false, false);
+        let result = ex.vm.lock().unwrap().call_tool(
+            "write_file",
+            &serde_json::json!({ "path": path.to_str().unwrap(), "content": "" }).to_string(),
+        );
+        assert!(result.contains("0 bytes"), "{result}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "");
+        let _ = fs::remove_file(&path);
+    }
+
     // ── insert_after_line ─────────────────────────────────────────────────────
 
     #[test]
@@ -1252,6 +1266,23 @@ mod tests {
         let _ = fs::remove_file(&dst);
     }
 
+    #[test]
+    fn move_file_nonexistent_source_returns_error() {
+        let ex = executor(false, false);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "move_file",
+            &serde_json::json!({
+                "src": "/tmp/shio_move_no_such_file.txt",
+                "dst": "/tmp/shio_move_dst.txt"
+            })
+            .to_string(),
+        );
+        assert!(
+            out.contains("Error"),
+            "expected error for missing source: {out}"
+        );
+    }
+
     // ── lsp ───────────────────────────────────────────────────────────────────
 
     #[test]
@@ -1426,6 +1457,38 @@ mod tests {
         );
         assert!(result2.contains("skipped"), "{result2}");
 
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn save_memory_does_not_false_positive_on_substring() {
+        // "update Cargo.toml" should NOT be flagged as a duplicate just
+        // because "remember to update Cargo.toml" already exists.
+        let path = std::env::temp_dir().join("shio_test_memory_substr.md");
+        let _ = fs::remove_file(&path);
+        let path_str = path.to_str().unwrap();
+        let ex = executor(false, false);
+
+        ex.vm.lock().unwrap().call_tool(
+            "save_memory",
+            &serde_json::json!({
+                "memory": "remember to update Cargo.toml",
+                "file": path_str
+            })
+            .to_string(),
+        );
+        let result = ex.vm.lock().unwrap().call_tool(
+            "save_memory",
+            &serde_json::json!({
+                "memory": "update Cargo.toml",
+                "file": path_str
+            })
+            .to_string(),
+        );
+        assert!(
+            result.contains("Saved"),
+            "substring should not be treated as duplicate: {result}"
+        );
         let _ = fs::remove_file(&path);
     }
 
@@ -1792,6 +1855,22 @@ mod tests {
         );
         assert_eq!(fs::read_to_string(&path).unwrap(), "  3 | value");
         let _ = fs::remove_file(&path);
+    }
+
+    // ── plan_mode stubs ────────────────────────────────────────────────────────
+
+    #[test]
+    fn enter_plan_mode_is_registered_and_callable() {
+        let ex = executor(false, false);
+        let out = ex.vm.lock().unwrap().call_tool("enter_plan_mode", "{}");
+        assert!(!out.starts_with("Error: unknown tool"), "{out}");
+    }
+
+    #[test]
+    fn exit_plan_mode_is_registered_and_callable() {
+        let ex = executor(false, false);
+        let out = ex.vm.lock().unwrap().call_tool("exit_plan_mode", "{}");
+        assert!(!out.starts_with("Error: unknown tool"), "{out}");
     }
 
     // ── execute_quiet: argument-unwrap edge cases ─────────────────────────────

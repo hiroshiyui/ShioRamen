@@ -14,7 +14,7 @@ define_tool(
 ) do |args|
   pattern = args["pattern"] or raise "missing 'pattern' argument"
   path    = args["path"] || "."
-  ci      = args["case_insensitive"] ? true : false
+  ci      = args["case_insensitive"] == true
   result  = Shio.grep(pattern, path, ci)
   result.empty? ? "(no matches)" : result
 end
