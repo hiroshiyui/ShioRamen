@@ -784,6 +784,31 @@ mod tests {
         assert!(out.contains("exit code"), "{out}");
     }
 
+    #[test]
+    fn run_shell_large_output_does_not_deadlock() {
+        // Regression: the try_wait() polling loop deadlocked when stdout
+        // exceeded the OS pipe buffer (~64 KB) because nobody was draining
+        // the pipes.  The fix uses wait_with_output() in a background thread.
+        let ex = executor(false, false);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "run_shell",
+            &serde_json::json!({
+                "command": "yes 'abcdefghijklmnopqrstuvwxyz' | head -5000"
+            })
+            .to_string(),
+        );
+        assert!(
+            !out.contains("timed out"),
+            "should not timeout on large output: {out}"
+        );
+        // 5000 lines × 27 bytes ≈ 135 KB — well above the 64 KB pipe buffer.
+        assert!(
+            out.len() > 100_000,
+            "expected large output, got {} bytes",
+            out.len()
+        );
+    }
+
     // ── shell_command_tokens ───────────────────────────────────────────────
 
     #[test]

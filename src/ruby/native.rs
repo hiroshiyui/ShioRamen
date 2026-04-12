@@ -638,9 +638,9 @@ pub unsafe extern "C" fn shio_native_run_shell(
         return set_result(format!("Error: {msg}"));
     }
 
-    const SHELL_TIMEOUT_SECS: u64 = 30;
+    const SHELL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-    let mut child = match std::process::Command::new("sh")
+    let child = match std::process::Command::new("sh")
         .args(["-c", &*cmd])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -650,28 +650,40 @@ pub unsafe extern "C" fn shio_native_run_shell(
         Ok(c) => c,
     };
 
-    // Poll with timeout to prevent runaway commands from blocking forever.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(SHELL_TIMEOUT_SECS);
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) => {
-                if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return set_result(format!(
-                        "Error: command timed out after {SHELL_TIMEOUT_SECS}s"
-                    ));
-                }
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            Err(e) => return set_result(format!("Error waiting for command: {e}")),
-        }
-    }
+    // Grab the PID so we can kill from the main thread on timeout.
+    let pid = child.id();
 
-    let out = match child.wait_with_output() {
-        Ok(o) => o,
-        Err(e) => return set_result(format!("Error reading command output: {e}")),
+    // Run wait_with_output() in a background thread so stdout/stderr are
+    // drained continuously — avoids deadlock when the child produces more
+    // output than the OS pipe buffer (~64 KB on Linux).
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+
+    let out = match rx.recv_timeout(SHELL_TIMEOUT) {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => return set_result(format!("Error reading command output: {e}")),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            // Kill via raw PID — the Child was moved into the thread.
+            // Use kill(2) directly via the nix-style raw syscall to avoid
+            // adding a crate dependency for a single call.
+            #[cfg(unix)]
+            unsafe {
+                // SAFETY: sending SIGKILL to a known PID we spawned.
+                unsafe extern "C" {
+                    fn kill(pid: i32, sig: i32) -> i32;
+                }
+                kill(pid as i32, 9); // SIGKILL = 9
+            }
+            return set_result(format!(
+                "Error: command timed out after {}s",
+                SHELL_TIMEOUT.as_secs()
+            ));
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            return set_result("Error: command thread panicked".to_string());
+        }
     };
 
     let stdout = String::from_utf8_lossy(&out.stdout);
