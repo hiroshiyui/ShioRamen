@@ -193,9 +193,15 @@ impl ToolExecutor {
                         },
                     })
                     .collect(),
-                Err(_) => vec![],
+                Err(e) => {
+                    eprintln!("[shio] tool_defs: schema export failed: {e}");
+                    vec![]
+                }
             },
-            Err(_) => vec![],
+            Err(e) => {
+                eprintln!("[shio] tool_defs: VM lock poisoned: {e}");
+                vec![]
+            }
         }
     }
 }
@@ -650,6 +656,24 @@ mod tests {
     }
 
     #[test]
+    fn insert_after_line_negative_line_returns_error() {
+        let path = std::env::temp_dir().join("shio_insert_neg.txt");
+        fs::write(&path, "line1\n").unwrap();
+        let ex = executor(false, false);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "insert_after_line",
+            &serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "line": -1,
+                "content": "bad"
+            })
+            .to_string(),
+        );
+        assert!(out.contains("Error"), "negative line should error: {out}");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
     fn insert_after_line_out_of_range_returns_error() {
         let path = std::env::temp_dir().join("shio_insert_oor.txt");
         fs::write(&path, "line1\n").unwrap();
@@ -1058,6 +1082,33 @@ mod tests {
         assert!(
             !result.ends_with("\n\n"),
             "double trailing newline: {result:?}"
+        );
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn patch_file_fallback_no_spurious_blank_line_with_suffix() {
+        // Regression: when new_str ends with \n and there are lines after
+        // the match, the old code inserted a spurious blank line.
+        // Use a multi-line old_str with trailing whitespace to force Level 2
+        // (line-by-line fallback — exact substring match fails).
+        let path = std::env::temp_dir().join("shio_patch_spurious_nl.txt");
+        fs::write(&path, "line1\nAAA  \nBBB\nline4\n").unwrap();
+        let ex = executor(false, false);
+        let out = ex.vm.lock().unwrap().call_tool(
+            "patch_file",
+            &serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "old_str": "AAA\nBBB",
+                "new_str": "CCC\nDDD\n",
+            })
+            .to_string(),
+        );
+        assert!(out.contains("line-by-line fallback"), "{out}");
+        let result = fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            result, "line1\nCCC\nDDD\nline4\n",
+            "no spurious blank line between new_str and suffix"
         );
         let _ = fs::remove_file(&path);
     }

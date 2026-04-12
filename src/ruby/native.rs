@@ -104,7 +104,14 @@ pub unsafe extern "C" fn shio_native_read_file(
     match std::fs::read_to_string(p) {
         Ok(content) => set_result(content),
         Err(e) => {
-            unsafe { set_err(error_out, &e.to_string()) };
+            // Provide a user-friendly hint for binary files (InvalidData from
+            // a UTF-8 decode failure is the typical symptom).
+            let msg = if e.kind() == std::io::ErrorKind::InvalidData {
+                format!("{p}: file appears to be binary (not valid UTF-8)")
+            } else {
+                e.to_string()
+            };
+            unsafe { set_err(error_out, &msg) };
             ptr::null()
         }
     }
@@ -631,37 +638,65 @@ pub unsafe extern "C" fn shio_native_run_shell(
         return set_result(format!("Error: {msg}"));
     }
 
-    match std::process::Command::new("sh")
+    const SHELL_TIMEOUT_SECS: u64 = 30;
+
+    let mut child = match std::process::Command::new("sh")
         .args(["-c", &*cmd])
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
     {
-        Err(e) => set_result(format!("Error running command: {e}")),
-        Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            let mut result = String::new();
-            if !stdout.is_empty() {
-                result.push_str(&stdout);
-            }
-            if !stderr.is_empty() {
-                if !result.is_empty() {
-                    result.push('\n');
+        Err(e) => return set_result(format!("Error running command: {e}")),
+        Ok(c) => c,
+    };
+
+    // Poll with timeout to prevent runaway commands from blocking forever.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(SHELL_TIMEOUT_SECS);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return set_result(format!(
+                        "Error: command timed out after {SHELL_TIMEOUT_SECS}s"
+                    ));
                 }
-                result.push_str("[stderr]\n");
-                result.push_str(&stderr);
+                std::thread::sleep(std::time::Duration::from_millis(50));
             }
-            if !out.status.success() {
-                result.push_str(&format!(
-                    "\n[exit code: {}]",
-                    out.status.code().unwrap_or(-1)
-                ));
-            }
-            if result.is_empty() {
-                set_result("(no output)".to_string())
-            } else {
-                set_result(result)
-            }
+            Err(e) => return set_result(format!("Error waiting for command: {e}")),
         }
+    }
+
+    let out = match child.wait_with_output() {
+        Ok(o) => o,
+        Err(e) => return set_result(format!("Error reading command output: {e}")),
+    };
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let mut result = String::new();
+    if !stdout.is_empty() {
+        result.push_str(&stdout);
+    }
+    if !stderr.is_empty() {
+        if !result.is_empty() {
+            result.push('\n');
+        }
+        result.push_str("[stderr]\n");
+        result.push_str(&stderr);
+    }
+    if !out.status.success() {
+        result.push_str(&format!(
+            "\n[exit code: {}]",
+            out.status.code().unwrap_or(-1)
+        ));
+    }
+    if result.is_empty() {
+        set_result("(no output)".to_string())
+    } else {
+        set_result(result)
     }
 }
 

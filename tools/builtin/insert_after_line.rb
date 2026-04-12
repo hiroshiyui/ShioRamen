@@ -23,6 +23,7 @@ define_tool(
   content  = args["content"] or raise "missing 'content' argument"
 
   line_num = line_arg.to_i
+  raise "line must be >= 0 (got #{line_num})" if line_num < 0
   content  = content.end_with?("\n") ? content : content + "\n"
 
   text  = Shio.read_file(path)

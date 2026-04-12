@@ -71,8 +71,9 @@ define_tool(
     start  = hits[0]
     result = file_lines[0...start]
     new_str.split("\n").each { |l| result << l }
-    result << "" if new_str[-1] == "\n"
-    result.concat(file_lines[(start + n)..-1] || [])
+    remaining = file_lines[(start + n)..-1] || []
+    result << "" if new_str[-1] == "\n" && remaining.empty?
+    result.concat(remaining)
     patched = result.join("\n")
     patched = patched[0..-2] if content[-1] != "\n" && patched[-1] == "\n"
     patched += "\n"          if content[-1] == "\n" && patched[-1] != "\n"
@@ -108,8 +109,9 @@ define_tool(
         start  = anchor_hits[0]
         result = file_lines[0...start]
         new_str.split("\n").each { |l| result << l }
-        result << "" if new_str[-1] == "\n"
-        result.concat(file_lines[(start + n)..-1] || [])
+        remaining = file_lines[(start + n)..-1] || []
+        result << "" if new_str[-1] == "\n" && remaining.empty?
+        result.concat(remaining)
         patched = result.join("\n")
         patched = patched[0..-2] if content[-1] != "\n" && patched[-1] == "\n"
         patched += "\n"          if content[-1] == "\n" && patched[-1] != "\n"
