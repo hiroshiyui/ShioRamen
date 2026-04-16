@@ -1,12 +1,22 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 define_tool(
   "write_file",
-  "Write content to a file, creating it or overwriting it.",
+  "Write content to a file, creating it or overwriting it. " \
+  "BOTH 'path' and 'content' are REQUIRED — never omit 'path'. " \
+  "If the user names a file (e.g. \"save to story.txt\"), pass that as 'path'. " \
+  "If unsure where to write, call get_working_directory first; " \
+  "do not call write_file with only 'content'.",
   {
     "type" => "object",
     "properties" => {
-      "path"    => { "type" => "string" },
-      "content" => { "type" => "string" }
+      "path" => {
+        "type" => "string",
+        "description" => "REQUIRED. Destination file path (absolute, or relative to the working directory). Must always be provided."
+      },
+      "content" => {
+        "type" => "string",
+        "description" => "REQUIRED. Full content to write. Overwrites the file if it exists."
+      }
     },
     "required" => ["path", "content"]
   }
