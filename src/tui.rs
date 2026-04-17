@@ -300,7 +300,7 @@ async fn run_loop(
         tokio::select! {
             maybe_ev = events.next() => match maybe_ev {
                 Some(Ok(Event::Key(key))) => {
-                    if handle_key(&mut app, key).await { app.quit = true; }
+                    app.quit = handle_key(&mut app, key).await;
                 }
                 Some(Ok(Event::Mouse(mouse))) => {
                     match mouse.kind {
@@ -915,20 +915,16 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         }
 
         // Delete
-        (Backspace, _) => {
-            if app.cursor > 0 {
-                let new = char_start_before(&app.input, app.cursor);
-                app.input.drain(new..app.cursor);
-                app.cursor = new;
-                app.comp_candidates.clear();
-            }
+        (Backspace, _) if app.cursor > 0 => {
+            let new = char_start_before(&app.input, app.cursor);
+            app.input.drain(new..app.cursor);
+            app.cursor = new;
+            app.comp_candidates.clear();
         }
-        (Delete, _) => {
-            if app.cursor < app.input.len() {
-                let next = char_end_at(&app.input, app.cursor);
-                app.input.drain(app.cursor..next);
-                app.comp_candidates.clear();
-            }
+        (Delete, _) if app.cursor < app.input.len() => {
+            let next = char_end_at(&app.input, app.cursor);
+            app.input.drain(app.cursor..next);
+            app.comp_candidates.clear();
         }
 
         // Cursor movement
@@ -1555,11 +1551,7 @@ fn cmd_stats(app: &mut App) {
                     .iter()
                     .map(|s| {
                         let state = if s.is_processing { "busy" } else { "idle" };
-                        let pct = if s.n_ctx > 0 {
-                            s.n_past * 100 / s.n_ctx
-                        } else {
-                            0
-                        };
+                        let pct = (s.n_past * 100).checked_div(s.n_ctx).unwrap_or(0);
                         format!(
                             "slot {}: {state}  {}/{} tokens used ({}%)",
                             s.id, s.n_past, s.n_ctx, pct
