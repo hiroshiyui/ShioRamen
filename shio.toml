@@ -3,7 +3,7 @@ bin  = "./bin/llama-server"
 host = "127.0.0.1"
 port = 8080
 
-# Gemma 4 26B-A4B — tune these per model/scenario
+# Gemma 4 E4B (Unsloth UD-Q8_K_XL) — tune these per model/scenario
 ngl  = 42        # GPU layers to offload; lower if VRAM is tight
 ctx  = 65536     # Context window; reduce to save VRAM (e.g. 8192 for coding)
 
@@ -19,7 +19,7 @@ cont_batching = true   # Better throughput when multiple requests queue up
 mmproj = "./models/mmproj-gemma-4-e4b-it-f16.gguf"
 
 [chat]
-model          = "./models/gemma-4-e4b-it-Q8_0.gguf"
+model          = "./models/gemma-4-E4B-it-UD-Q8_K_XL.gguf"
 temperature    = 0.1   # Low temperature for precise, deterministic coding responses
 # top_p          = 0.95  # Nucleus sampling — lower values focus on top tokens
 # repeat_penalty = 1.1   # > 1.0 discourages repetition in long outputs
