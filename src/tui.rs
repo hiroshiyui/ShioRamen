@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use std::collections::HashMap;
 use std::io;
+use std::io::Write as _;
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use crossterm::{
     event::{
         DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -180,6 +182,71 @@ struct App {
     /// Context window size in tokens (0 = unknown).  Used to trim history
     /// before dispatch so we never send more than ~80 % of the context.
     ctx_size: u32,
+
+    /// Active conversation recorder (`/record` … `/stop-record`).  When `Some`,
+    /// every entry pushed into the chat log is mirrored to the file.  Dropped
+    /// on exit, which flushes and closes the file.
+    recording: Option<Recorder>,
+}
+
+/// Buffered, append-only writer that mirrors chat entries to a Markdown file
+/// while a `/record` session is active.
+struct Recorder {
+    path: PathBuf,
+    writer: std::io::BufWriter<std::fs::File>,
+}
+
+impl Recorder {
+    fn open(path: PathBuf) -> Result<Self> {
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("Cannot create recording directory: {}", parent.display())
+            })?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("Cannot open recording file: {}", path.display()))?;
+        let mut writer = std::io::BufWriter::new(file);
+        writeln!(writer, "# shio recording — started {}", unix_seconds())?;
+        writer.flush()?;
+        Ok(Self { path, writer })
+    }
+
+    fn write_entry(&mut self, kind: EntryKind, text: &str) {
+        let header = match kind {
+            EntryKind::User => "you",
+            EntryKind::Assistant => "shio",
+            EntryKind::Thinking => "thinking",
+            EntryKind::ToolCall => "tool call",
+            EntryKind::ToolResult => "tool result",
+            EntryKind::Info => "info",
+            EntryKind::Error => "error",
+        };
+        let _ = writeln!(self.writer, "\n### {header}\n\n{text}");
+        let _ = self.writer.flush();
+    }
+}
+
+fn unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn default_recording_path() -> Result<PathBuf> {
+    let root = dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("shio/recordings");
+    let dir = match std::env::current_dir() {
+        Ok(cwd) => root.join(cwd.to_string_lossy().replace('/', "-")),
+        Err(_) => root,
+    };
+    Ok(dir.join(format!("rec-{}.md", unix_seconds())))
 }
 
 enum AppStatus {
@@ -194,6 +261,9 @@ enum AppStatus {
 
 impl App {
     fn push_entry(&mut self, kind: EntryKind, text: &str) {
+        if let Some(rec) = self.recording.as_mut() {
+            rec.write_entry(kind, text);
+        }
         self.entries.push(ChatEntry {
             kind,
             text: text.to_string(),
@@ -273,20 +343,21 @@ async fn run_loop(
         quit: false,
         model_task: None,
         ctx_size: session.ctx_size,
+        recording: None,
     };
 
     let welcome = match (has_tools, has_skills) {
         (true, true) => {
-            "ShioRamen ready — tool use ON.  /new /resume /clear /compact /stats /include <path> /tools /skills /exit   PgUp/Dn to scroll"
+            "ShioRamen ready — tool use ON.  /new /resume /clear /compact /stats /include <path> /tools /skills /record /stop-record /exit   PgUp/Dn to scroll"
         }
         (true, false) => {
-            "ShioRamen ready — tool use ON.  /new /resume /clear /compact /stats /include <path> /tools /exit   PgUp/Dn to scroll"
+            "ShioRamen ready — tool use ON.  /new /resume /clear /compact /stats /include <path> /tools /record /stop-record /exit   PgUp/Dn to scroll"
         }
         (false, true) => {
-            "ShioRamen ready.  /new /resume /clear /compact /stats /include <path> /skills /exit   PgUp/Dn to scroll"
+            "ShioRamen ready.  /new /resume /clear /compact /stats /include <path> /skills /record /stop-record /exit   PgUp/Dn to scroll"
         }
         (false, false) => {
-            "ShioRamen ready.  /new /resume /clear /compact /stats /include <path> /exit   PgUp/Dn to scroll"
+            "ShioRamen ready.  /new /resume /clear /compact /stats /include <path> /record /stop-record /exit   PgUp/Dn to scroll"
         }
     };
     app.push_info(welcome);
@@ -1116,6 +1187,9 @@ fn do_complete(app: &mut App) {
         "/include ",
         "/tools",
         "/skills",
+        "/record",
+        "/record ",
+        "/stop-record",
     ];
 
     let typed = app.input[..app.cursor].to_string();
@@ -1477,6 +1551,24 @@ async fn submit(app: &mut App) {
             cmd_include(app, path_str);
             return;
         }
+        "/record" => {
+            cmd_record(app, None);
+            return;
+        }
+        _ if input.starts_with("/record ") => {
+            let path_str = input["/record ".len()..].trim();
+            let custom = if path_str.is_empty() {
+                None
+            } else {
+                Some(path_str.to_string())
+            };
+            cmd_record(app, custom);
+            return;
+        }
+        "/stop-record" => {
+            cmd_stop_record(app);
+            return;
+        }
         _ => {}
     }
 
@@ -1501,6 +1593,48 @@ async fn submit(app: &mut App) {
     app.status = AppStatus::Waiting;
     app.anim_frame = 0;
     dispatch_turn(app);
+}
+
+fn cmd_record(app: &mut App, custom_path: Option<String>) {
+    if let Some(rec) = app.recording.as_ref() {
+        let p = rec.path.display().to_string();
+        app.push_info(&format!(
+            "Already recording to {p}. Use /stop-record to stop."
+        ));
+        return;
+    }
+    let path = match custom_path {
+        Some(s) => PathBuf::from(s),
+        None => match default_recording_path() {
+            Ok(p) => p,
+            Err(e) => {
+                app.push_entry(EntryKind::Error, &format!("record: {e}"));
+                return;
+            }
+        },
+    };
+    match Recorder::open(path) {
+        Ok(rec) => {
+            let p = rec.path.display().to_string();
+            app.recording = Some(rec);
+            app.push_info(&format!(
+                "Recording started → {p}. Use /stop-record to stop; leaving chat also stops it."
+            ));
+        }
+        Err(e) => app.push_entry(EntryKind::Error, &format!("record: {e:#}")),
+    }
+}
+
+fn cmd_stop_record(app: &mut App) {
+    match app.recording.take() {
+        Some(rec) => {
+            let p = rec.path.display().to_string();
+            // BufWriter is dropped here; trailing buffered bytes flush on drop.
+            drop(rec);
+            app.push_info(&format!("Recording stopped → {p}"));
+        }
+        None => app.push_info("Not currently recording."),
+    }
 }
 
 fn cmd_include(app: &mut App, path_str: &str) {
@@ -2164,18 +2298,13 @@ fn finalize_streaming(app: &mut App) {
     if let Some(text) = app.thinking.take() {
         let text = text.trim_matches('\n').to_string();
         if app.show_thinking && !text.is_empty() {
-            app.entries.push(ChatEntry {
-                kind: EntryKind::Thinking,
-                text,
-            });
+            app.push_entry(EntryKind::Thinking, &text);
         }
     }
 
     if let Some(text) = app.streaming.take() {
-        app.entries.push(ChatEntry {
-            kind: EntryKind::Assistant,
-            text: replace_latex(text),
-        });
+        let text = replace_latex(text);
+        app.push_entry(EntryKind::Assistant, &text);
     }
 }
 
@@ -3323,5 +3452,114 @@ mod tests {
         // The full string must appear once the buffer is flushed.
         let s = streaming.unwrap_or_default();
         assert!(s.contains("# \u{1F3E0}") || s.is_empty());
+    }
+
+    // ── Recorder ─────────────────────────────────────────────────────────────
+
+    fn fresh_record_path(tag: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "shio_record_test_{}_{}_{}.md",
+            tag,
+            std::process::id(),
+            unix_seconds()
+        ));
+        let _ = std::fs::remove_file(&p);
+        p
+    }
+
+    #[test]
+    fn recorder_writes_header_and_entries() {
+        let path = fresh_record_path("basic");
+        let mut rec = Recorder::open(path.clone()).unwrap();
+        rec.write_entry(EntryKind::User, "hello");
+        rec.write_entry(EntryKind::Assistant, "hi there");
+        drop(rec);
+
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.starts_with("# shio recording — started "));
+        assert!(body.contains("### you\n\nhello\n"));
+        assert!(body.contains("### shio\n\nhi there\n"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn recorder_creates_missing_parent_directory() {
+        let dir = std::env::temp_dir().join(format!(
+            "shio_record_nested_{}_{}",
+            std::process::id(),
+            unix_seconds()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("a/b/c/rec.md");
+        let mut rec = Recorder::open(path.clone()).unwrap();
+        rec.write_entry(EntryKind::Info, "ok");
+        drop(rec);
+        assert!(path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recorder_appends_to_existing_file() {
+        let path = fresh_record_path("append");
+        {
+            let mut rec = Recorder::open(path.clone()).unwrap();
+            rec.write_entry(EntryKind::User, "first");
+        }
+        {
+            let mut rec = Recorder::open(path.clone()).unwrap();
+            rec.write_entry(EntryKind::User, "second");
+        }
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("### you\n\nfirst\n"));
+        assert!(body.contains("### you\n\nsecond\n"));
+        // Two header lines, since each open writes one.
+        assert_eq!(
+            body.matches("# shio recording — started ").count(),
+            2,
+            "each open should write a fresh start banner"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn recorder_labels_all_entry_kinds() {
+        let path = fresh_record_path("kinds");
+        let mut rec = Recorder::open(path.clone()).unwrap();
+        rec.write_entry(EntryKind::User, "u");
+        rec.write_entry(EntryKind::Assistant, "a");
+        rec.write_entry(EntryKind::Thinking, "t");
+        rec.write_entry(EntryKind::ToolCall, "tc");
+        rec.write_entry(EntryKind::ToolResult, "tr");
+        rec.write_entry(EntryKind::Info, "i");
+        rec.write_entry(EntryKind::Error, "e");
+        drop(rec);
+
+        let body = std::fs::read_to_string(&path).unwrap();
+        for header in [
+            "### you",
+            "### shio",
+            "### thinking",
+            "### tool call",
+            "### tool result",
+            "### info",
+            "### error",
+        ] {
+            assert!(body.contains(header), "missing header: {header}");
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn default_recording_path_lives_under_shio_recordings() {
+        let p = default_recording_path().unwrap();
+        let s = p.to_string_lossy();
+        assert!(s.contains("shio/recordings"), "got {s}");
+        assert!(
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with("rec-") && n.ends_with(".md"))
+                .unwrap_or(false),
+            "unexpected file name: {s}"
+        );
     }
 }
