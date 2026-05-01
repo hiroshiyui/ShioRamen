@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.5.0] — 2026-05-02
+
+### Added
+- (tui): `/record` and `/stop-record` slash commands archive the chat session to a Markdown file (default under `$XDG_DATA_HOME/shio/recordings/`).
+
+### Fixed
+- (tools): tightened `write_file` JSON schema so models stop dropping the `path` argument.
+- (tui): resolved Clippy 1.95 `collapsible_match` and `manual_checked_ops` lints.
+- (context): dropped a needless borrow in a test fixture flagged by Clippy 1.95.
+
+### Documentation
+- Refreshed README's TUI command list (`/new`, `/resume`, `/compact`, `/model`, `/record`, `/stop-record`) and bumped AGENTS.md test count to ~400.
+
+### Maintenance
+- (config): default `shio.toml` now points at `gemma-4-E4B-it-UD-Q8_K_XL.gguf`.
+
 ## [v1.4.0] — 2026-04-12
 
 ### Added
