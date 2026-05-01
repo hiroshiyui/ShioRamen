@@ -132,7 +132,7 @@ mod tests {
     fn make_tree(dir: &Path) {
         fs::write(dir.join("main.rs"), "fn main() {}").unwrap();
         fs::write(dir.join("README.md"), "# hi").unwrap();
-        fs::write(dir.join("data.bin"), &[0u8, 1, 2, 3]).unwrap(); // no matching ext
+        fs::write(dir.join("data.bin"), [0u8, 1, 2, 3]).unwrap(); // no matching ext
         let sub = dir.join("sub");
         fs::create_dir_all(&sub).unwrap();
         fs::write(sub.join("util.rs"), "pub fn util() {}").unwrap();
