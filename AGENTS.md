@@ -9,7 +9,7 @@ The CLI binary is named `shio`.
 ```sh
 cargo build                  # debug build
 cargo build --release        # release build
-cargo test                   # run all tests (~259 tests, must all pass)
+cargo test                   # run all tests (~400 tests, must all pass)
 cargo clippy -- -D warnings  # no warnings allowed
 ```
 

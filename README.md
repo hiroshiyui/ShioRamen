@@ -184,10 +184,16 @@ Options:
 | `Ctrl+U` | Erase entire input line |
 | `Ctrl+W` | Erase word before cursor |
 | `/clear` / `/reset` | Clear conversation history (keeps system prompt) |
+| `/new` | Clear history *and* delete the auto-saved session file |
+| `/resume` | Reload the most recent saved session |
+| `/compact` | Summarise older history to free up context |
 | `/stats` | Show server context usage (tokens used / available per slot) |
+| `/model` | Show the model currently loaded by `llama-server` |
 | `/include <path>` | Load a file or directory into context |
 | `/tools` | List available tools |
 | `/skills` | List defined custom skills |
+| `/record [path]` | Start archiving the chat to a file (default under `$XDG_DATA_HOME/shio/recordings/`) |
+| `/stop-record` | Stop the current recording |
 | `/<skill-name> [args]` | Invoke a custom skill (defined in `shio.toml`) |
 | `/exit` / `/quit` | Quit |
 
