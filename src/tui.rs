@@ -457,9 +457,15 @@ fn render_context_bar(pct: u32) -> Vec<Span<'static>> {
 fn render(f: &mut Frame, app: &App) {
     let area = f.area();
 
-    // Expand input area height for multi-line input (cap at 10 visible lines).
-    let input_line_count = (app.input.chars().filter(|&c| c == '\n').count() + 1).min(10) as u16;
-    let input_height = input_line_count + 1; // +1 for the top border
+    // Wrap the input to the available width up front so the layout, the
+    // rendered rows, and the cursor placement all agree on the same row count.
+    let prefix_cols: u16 = 2;
+    let input_area_cols = area.width.saturating_sub(prefix_cols).max(1);
+    let (wrapped_rows, cur_row, cur_col) =
+        wrap_input_with_cursor(&app.input, app.cursor, input_area_cols);
+    // Show at most 3 wrapped rows; overflow scrolls vertically.
+    let visible_input_rows = wrapped_rows.len().clamp(1, 3) as u16;
+    let input_height = visible_input_rows + 1; // +1 for the top border
 
     let chunks = Layout::vertical([
         Constraint::Length(1),            // title bar
@@ -561,63 +567,73 @@ fn render(f: &mut Frame, app: &App) {
     let inner = input_block.inner(chunks[3]);
     f.render_widget(input_block, chunks[3]);
 
-    use unicode_width::UnicodeWidthStr;
-    let prefix = "> ";
-    let cont_prefix = "  ";
-    let prefix_cols = prefix.width() as u16; // 2
-
-    // Determine cursor line and its display column.
-    let (cursor_line, _) = cursor_line_col(&app.input, app.cursor);
-    let cursor_col_str = app.input[..app.cursor]
-        .rsplit_once('\n')
-        .map(|(_, after)| after)
-        .unwrap_or(&app.input[..app.cursor]);
-    let cursor_col = cursor_col_str.width() as u16;
-
-    let input_area_cols = inner.width.saturating_sub(prefix_cols);
-
-    // Horizontal scroll only for single-line input to avoid distorting other
-    // lines in multi-line mode.
-    let input_lines: Vec<&str> = if app.input.is_empty() {
-        vec![""]
-    } else {
-        app.input.split('\n').collect()
-    };
-    let scroll_x: u16 = if input_lines.len() == 1 && cursor_col >= input_area_cols {
-        cursor_col - input_area_cols + 1
-    } else {
-        0
-    };
-
-    // Vertical scroll to keep cursor line visible when input is capped at 10 rows.
+    // Vertical scroll to keep the cursor row visible inside the 3-row window.
     let visible_rows = inner.height as usize;
-    let scroll_row: u16 = if cursor_line >= visible_rows {
-        (cursor_line - visible_rows + 1) as u16
+    let scroll_row: u16 = if visible_rows > 0 && cur_row >= visible_rows {
+        (cur_row - visible_rows + 1) as u16
     } else {
         0
     };
 
-    // Build one ratatui Line per input row with the appropriate prefix.
-    let text_lines: Vec<Line<'_>> = input_lines
+    // Build one ratatui Line per wrapped visual row with the appropriate prefix.
+    let text_lines: Vec<Line<'_>> = wrapped_rows
         .iter()
         .enumerate()
-        .map(|(i, &line)| {
-            let pfx = if i == 0 { prefix } else { cont_prefix };
-            Line::from(vec![Span::raw(pfx), Span::raw(line)])
+        .map(|(i, line)| {
+            let pfx = if i == 0 { "> " } else { "  " };
+            Line::from(vec![Span::raw(pfx), Span::raw(line.clone())])
         })
         .collect();
 
-    f.render_widget(
-        Paragraph::new(text_lines).scroll((scroll_row, scroll_x)),
-        inner,
-    );
+    f.render_widget(Paragraph::new(text_lines).scroll((scroll_row, 0)), inner);
 
     // Draw cursor only while input is active.
     if matches!(app.status, AppStatus::Idle) {
-        let cx = inner.x + prefix_cols + cursor_col.saturating_sub(scroll_x);
-        let cy = inner.y + (cursor_line as u16).saturating_sub(scroll_row);
+        let cx = inner.x + prefix_cols + cur_col;
+        let cy = inner.y + (cur_row as u16).saturating_sub(scroll_row);
         f.set_cursor_position((cx, cy));
     }
+}
+
+/// Wraps `input` into visual rows that each fit within `width` display columns,
+/// breaking on `\n` and on display-width overflow. Returns the wrapped rows
+/// together with the cursor's (row, column) inside that wrapped layout.
+fn wrap_input_with_cursor(input: &str, cursor: usize, width: u16) -> (Vec<String>, usize, u16) {
+    use unicode_width::UnicodeWidthChar;
+    let width = width.max(1) as usize;
+    let mut rows: Vec<String> = vec![String::new()];
+    let mut col: usize = 0;
+    let mut cur_pos: Option<(usize, u16)> = None;
+    let mut byte_idx = 0usize;
+
+    for ch in input.chars() {
+        if cur_pos.is_none() && byte_idx == cursor {
+            cur_pos = Some((rows.len() - 1, col as u16));
+        }
+        if ch == '\n' {
+            rows.push(String::new());
+            col = 0;
+        } else {
+            let cw = ch.width().unwrap_or(0);
+            if col + cw > width && col > 0 {
+                rows.push(String::new());
+                col = 0;
+            }
+            rows.last_mut().unwrap().push(ch);
+            col += cw;
+        }
+        byte_idx += ch.len_utf8();
+    }
+    if cur_pos.is_none() {
+        if col == width {
+            rows.push(String::new());
+            cur_pos = Some((rows.len() - 1, 0));
+        } else {
+            cur_pos = Some((rows.len() - 1, col as u16));
+        }
+    }
+    let (cr, cc) = cur_pos.unwrap();
+    (rows, cr, cc)
 }
 
 fn build_lines(
