@@ -533,7 +533,43 @@ mod tests {
             "read_file",
             &serde_json::json!({ "path": path.to_str().unwrap() }).to_string(),
         );
-        assert_eq!(result, "hello tool");
+        assert!(result.starts_with("hello tool"), "{result}");
+        assert!(result.contains("end of file"), "{result}");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_file_chunked_returns_continuation_hint() {
+        let path = std::env::temp_dir().join("shio_tool_read_chunked.txt");
+        let body: String = (1..=10).map(|i| format!("line {i}\n")).collect();
+        fs::write(&path, &body).unwrap();
+        let ex = executor(false, false);
+        let result = ex.vm.lock().unwrap().call_tool(
+            "read_file",
+            &serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "cursor": 1,
+                "chunk_lines": 4,
+            })
+            .to_string(),
+        );
+        assert!(result.contains("line 1"), "{result}");
+        assert!(result.contains("line 4"), "{result}");
+        assert!(!result.contains("line 5"), "{result}");
+        assert!(result.contains("cursor=5"), "{result}");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_file_cursor_past_eof() {
+        let path = std::env::temp_dir().join("shio_tool_read_past_eof.txt");
+        fs::write(&path, "only line\n").unwrap();
+        let ex = executor(false, false);
+        let result = ex.vm.lock().unwrap().call_tool(
+            "read_file",
+            &serde_json::json!({ "path": path.to_str().unwrap(), "cursor": 99 }).to_string(),
+        );
+        assert!(result.contains("past EOF"), "{result}");
         let _ = fs::remove_file(&path);
     }
 

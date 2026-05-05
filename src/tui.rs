@@ -27,7 +27,9 @@ use ratatui::{
 use tokio::sync::{mpsc, oneshot};
 
 use crate::chat::ChatSession;
-use crate::client::{AgentTurn, LlamaClient, Message, SamplingParams, ToolCallItem, ToolDef};
+use crate::client::{
+    AgentTurn, LlamaClient, Message, MessageContent, SamplingParams, ToolCallItem, ToolDef,
+};
 use crate::config::SkillDef;
 use crate::context;
 use crate::tools::ToolExecutor;
@@ -2431,6 +2433,10 @@ async fn run_agent_loop(
             let tools_overhead = serde_json::to_string(tools).map_or(0, |s| s.len());
             let budget = (ctx_size as usize * 4 * 85 / 100).saturating_sub(tools_overhead);
             trim_to_budget_before(msgs, budget, turn_start);
+            // If current-turn tool history alone still exceeds budget,
+            // stub the oldest tool_results from this turn.  Pre-turn trim
+            // can't help here.  The newest tool_result is always preserved.
+            stub_oldest_tool_results_in_turn(msgs, turn_start, budget);
         }
         // In plan mode, filter the tool list to read-only operations only.
         // `plan_mode_tools` is computed at most once per session.
@@ -2673,16 +2679,153 @@ async fn run_agent_loop(
                     }
                     .min(executor.max_tool_result_chars);
 
-                    msgs.push(Message::tool_result(
-                        &call.id,
-                        cap_tool_result(result, result_cap),
-                    ));
+                    // Supersede earlier results from the same read-shaped tool
+                    // on the same key (path/url) so context doesn't grow
+                    // O(N_calls) when chunked or repeated.
+                    let supersede_spec: Option<&'static str> = match call.function.name.as_str() {
+                        "read_file" | "list_directory" => Some("path"),
+                        "fetch_url" => Some("url"),
+                        _ => None,
+                    };
+                    if let Some(key_name) = supersede_spec
+                        && let Ok(args) =
+                            serde_json::from_str::<serde_json::Value>(&call.function.arguments)
+                        && let Some(key_val) = args.get(key_name).and_then(|v| v.as_str())
+                    {
+                        supersede_prior_tool_for_key(
+                            msgs,
+                            &call.function.name,
+                            key_name,
+                            key_val,
+                            &call.id,
+                        );
+                    }
+
+                    let capped = cap_tool_result(result, result_cap);
+                    let needs_chunk_nudge = call.function.name == "read_file"
+                        && capped.contains("call read_file again with cursor=");
+
+                    msgs.push(Message::tool_result(&call.id, capped));
+
+                    // After a chunked read_file, nudge the model to commit its
+                    // outline to an assistant message before requesting the
+                    // next chunk — supersede will wipe the bytes once the next
+                    // chunk arrives, so any analysis must be persisted now.
+                    if needs_chunk_nudge {
+                        msgs.push(Message::system(
+                            "Before requesting the next chunk, append to your running outline of \
+                             this file (modules, types, public fns, key call edges). Do not quote \
+                             source lines from the chunk above — earlier chunks will be replaced \
+                             with stubs once the next chunk is read.",
+                        ));
+                    }
                 }
             }
         }
     }
 
     anyhow::bail!("agent exceeded {MAX_AGENT_ITERATIONS} iterations without a text response")
+}
+
+/// Replace the body of any earlier `tool_name` tool_result whose argument
+/// `key_name` equals `key_value` with a short stub. Keeps the message in
+/// place (chat templates require every `role:"tool"` message to pair with a
+/// tool_call in the preceding assistant message) but drops the bytes so
+/// context doesn't grow per call. Used for read-shaped tools where a later
+/// call obsoletes earlier ones on the same key (read_file → path,
+/// list_directory → path, fetch_url → url).
+fn supersede_prior_tool_for_key(
+    msgs: &mut [Message],
+    tool_name: &str,
+    key_name: &str,
+    key_value: &str,
+    current_id: &str,
+) {
+    use std::collections::HashMap;
+    // Map tool_call id → (function name, value of `key_name` in args).
+    let mut owner: HashMap<String, (String, String)> = HashMap::new();
+    for m in msgs.iter() {
+        if m.role == "assistant"
+            && let Some(calls) = &m.tool_calls
+        {
+            for c in calls {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&c.function.arguments)
+                    && let Some(k) = v.get(key_name).and_then(|x| x.as_str())
+                {
+                    owner.insert(c.id.clone(), (c.function.name.clone(), k.to_string()));
+                }
+            }
+        }
+    }
+    for m in msgs.iter_mut() {
+        if m.role != "tool" {
+            continue;
+        }
+        let Some(id) = &m.tool_call_id else { continue };
+        if id == current_id {
+            continue;
+        }
+        if let Some((name, k)) = owner.get(id)
+            && name == tool_name
+            && k == key_value
+        {
+            m.content = Some(MessageContent::Text(format!(
+                "[earlier {tool_name} result for {key_value} — superseded by a later call]"
+            )));
+        }
+    }
+}
+
+/// Stub the *oldest* tool_result messages in the slice `msgs[turn_start..]`
+/// until total estimated size is at or below `budget`, or only one
+/// tool_result remains. Stubs (rather than removing) so chat-template
+/// `tool_call_id` pairing stays valid. Used inside the agent loop when the
+/// current-turn history alone exceeds budget — `trim_to_budget_before` only
+/// touches pre-turn history.
+///
+/// Returns the number of messages that were stubbed.
+fn stub_oldest_tool_results_in_turn(
+    msgs: &mut [Message],
+    turn_start: usize,
+    budget: usize,
+) -> usize {
+    if turn_start >= msgs.len() {
+        return 0;
+    }
+    let total: usize = msgs.iter().map(msg_size).sum();
+    if total <= budget {
+        return 0;
+    }
+    // Indices of tool_result messages in this turn that haven't already been
+    // stubbed (we recognise stubs by their "[earlier" prefix and small size).
+    let stub_marker = "[earlier ";
+    let candidates: Vec<usize> = msgs
+        .iter()
+        .enumerate()
+        .skip(turn_start)
+        .filter(|(_, m)| {
+            m.role == "tool" && !m.text_content().is_some_and(|t| t.starts_with(stub_marker))
+        })
+        .map(|(i, _)| i)
+        .collect();
+    // Keep at least one current-turn tool_result un-stubbed (the most recent).
+    if candidates.len() <= 1 {
+        return 0;
+    }
+    let mut stubbed = 0usize;
+    let cutoff = candidates.len() - 1; // skip the last (newest)
+    for &idx in &candidates[..cutoff] {
+        let current_total: usize = msgs.iter().map(msg_size).sum();
+        if current_total <= budget {
+            break;
+        }
+        let m = &mut msgs[idx];
+        m.content = Some(MessageContent::Text(
+            "[earlier tool result dropped to free context]".to_string(),
+        ));
+        stubbed += 1;
+    }
+    stubbed
 }
 
 fn needs_confirm(call: &ToolCallItem, exec: &ToolExecutor) -> bool {
@@ -3276,6 +3419,182 @@ mod tests {
             out, content,
             "content within large_limit should not be truncated"
         );
+    }
+
+    // ── supersede_prior_tool_for_key ──────────────────────────────────────────
+
+    fn assistant_call(id: &str, name: &str, args_json: &str) -> Message {
+        Message::assistant_tool_calls(vec![ToolCallItem {
+            id: id.into(),
+            kind: "function".into(),
+            function: ToolCallFunction {
+                name: name.into(),
+                arguments: args_json.into(),
+            },
+        }])
+    }
+
+    #[test]
+    fn supersede_stubs_only_same_path() {
+        let mut msgs = vec![
+            assistant_call("c1", "read_file", r#"{"path":"a.rs","cursor":1}"#),
+            Message::tool_result("c1", "lines 1-400 of a.rs..."),
+            assistant_call("c2", "read_file", r#"{"path":"b.rs","cursor":1}"#),
+            Message::tool_result("c2", "lines 1-400 of b.rs..."),
+            assistant_call("c3", "read_file", r#"{"path":"a.rs","cursor":401}"#),
+            Message::tool_result("c3", "lines 401-800 of a.rs..."),
+        ];
+        supersede_prior_tool_for_key(&mut msgs, "read_file", "path", "a.rs", "c3");
+
+        assert!(
+            msgs[1]
+                .text_content()
+                .unwrap()
+                .starts_with("[earlier read_file result for a.rs"),
+            "prior a.rs chunk should be stubbed, got: {:?}",
+            msgs[1].text_content()
+        );
+        assert_eq!(
+            msgs[3].text_content(),
+            Some("lines 1-400 of b.rs..."),
+            "b.rs chunk must remain intact"
+        );
+        assert_eq!(
+            msgs[5].text_content(),
+            Some("lines 401-800 of a.rs..."),
+            "current chunk must not be stubbed"
+        );
+    }
+
+    #[test]
+    fn supersede_skips_current_id() {
+        let mut msgs = vec![
+            assistant_call("c1", "read_file", r#"{"path":"a.rs"}"#),
+            Message::tool_result("c1", "first read"),
+        ];
+        supersede_prior_tool_for_key(&mut msgs, "read_file", "path", "a.rs", "c1");
+        assert_eq!(msgs[1].text_content(), Some("first read"));
+    }
+
+    #[test]
+    fn supersede_ignores_other_tools() {
+        let mut msgs = vec![
+            assistant_call("c1", "grep_files", r#"{"path":"a.rs","pattern":"x"}"#),
+            Message::tool_result("c1", "grep hits in a.rs"),
+            assistant_call("c2", "read_file", r#"{"path":"a.rs","cursor":1}"#),
+            Message::tool_result("c2", "lines of a.rs"),
+        ];
+        supersede_prior_tool_for_key(&mut msgs, "read_file", "path", "a.rs", "c2");
+        assert_eq!(
+            msgs[1].text_content(),
+            Some("grep hits in a.rs"),
+            "non-read_file tool result must not be stubbed"
+        );
+    }
+
+    #[test]
+    fn supersede_works_for_fetch_url_with_url_key() {
+        let mut msgs = vec![
+            assistant_call("c1", "fetch_url", r#"{"url":"https://x/y"}"#),
+            Message::tool_result("c1", "html body 1"),
+            assistant_call("c2", "fetch_url", r#"{"url":"https://x/y"}"#),
+            Message::tool_result("c2", "html body 2"),
+        ];
+        supersede_prior_tool_for_key(&mut msgs, "fetch_url", "url", "https://x/y", "c2");
+        assert!(
+            msgs[1]
+                .text_content()
+                .unwrap()
+                .starts_with("[earlier fetch_url result for https://x/y"),
+            "prior fetch_url should be stubbed"
+        );
+        assert_eq!(msgs[3].text_content(), Some("html body 2"));
+    }
+
+    #[test]
+    fn supersede_works_for_list_directory() {
+        let mut msgs = vec![
+            assistant_call("c1", "list_directory", r#"{"path":"src"}"#),
+            Message::tool_result("c1", "files in src (old)"),
+            assistant_call("c2", "list_directory", r#"{"path":"src"}"#),
+            Message::tool_result("c2", "files in src (new)"),
+        ];
+        supersede_prior_tool_for_key(&mut msgs, "list_directory", "path", "src", "c2");
+        assert!(
+            msgs[1]
+                .text_content()
+                .unwrap()
+                .starts_with("[earlier list_directory result for src"),
+        );
+    }
+
+    // ── stub_oldest_tool_results_in_turn ──────────────────────────────────────
+
+    #[test]
+    fn stub_oldest_no_op_when_under_budget() {
+        let mut msgs = vec![
+            Message::user("hi"),
+            assistant_call("c1", "read_file", r#"{"path":"a"}"#),
+            Message::tool_result("c1", "small"),
+        ];
+        let n = stub_oldest_tool_results_in_turn(&mut msgs, 0, 100_000);
+        assert_eq!(n, 0);
+        assert_eq!(msgs[2].text_content(), Some("small"));
+    }
+
+    #[test]
+    fn stub_oldest_preserves_newest_tool_result() {
+        // Three big tool results in this turn; budget forces us to stub.
+        let big = "x".repeat(2_000);
+        let mut msgs = vec![
+            assistant_call("c1", "read_file", r#"{"path":"a"}"#),
+            Message::tool_result("c1", big.clone()),
+            assistant_call("c2", "read_file", r#"{"path":"b"}"#),
+            Message::tool_result("c2", big.clone()),
+            assistant_call("c3", "read_file", r#"{"path":"c"}"#),
+            Message::tool_result("c3", big.clone()),
+        ];
+        let n = stub_oldest_tool_results_in_turn(&mut msgs, 0, 2_500);
+        assert!(n >= 1, "should stub at least one");
+        // The newest tool_result must remain intact.
+        assert_eq!(
+            msgs[5].text_content().map(|s| s.len()),
+            Some(big.len()),
+            "newest tool_result must not be stubbed"
+        );
+    }
+
+    #[test]
+    fn stub_oldest_skips_already_stubbed() {
+        let big = "y".repeat(2_000);
+        let mut msgs = vec![
+            assistant_call("c1", "read_file", r#"{"path":"a"}"#),
+            Message::tool_result("c1", "[earlier read_file result for a — superseded]"),
+            assistant_call("c2", "read_file", r#"{"path":"b"}"#),
+            Message::tool_result("c2", big.clone()),
+        ];
+        // Only one non-stub tool_result remains, so nothing more should be stubbed.
+        let n = stub_oldest_tool_results_in_turn(&mut msgs, 0, 100);
+        assert_eq!(n, 0);
+        assert_eq!(msgs[3].text_content().map(|s| s.len()), Some(big.len()));
+    }
+
+    #[test]
+    fn stub_oldest_respects_turn_start() {
+        let big = "z".repeat(2_000);
+        let mut msgs = vec![
+            // pre-turn history (must not be touched by this helper)
+            assistant_call("p1", "read_file", r#"{"path":"old"}"#),
+            Message::tool_result("p1", big.clone()),
+            // current turn starts at index 2
+            assistant_call("c1", "read_file", r#"{"path":"a"}"#),
+            Message::tool_result("c1", big.clone()),
+            assistant_call("c2", "read_file", r#"{"path":"b"}"#),
+            Message::tool_result("c2", big.clone()),
+        ];
+        stub_oldest_tool_results_in_turn(&mut msgs, 2, 2_500);
+        // Pre-turn message remains untouched.
+        assert_eq!(msgs[1].text_content().map(|s| s.len()), Some(big.len()));
     }
 
     // ── needs_confirm ─────────────────────────────────────────────────────────
