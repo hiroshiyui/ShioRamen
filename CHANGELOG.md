@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.7.0] — 2026-05-05
+
+### Added
+- (tui+tools): `read_file` returns large files in cursor-paged chunks; the agent loop auto-supersedes prior chunks of the same path with a stub so walking a long file no longer grows context O(N_chunks). Also covers `list_directory` and `fetch_url` on the same path/url.
+- (tui): inject a one-shot `[system-reminder]` after each chunked `read_file` so the model commits its outline to its reply before the next chunk wipes the bytes.
+- (tui): `stub_oldest_tool_results_in_turn` stubs the oldest current-turn tool results when in-loop budget is exceeded (pre-turn `trim_to_budget_before` can't help there).
+- (ruby/native): `Shio.read_file` is now backed by an MRU cache keyed on `(path, mtime, len)`, capped at 4 entries — chunked walks and repeated reads no longer reread the whole file each call.
+
+### Changed
+- (tui): centralised supersede dispatch behind `SUPERSEDE_DISPATCH` (a registry of `(tool, key, default)` tuples) and `SUPERSEDE_STUB_SENTINEL` (zero-width-space prefix) so stub detection no longer relies on string-sniffing for `"[earlier "`. `list_directory` without an explicit `path` now supersedes via the registered default.
+- (chat): refreshed `PROMPT_FULL` / `PROMPT_CONCISE` (and `shio.toml` mirror) to describe the chunked `read_file` flow and reposition `read_file_range` as the "when you already know the line range" tool.
+
+### Fixed
+- (tui): switched the chunked `read_file` nudge from `Message::system` to `Message::user` with a `[system-reminder]` prefix; jinja chat templates (Gemma in particular) reject or silently drop additional system messages after index 0.
+- (tui): `stub_oldest_tool_results_in_turn` now tracks a running total instead of recomputing it (O(N²) → O(N)).
+
+### Documentation
+- Refreshed `doc/reference_manual.md` context-budget notes (corrected stale "trimmed to ~80%" → 85%; added entries for the new in-loop stubber and per-key supersede).
+- Bumped AGENTS.md test count to ~412 and rewrote the stale Rust-match-arm tools description to reflect that tools live in `tools/builtin/*.rb` dispatched via `ShioVm`.
+
+### Maintenance
+- (deps): bumped `llama.cpp` submodule from `b8665` to `b9030` (365 upstream commits); rebuilt `./bin/llama-server` (CUDA).
+- (deps): bumped `rustls-webpki` to 0.103.13 (clears RUSTSEC-2026-0098, -0099, -0104).
+- (deps): refreshed `Cargo.lock` with latest semver-compatible patch versions (bitflags, cc, clap, nix, etc.).
+- Test count: 426 (+30 — chunked read_file, supersede + stub helpers, sentinel detection, dispatch coverage, native cache hit/miss/invalidate/evict).
+
 ## [v1.6.0] — 2026-05-03
 
 ### Added
