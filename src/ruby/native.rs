@@ -88,6 +88,59 @@ pub unsafe extern "C" fn shio_native_create_dir_all(
 }
 
 // ── Shio.read_file ────────────────────────────────────────────────────────────
+//
+// Small bounded cache keyed on (path, mtime, len). Chunked read_file walks a
+// large file in many Ruby calls; without this each call would reread+revalidate
+// the entire file. Cache invalidates automatically when the file changes.
+
+#[derive(Clone)]
+struct CachedRead {
+    path: String,
+    mtime: std::time::SystemTime,
+    len: u64,
+    content: std::sync::Arc<String>,
+}
+
+const READ_CACHE_CAP: usize = 4;
+
+fn read_cache() -> &'static std::sync::Mutex<Vec<CachedRead>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<Vec<CachedRead>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(Vec::with_capacity(READ_CACHE_CAP)))
+}
+
+fn cached_read_file(path: &str) -> std::io::Result<std::sync::Arc<String>> {
+    let meta = std::fs::metadata(path)?;
+    let mtime = meta.modified()?;
+    let len = meta.len();
+
+    if let Ok(mut cache) = read_cache().lock()
+        && let Some(pos) = cache
+            .iter()
+            .position(|c| c.path == path && c.mtime == mtime && c.len == len)
+    {
+        // Move hit to back (most-recently-used) so it survives eviction.
+        let hit = cache.remove(pos);
+        let content = hit.content.clone();
+        cache.push(hit);
+        return Ok(content);
+    }
+
+    let content = std::sync::Arc::new(std::fs::read_to_string(path)?);
+
+    if let Ok(mut cache) = read_cache().lock() {
+        if cache.len() >= READ_CACHE_CAP {
+            cache.remove(0);
+        }
+        cache.push(CachedRead {
+            path: path.to_string(),
+            mtime,
+            len,
+            content: content.clone(),
+        });
+    }
+    Ok(content)
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn shio_native_read_file(
@@ -101,8 +154,8 @@ pub unsafe extern "C" fn shio_native_read_file(
             return ptr::null();
         }
     };
-    match std::fs::read_to_string(p) {
-        Ok(content) => set_result(content),
+    match cached_read_file(p) {
+        Ok(content) => set_result((*content).clone()),
         Err(e) => {
             // Provide a user-friendly hint for binary files (InvalidData from
             // a UTF-8 decode failure is the typical symptom).
@@ -732,4 +785,114 @@ pub unsafe extern "C" fn shio_native_lsp_query(
         serde_json::from_str(&config_json).unwrap_or_default();
     let result = crate::lsp::query(&operation, &file, line, col, &lsp_config);
     set_result(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{READ_CACHE_CAP, cached_read_file, read_cache};
+    use std::fs;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    /// Serialise tests in this module — they all share the process-wide
+    /// `read_cache()`, so running in parallel would let one test's clear
+    /// or insert race with another's assertions.
+    fn test_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn clear_cache() {
+        if let Ok(mut c) = read_cache().lock() {
+            c.clear();
+        }
+    }
+
+    fn cache_len() -> usize {
+        read_cache().lock().map(|c| c.len()).unwrap_or(0)
+    }
+
+    fn cache_contains(path: &str) -> bool {
+        read_cache()
+            .lock()
+            .map(|c| c.iter().any(|e| e.path == path))
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn cached_read_file_returns_content() {
+        let _g = test_lock();
+        clear_cache();
+        let path = std::env::temp_dir().join("shio_native_cache_basic.txt");
+        fs::write(&path, b"hello").unwrap();
+        let got = cached_read_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(&*got, "hello");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn cached_read_file_inserts_entry_on_miss() {
+        let _g = test_lock();
+        clear_cache();
+        let path = std::env::temp_dir().join("shio_native_cache_miss.txt");
+        fs::write(&path, b"miss-then-hit").unwrap();
+        let path_str = path.to_str().unwrap();
+        assert!(!cache_contains(path_str));
+        cached_read_file(path_str).unwrap();
+        assert!(cache_contains(path_str), "cache should hold the entry");
+        // A second call for the same path must not duplicate the entry.
+        let before = cache_len();
+        cached_read_file(path_str).unwrap();
+        assert_eq!(cache_len(), before, "cache must not duplicate on hit");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn cached_read_file_invalidates_when_file_changes() {
+        let _g = test_lock();
+        clear_cache();
+        let path = std::env::temp_dir().join("shio_native_cache_inval.txt");
+        fs::write(&path, b"first").unwrap();
+        let path_str = path.to_str().unwrap();
+        let first = cached_read_file(path_str).unwrap();
+        assert_eq!(&*first, "first");
+        // Sleep briefly to ensure mtime resolution registers the change on
+        // file systems with second-granularity mtimes (some tmpfs configs).
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        fs::write(&path, b"updated-different-length").unwrap();
+        let second = cached_read_file(path_str).unwrap();
+        assert_eq!(&*second, "updated-different-length");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn cached_read_file_evicts_when_cap_exceeded() {
+        let _g = test_lock();
+        clear_cache();
+        let mut paths: Vec<std::path::PathBuf> = Vec::new();
+        for i in 0..(READ_CACHE_CAP + 2) {
+            let p = std::env::temp_dir().join(format!("shio_native_cache_lru_{i}.txt"));
+            fs::write(&p, format!("body {i}").as_bytes()).unwrap();
+            cached_read_file(p.to_str().unwrap()).unwrap();
+            paths.push(p);
+        }
+        assert!(cache_len() <= READ_CACHE_CAP, "cache exceeded cap");
+        // Earliest-inserted path must have been evicted.
+        assert!(
+            !cache_contains(paths[0].to_str().unwrap()),
+            "oldest entry should be evicted"
+        );
+        for p in &paths {
+            let _ = fs::remove_file(p);
+        }
+    }
+
+    #[test]
+    fn cached_read_file_propagates_missing_file_error() {
+        let _g = test_lock();
+        clear_cache();
+        let err = cached_read_file("/nonexistent/shio_cache_missing.txt").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
 }

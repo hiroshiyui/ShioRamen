@@ -2702,8 +2702,7 @@ async fn run_agent_loop(
                     }
 
                     let capped = cap_tool_result(result, result_cap);
-                    let needs_chunk_nudge = call.function.name == "read_file"
-                        && capped.contains("call read_file again with cursor=");
+                    let needs_chunk_nudge = result_needs_chunk_nudge(&call.function.name, &capped);
 
                     msgs.push(Message::tool_result(&call.id, capped));
 
@@ -2711,12 +2710,18 @@ async fn run_agent_loop(
                     // outline to an assistant message before requesting the
                     // next chunk — supersede will wipe the bytes once the next
                     // chunk arrives, so any analysis must be persisted now.
+                    // Use a user message with [system-reminder] prefix rather
+                    // than Message::system: many jinja chat templates (Gemma
+                    // in particular, which we depend on via --jinja) reject
+                    // or silently drop additional system messages after the
+                    // initial one at index 0.
                     if needs_chunk_nudge {
-                        msgs.push(Message::system(
-                            "Before requesting the next chunk, append to your running outline of \
-                             this file (modules, types, public fns, key call edges). Do not quote \
-                             source lines from the chunk above — earlier chunks will be replaced \
-                             with stubs once the next chunk is read.",
+                        msgs.push(Message::user(
+                            "[system-reminder] Before requesting the next chunk, append to your \
+                             running outline of this file (modules, types, public fns, key call \
+                             edges) in your reply. Earlier chunks are replaced with stubs once \
+                             the next chunk is read, so any analysis must be persisted in your \
+                             own message now.",
                         ));
                     }
                 }
@@ -2725,6 +2730,13 @@ async fn run_agent_loop(
     }
 
     anyhow::bail!("agent exceeded {MAX_AGENT_ITERATIONS} iterations without a text response")
+}
+
+/// True iff the given tool result body is a chunked `read_file` response
+/// that signals more content is available — i.e. the trailing hint produced
+/// by `tools/builtin/read_file.rb` when the file has not yet been fully read.
+fn result_needs_chunk_nudge(tool_name: &str, body: &str) -> bool {
+    tool_name == "read_file" && body.contains("call read_file again with cursor=")
 }
 
 /// Replace the body of any earlier `tool_name` tool_result whose argument
@@ -2814,15 +2826,19 @@ fn stub_oldest_tool_results_in_turn(
     }
     let mut stubbed = 0usize;
     let cutoff = candidates.len() - 1; // skip the last (newest)
+    let stub_body = "[earlier tool result dropped to free context]";
+    let stub_size_estimate = msg_size(&Message::tool_result("placeholder", stub_body));
+    let mut running_total = total;
     for &idx in &candidates[..cutoff] {
-        let current_total: usize = msgs.iter().map(msg_size).sum();
-        if current_total <= budget {
+        if running_total <= budget {
             break;
         }
+        let old_size = msg_size(&msgs[idx]);
         let m = &mut msgs[idx];
-        m.content = Some(MessageContent::Text(
-            "[earlier tool result dropped to free context]".to_string(),
-        ));
+        m.content = Some(MessageContent::Text(stub_body.to_string()));
+        running_total = running_total
+            .saturating_sub(old_size)
+            .saturating_add(stub_size_estimate);
         stubbed += 1;
     }
     stubbed
@@ -3509,6 +3525,49 @@ mod tests {
             "prior fetch_url should be stubbed"
         );
         assert_eq!(msgs[3].text_content(), Some("html body 2"));
+    }
+
+    #[test]
+    fn supersede_silently_skips_when_args_are_malformed_json() {
+        let mut msgs = vec![
+            // Assistant message has malformed JSON in arguments.
+            assistant_call("c1", "read_file", "{not valid json"),
+            Message::tool_result("c1", "previous body"),
+            assistant_call("c2", "read_file", r#"{"path":"a.rs"}"#),
+            Message::tool_result("c2", "current body"),
+        ];
+        // Must not panic and must leave the prior message untouched.
+        supersede_prior_tool_for_key(&mut msgs, "read_file", "path", "a.rs", "c2");
+        assert_eq!(msgs[1].text_content(), Some("previous body"));
+        assert_eq!(msgs[3].text_content(), Some("current body"));
+    }
+
+    #[test]
+    fn result_needs_chunk_nudge_detects_continuation_hint() {
+        let body = "fn foo(){}\n\n[lines 1\u{2013}400 of 1873; call read_file again with cursor=401 to continue]";
+        assert!(result_needs_chunk_nudge("read_file", body));
+    }
+
+    #[test]
+    fn result_needs_chunk_nudge_false_at_eof() {
+        let body = "fn foo(){}\n\n[lines 1\u{2013}50 of 50; end of file]";
+        assert!(!result_needs_chunk_nudge("read_file", body));
+    }
+
+    #[test]
+    fn result_needs_chunk_nudge_false_for_other_tools() {
+        let body = "[lines 1\u{2013}400 of 1873; call read_file again with cursor=401 to continue]";
+        // Even if the body looks chunked, only read_file should trigger.
+        assert!(!result_needs_chunk_nudge("read_file_range", body));
+        assert!(!result_needs_chunk_nudge("grep_files", body));
+    }
+
+    #[test]
+    fn stub_oldest_no_op_when_no_tool_results_in_turn() {
+        // Only system+user messages in this turn — no tool_results to stub.
+        let mut msgs = vec![Message::system("sys"), Message::user("hi")];
+        let n = stub_oldest_tool_results_in_turn(&mut msgs, 0, 1);
+        assert_eq!(n, 0, "must be a no-op when there are no tool_results");
     }
 
     #[test]
