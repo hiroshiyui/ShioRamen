@@ -2682,23 +2682,20 @@ async fn run_agent_loop(
                     // Supersede earlier results from the same read-shaped tool
                     // on the same key (path/url) so context doesn't grow
                     // O(N_calls) when chunked or repeated.
-                    let supersede_spec: Option<&'static str> = match call.function.name.as_str() {
-                        "read_file" | "list_directory" => Some("path"),
-                        "fetch_url" => Some("url"),
-                        _ => None,
-                    };
-                    if let Some(key_name) = supersede_spec
-                        && let Ok(args) =
-                            serde_json::from_str::<serde_json::Value>(&call.function.arguments)
-                        && let Some(key_val) = args.get(key_name).and_then(|v| v.as_str())
+                    if let Some((tool_name, key_name, default_val)) =
+                        supersede_spec_for(&call.function.name)
                     {
-                        supersede_prior_tool_for_key(
-                            msgs,
-                            &call.function.name,
-                            key_name,
-                            key_val,
-                            &call.id,
-                        );
+                        let args: serde_json::Value =
+                            serde_json::from_str(&call.function.arguments).unwrap_or_default();
+                        let key_val = args
+                            .get(*key_name)
+                            .and_then(|v| v.as_str())
+                            .or(*default_val);
+                        if let Some(key_val) = key_val {
+                            supersede_prior_tool_for_key(
+                                msgs, tool_name, key_name, key_val, &call.id,
+                            );
+                        }
                     }
 
                     let capped = cap_tool_result(result, result_cap);
@@ -2739,6 +2736,33 @@ fn result_needs_chunk_nudge(tool_name: &str, body: &str) -> bool {
     tool_name == "read_file" && body.contains("call read_file again with cursor=")
 }
 
+// ── Supersede sentinel and dispatch ──────────────────────────────────────────
+//
+// All shio-emitted stubs start with a zero-width-space (`\u{200B}`). The model
+// sees the human-readable text as if the ZWSP weren't there; we use it as an
+// unambiguous machine-detectable sentinel so heuristics (`is_supersede_stub`)
+// can never collide with real tool output.
+const SUPERSEDE_STUB_SENTINEL: char = '\u{200B}';
+
+/// Read-shaped tools whose later call obsoletes an earlier call on the same
+/// `key` argument. Third tuple field is the value used when the tool is called
+/// without an explicit value for the key (matches the Ruby tool's default).
+const SUPERSEDE_DISPATCH: &[(&str, &str, Option<&str>)] = &[
+    ("read_file", "path", None),
+    ("list_directory", "path", Some(".")),
+    ("fetch_url", "url", None),
+];
+
+fn supersede_spec_for(
+    tool_name: &str,
+) -> Option<&'static (&'static str, &'static str, Option<&'static str>)> {
+    SUPERSEDE_DISPATCH.iter().find(|(n, _, _)| *n == tool_name)
+}
+
+fn is_supersede_stub(body: &str) -> bool {
+    body.starts_with(SUPERSEDE_STUB_SENTINEL)
+}
+
 /// Replace the body of any earlier `tool_name` tool_result whose argument
 /// `key_name` equals `key_value` with a short stub. Keeps the message in
 /// place (chat templates require every `role:"tool"` message to pair with a
@@ -2754,6 +2778,13 @@ fn supersede_prior_tool_for_key(
     current_id: &str,
 ) {
     use std::collections::HashMap;
+    // If the caller's tool has a registered default for this key (e.g.
+    // list_directory's `path` defaults to "."), reuse it when scanning prior
+    // calls so implicit-arg invocations still supersede each other.
+    let default_for_key: Option<&str> = SUPERSEDE_DISPATCH
+        .iter()
+        .find(|(n, k, _)| *n == tool_name && *k == key_name)
+        .and_then(|(_, _, d)| *d);
     // Map tool_call id → (function name, value of `key_name` in args).
     let mut owner: HashMap<String, (String, String)> = HashMap::new();
     for m in msgs.iter() {
@@ -2761,9 +2792,17 @@ fn supersede_prior_tool_for_key(
             && let Some(calls) = &m.tool_calls
         {
             for c in calls {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&c.function.arguments)
-                    && let Some(k) = v.get(key_name).and_then(|x| x.as_str())
-                {
+                let v: serde_json::Value =
+                    serde_json::from_str(&c.function.arguments).unwrap_or_default();
+                let resolved = v.get(key_name).and_then(|x| x.as_str()).or_else(|| {
+                    // Only apply the default for the matching tool name.
+                    if c.function.name == tool_name {
+                        default_for_key
+                    } else {
+                        None
+                    }
+                });
+                if let Some(k) = resolved {
                     owner.insert(c.id.clone(), (c.function.name.clone(), k.to_string()));
                 }
             }
@@ -2782,7 +2821,7 @@ fn supersede_prior_tool_for_key(
             && k == key_value
         {
             m.content = Some(MessageContent::Text(format!(
-                "[earlier {tool_name} result for {key_value} — superseded by a later call]"
+                "{SUPERSEDE_STUB_SENTINEL}[earlier {tool_name} result for {key_value} — superseded by a later call]"
             )));
         }
     }
@@ -2809,15 +2848,13 @@ fn stub_oldest_tool_results_in_turn(
         return 0;
     }
     // Indices of tool_result messages in this turn that haven't already been
-    // stubbed (we recognise stubs by their "[earlier" prefix and small size).
-    let stub_marker = "[earlier ";
+    // stubbed. Stubs are identified by the SUPERSEDE_STUB_SENTINEL prefix —
+    // an unambiguous marker that real tool output can't accidentally produce.
     let candidates: Vec<usize> = msgs
         .iter()
         .enumerate()
         .skip(turn_start)
-        .filter(|(_, m)| {
-            m.role == "tool" && !m.text_content().is_some_and(|t| t.starts_with(stub_marker))
-        })
+        .filter(|(_, m)| m.role == "tool" && !m.text_content().is_some_and(is_supersede_stub))
         .map(|(i, _)| i)
         .collect();
     // Keep at least one current-turn tool_result un-stubbed (the most recent).
@@ -2826,7 +2863,7 @@ fn stub_oldest_tool_results_in_turn(
     }
     let mut stubbed = 0usize;
     let cutoff = candidates.len() - 1; // skip the last (newest)
-    let stub_body = "[earlier tool result dropped to free context]";
+    let stub_body = "\u{200B}[earlier tool result dropped to free context]";
     let stub_size_estimate = msg_size(&Message::tool_result("placeholder", stub_body));
     let mut running_total = total;
     for &idx in &candidates[..cutoff] {
@@ -3463,12 +3500,16 @@ mod tests {
         supersede_prior_tool_for_key(&mut msgs, "read_file", "path", "a.rs", "c3");
 
         assert!(
+            is_supersede_stub(msgs[1].text_content().unwrap()),
+            "prior a.rs chunk should be marked as a stub, got: {:?}",
+            msgs[1].text_content()
+        );
+        assert!(
             msgs[1]
                 .text_content()
                 .unwrap()
-                .starts_with("[earlier read_file result for a.rs"),
-            "prior a.rs chunk should be stubbed, got: {:?}",
-            msgs[1].text_content()
+                .contains("read_file result for a.rs"),
+            "stub body should mention the tool and key"
         );
         assert_eq!(
             msgs[3].text_content(),
@@ -3518,13 +3559,78 @@ mod tests {
         ];
         supersede_prior_tool_for_key(&mut msgs, "fetch_url", "url", "https://x/y", "c2");
         assert!(
+            is_supersede_stub(msgs[1].text_content().unwrap()),
+            "prior fetch_url should be marked as a stub"
+        );
+        assert!(
             msgs[1]
                 .text_content()
                 .unwrap()
-                .starts_with("[earlier fetch_url result for https://x/y"),
-            "prior fetch_url should be stubbed"
+                .contains("fetch_url result for https://x/y"),
         );
         assert_eq!(msgs[3].text_content(), Some("html body 2"));
+    }
+
+    #[test]
+    fn is_supersede_stub_detects_sentinel_only() {
+        let stub = format!("{SUPERSEDE_STUB_SENTINEL}[earlier read_file result for x]");
+        assert!(is_supersede_stub(&stub));
+        // A model output that *looks* like a stub but lacks the sentinel must
+        // not be misclassified — this is the whole point of the sentinel.
+        assert!(!is_supersede_stub(
+            "[earlier in this section we noted that…]"
+        ));
+        assert!(!is_supersede_stub(""));
+    }
+
+    #[test]
+    fn supersede_spec_for_known_and_unknown_tools() {
+        assert!(supersede_spec_for("read_file").is_some());
+        assert!(supersede_spec_for("list_directory").is_some());
+        assert!(supersede_spec_for("fetch_url").is_some());
+        assert!(supersede_spec_for("grep_files").is_none());
+        assert!(supersede_spec_for("write_file").is_none());
+    }
+
+    #[test]
+    fn supersede_dispatch_defaults_list_directory_path_to_dot() {
+        let spec = supersede_spec_for("list_directory").unwrap();
+        assert_eq!(spec.0, "list_directory");
+        assert_eq!(spec.1, "path");
+        assert_eq!(spec.2, Some("."));
+
+        // Two list_directory calls without an explicit `path` must supersede
+        // each other thanks to the registered default.
+        let mut msgs = vec![
+            assistant_call("c1", "list_directory", "{}"),
+            Message::tool_result("c1", "files in cwd (old)"),
+            assistant_call("c2", "list_directory", "{}"),
+            Message::tool_result("c2", "files in cwd (new)"),
+        ];
+        supersede_prior_tool_for_key(&mut msgs, "list_directory", "path", ".", "c2");
+        assert!(
+            is_supersede_stub(msgs[1].text_content().unwrap()),
+            "implicit-path list_directory should supersede via the default"
+        );
+        assert_eq!(msgs[3].text_content(), Some("files in cwd (new)"));
+    }
+
+    #[test]
+    fn supersede_default_does_not_apply_across_tool_names() {
+        // A read_file call without `path` must not be matched by the
+        // list_directory default.
+        let mut msgs = vec![
+            assistant_call("c1", "read_file", "{}"),
+            Message::tool_result("c1", "previous body"),
+            assistant_call("c2", "list_directory", "{}"),
+            Message::tool_result("c2", "files in cwd"),
+        ];
+        supersede_prior_tool_for_key(&mut msgs, "list_directory", "path", ".", "c2");
+        assert_eq!(
+            msgs[1].text_content(),
+            Some("previous body"),
+            "read_file with implicit args must not be touched by list_directory's default"
+        );
     }
 
     #[test]
@@ -3580,10 +3686,8 @@ mod tests {
         ];
         supersede_prior_tool_for_key(&mut msgs, "list_directory", "path", "src", "c2");
         assert!(
-            msgs[1]
-                .text_content()
-                .unwrap()
-                .starts_with("[earlier list_directory result for src"),
+            is_supersede_stub(msgs[1].text_content().unwrap()),
+            "prior list_directory should be marked as a stub"
         );
     }
 
@@ -3626,9 +3730,10 @@ mod tests {
     #[test]
     fn stub_oldest_skips_already_stubbed() {
         let big = "y".repeat(2_000);
+        let stubbed = format!("{SUPERSEDE_STUB_SENTINEL}[earlier read_file result for a]");
         let mut msgs = vec![
             assistant_call("c1", "read_file", r#"{"path":"a"}"#),
-            Message::tool_result("c1", "[earlier read_file result for a — superseded]"),
+            Message::tool_result("c1", stubbed),
             assistant_call("c2", "read_file", r#"{"path":"b"}"#),
             Message::tool_result("c2", big.clone()),
         ];
