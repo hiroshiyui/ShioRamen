@@ -141,8 +141,11 @@ The model runs on a background task. Communication is via `mpsc` channel:
 ### Context budget
 
 - Tool results capped at `max_tool_result_chars` = `ctx_size * 4 * 75%` (min 24 000)
-- History trimmed to ~80% of context budget before each dispatch
+- History trimmed to ~85% of context budget before each dispatch (`trim_to_budget_before`)
 - Oldest non-system messages dropped first
+- Inside the agent loop, `stub_oldest_tool_results_in_turn` replaces oldest current-turn `role:"tool"` results with a stub when current-turn history alone exceeds budget; the newest tool result is always preserved
+- After each `read_file`, `list_directory`, or `fetch_url` call, `supersede_prior_tool_for_key` stubs earlier results from the same tool on the same `path`/`url` so chunked or repeated reads stay flat in context. Stubs replace the message body but keep `tool_call_id` pairing valid for chat templates
+- Auto-`/compact` triggers between turns when usage ≥ 80%
 
 ### Display styles (`EntryKind`)
 

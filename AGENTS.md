@@ -9,7 +9,7 @@ The CLI binary is named `shio`.
 ```sh
 cargo build                  # debug build
 cargo build --release        # release build
-cargo test                   # run all tests (~400 tests, must all pass)
+cargo test                   # run all tests (~412 tests, must all pass)
 cargo clippy -- -D warnings  # no warnings allowed
 ```
 
@@ -43,11 +43,11 @@ Always run `cargo test` after any change. Never leave failing tests.
 - Input is a `String` with a byte-offset `cursor`. Multi-line input is supported via embedded `\n`; `line_starts()` and `cursor_line_col()` do all line/column arithmetic.
 - Code blocks are rendered with syntax highlighting (syntect, `"Solarized (light)"` theme) and Solarized-tinted backgrounds. Diff blocks get per-line background colours based on `+`/`-`/`@@` prefixes.
 
-### Tools (`tools.rs`)
-- `all_tools()` returns the full `Vec<ToolDef>` sent to the model.
-- `ToolExecutor::execute_quiet()` dispatches a `ToolCallItem` to the matching handler.
+### Tools (`tools.rs` + `tools/builtin/*.rb`)
+- `ToolExecutor::tool_defs()` returns the full `Vec<ToolDef>` sent to the model, sourced from the embedded mRuby VM (see `src/ruby/`).
+- `ToolExecutor::execute_quiet()` dispatches a `ToolCallItem` to the matching Ruby handler via `ShioVm::call_tool`.
 - Confirmation flags `confirm_writes` and `confirm_shell` gate destructive operations.
-- Adding a new tool requires: (1) a `ToolDef` entry in `all_tools()`, (2) a match arm in `execute_quiet()`, (3) a handler function, (4) tests.
+- Adding a new tool requires: (1) a `.rb` file under `tools/builtin/` using the `define_tool` DSL (compile-time embedded), or `~/.config/shio/tools/` for user-installed tools, (2) tests in `src/tools.rs`.
 
 ### Colour Scheme
 All colours are Solarized. Constants are defined at the top of `tui.rs`:
