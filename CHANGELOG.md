@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.8.0] — 2026-05-10
+
+### Added
+- (sampling): `--min-p` (quality floor) and `--keep` (n_keep) CLI flags on `chat`, `ask`, and `edit`, with matching `chat.min_p` and `chat.n_keep` config keys. Both pass through `SamplingParams` to the per-request body. `n_keep = -1` keeps the full initial prompt across context shifts — preserves system prompt and first user turn in long sessions.
+- Default `shio.toml` ships with `n_keep = -1` so long-context conversations retain instructions once the KV cache wraps.
+
+### Documentation
+- README and `doc/reference_manual.md`: documented `--min-p` / `--keep` across the chat/ask/edit option blocks and added `min_p` / `n_keep` to the quick-start TOML example, the full `[chat]` config reference, and the section field table.
+
+### Maintenance
+- (skills): `release-engineering` skill now runs `cargo build --release && cargo install --path .` after publishing so the local `shio` binary tracks the new tag.
+
 ## [v1.7.0] — 2026-05-05
 
 ### Added
