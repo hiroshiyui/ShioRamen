@@ -102,7 +102,9 @@ cont_batching = true
 model       = "./models/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf"
 temperature = 0.7   # 0.1–0.3 for coding; 0.7–1.0 for creative tasks
 # top_p          = 0.95   # nucleus sampling — lower values focus on top tokens
+# min_p          = 0.05   # quality floor; pairs well with higher temperature on long contexts
 # repeat_penalty = 1.1    # > 1.0 discourages repetition
+# n_keep         = -1     # tokens to retain on context shift; -1 keeps the full initial prompt
 
 [paths]
 models_dir = "./models"
@@ -156,7 +158,9 @@ Options:
       --no-spawn                     Connect to an already-running server
       --temp <TEMP>                  Sampling temperature  [default: 0.7]
       --top-p <P>                    Top-p (nucleus) sampling  [config: chat.top_p]
+      --min-p <P>                    Min-p sampling — quality floor  [config: chat.min_p]
       --repeat-penalty <P>           Repetition penalty (> 1.0)  [config: chat.repeat_penalty]
+      --keep <N>                     Prompt tokens to retain on context shift; -1 = all  [config: chat.n_keep]
       --no-tools                     Disable tool use for this session
       --resume                       Resume the most recent saved session
       (all serve options also apply)
@@ -214,7 +218,9 @@ Options:
   -m, --model <MODEL>                GGUF model file  [config: chat.model]
       --temp <TEMP>                  Sampling temperature  [default: 0.7]
       --top-p <P>                    Top-p (nucleus) sampling  [config: chat.top_p]
+      --min-p <P>                    Min-p sampling — quality floor  [config: chat.min_p]
       --repeat-penalty <P>           Repetition penalty (> 1.0)  [config: chat.repeat_penalty]
+      --keep <N>                     Prompt tokens to retain on context shift; -1 = all  [config: chat.n_keep]
       --no-spawn                     Connect to an already-running server
       (all serve options also apply)
 ```
@@ -241,7 +247,9 @@ Options:
   -m, --model <MODEL>                GGUF model file  [config: chat.model]
       --temp <TEMP>                  Sampling temperature  [default: 0.7]
       --top-p <P>                    Top-p (nucleus) sampling  [config: chat.top_p]
+      --min-p <P>                    Min-p sampling — quality floor  [config: chat.min_p]
       --repeat-penalty <P>           Repetition penalty (> 1.0)  [config: chat.repeat_penalty]
+      --keep <N>                     Prompt tokens to retain on context shift; -1 = all  [config: chat.n_keep]
       --no-spawn                     Connect to an already-running server
       (all serve options also apply)
 ```
@@ -341,7 +349,9 @@ mmproj        = "./models/mmproj.gguf"  # optional — multimodal projector for 
 model          = "./models/model.gguf"  # required — no default
 temperature    = 0.7                    # default
 top_p          = 0.95                   # optional — unset means llama-server's internal default (currently 0.95)
+min_p          = 0.05                   # optional — quality floor (drop tokens below `min_p * p_max`); unset means llama-server's default
 repeat_penalty = 1.1                    # optional — unset means llama-server's internal default (currently 1.1)
+n_keep         = -1                     # optional — prompt tokens to retain on context shift; -1 keeps the full initial prompt
 show_thinking  = true                   # default — show <think>…</think> blocks from reasoning models (dimmed)
 prompt_style   = "auto"                 # default — "auto" detects from model size; or "full" / "concise" / "minimal"
 system_prompt  = "..."                  # optional — override the built-in prompt (disables prompt_style)
