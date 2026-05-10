@@ -218,7 +218,30 @@ git push origin main
 git push origin "v{NEW_VERSION}"
 ```
 
-## Step 10: Verify and report
+## Step 10: Install the new release locally
+
+After the release is pushed, build and install the new binary into the user's
+Cargo bin so `shio` on `$PATH` matches the just-released version. Both commands
+are mandatory — `cargo build --release` warms the release artefact cache and
+catches any release-profile-only breakage before `cargo install` overwrites the
+existing binary.
+
+```bash
+cargo build --release
+cargo install --path .
+```
+
+If either step fails, report the failure but **do not** roll back the release —
+the tag and GitHub release are already published. Investigate the local build
+issue separately; users pulling from git are unaffected.
+
+After install, verify the installed binary reports the new version:
+
+```bash
+shio --version
+```
+
+## Step 11: Verify and report
 
 Confirm everything landed:
 
