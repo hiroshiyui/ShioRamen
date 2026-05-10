@@ -233,7 +233,9 @@ mod tests {
             SamplingParams {
                 temperature: 0.7,
                 top_p: None,
+                min_p: None,
                 repeat_penalty: None,
+                n_keep: None,
             },
             "be helpful".to_string(),
             executor,
@@ -296,7 +298,9 @@ mod tests {
             SamplingParams {
                 temperature: 0.7,
                 top_p: None,
+                min_p: None,
                 repeat_penalty: None,
+                n_keep: None,
             },
             "sys".to_string(),
             None,

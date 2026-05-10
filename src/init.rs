@@ -45,8 +45,17 @@ const TEMPLATE: &str = r#"# shio.toml — ShioRamen configuration
 # Top-p (nucleus) sampling — lower values focus on top tokens.
 # top_p = 0.95
 
+# Min-p sampling — drop tokens below `min_p * p_max`.  Acts as a quality
+# floor; pairs well with higher temperatures on long-context conversations.
+# min_p = 0.05
+
 # Repetition penalty — values > 1.0 discourage repetition.
 # repeat_penalty = 1.1
+
+# Tokens to keep from the initial prompt during context shift.
+# `-1` keeps the full system + first user turn — preserves instructions
+# in long conversations once the KV cache wraps.
+# n_keep = -1
 
 # Override the built-in system prompt.
 # system_prompt = "You are a helpful assistant."

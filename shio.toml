@@ -22,7 +22,9 @@ mmproj = "./models/mmproj-gemma-4-e4b-it-f16.gguf"
 model          = "./models/gemma-4-E4B-it-UD-Q8_K_XL.gguf"
 temperature    = 0.1   # Low temperature for precise, deterministic coding responses
 # top_p          = 0.95  # Nucleus sampling — lower values focus on top tokens
+# min_p          = 0.05  # Quality floor; pairs well with higher temperature on long contexts
 # repeat_penalty = 1.1   # > 1.0 discourages repetition in long outputs
+n_keep         = -1    # Preserve the full initial prompt across context shifts (-1 = all)
 show_thinking  = true  # Show <think>…</think> blocks from reasoning models (dimmed); set false to hide them
 
 # System prompt style: "auto" (detect from model size), "full" (30B+),

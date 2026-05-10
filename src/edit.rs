@@ -42,9 +42,17 @@ pub struct EditArgs {
     #[arg(long)]
     pub top_p: Option<f32>,
 
+    /// Min-p sampling — drop tokens below `min_p * p_max` [config: chat.min_p]
+    #[arg(long)]
+    pub min_p: Option<f32>,
+
     /// Repetition penalty (> 1.0 discourages repetition) [config: chat.repeat_penalty]
     #[arg(long)]
     pub repeat_penalty: Option<f32>,
+
+    /// Tokens to keep from the initial prompt during context shift; -1 = all [config: chat.n_keep]
+    #[arg(long)]
+    pub keep: Option<i32>,
 
     /// Skip spawning llama-server; connect to an already running instance
     #[arg(long)]
@@ -55,7 +63,9 @@ pub async fn run(args: &EditArgs, cfg: &ShioConfig) -> Result<()> {
     let sampling = SamplingParams {
         temperature: args.temp.or(cfg.chat.temperature).unwrap_or(DEFAULT_TEMP),
         top_p: args.top_p.or(cfg.chat.top_p),
+        min_p: args.min_p.or(cfg.chat.min_p),
         repeat_penalty: args.repeat_penalty.or(cfg.chat.repeat_penalty),
+        n_keep: args.keep.or(cfg.chat.n_keep),
     };
 
     let original = tokio::fs::read_to_string(&args.file)

@@ -13,7 +13,11 @@ use serde::{Deserialize, Serialize};
 pub struct SamplingParams {
     pub temperature: f32,
     pub top_p: Option<f32>,
+    pub min_p: Option<f32>,
     pub repeat_penalty: Option<f32>,
+    /// Number of prompt tokens to retain when the context is shifted.
+    /// `-1` keeps the entire initial prompt (system + first user turn).
+    pub n_keep: Option<i32>,
 }
 
 // ── Message content (text or multimodal) ─────────────────────────────────────
@@ -218,7 +222,11 @@ struct ChatRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     top_p: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    min_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     repeat_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    n_keep: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<&'a [ToolDef]>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -323,7 +331,9 @@ impl LlamaClient {
             stream: true,
             temperature: sampling.temperature,
             top_p: sampling.top_p,
+            min_p: sampling.min_p,
             repeat_penalty: sampling.repeat_penalty,
+            n_keep: sampling.n_keep,
             tools: Some(tools),
             tool_choice: Some("auto"),
         };
@@ -460,7 +470,9 @@ impl LlamaClient {
             stream: false,
             temperature: sampling.temperature,
             top_p: sampling.top_p,
+            min_p: sampling.min_p,
             repeat_penalty: sampling.repeat_penalty,
+            n_keep: sampling.n_keep,
             tools: None,
             tool_choice: None,
         };
@@ -510,7 +522,9 @@ impl LlamaClient {
             stream: true,
             temperature: sampling.temperature,
             top_p: sampling.top_p,
+            min_p: sampling.min_p,
             repeat_penalty: sampling.repeat_penalty,
+            n_keep: sampling.n_keep,
             tools: None,
             tool_choice: None,
         };

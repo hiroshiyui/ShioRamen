@@ -47,9 +47,17 @@ pub struct ChatSection {
     pub temperature: Option<f32>,
     /// Top-p (nucleus) sampling.  Lower values focus on the most likely tokens.
     pub top_p: Option<f32>,
+    /// Min-p sampling.  Tokens whose probability is below `min_p * p_max` are
+    /// filtered out.  Acts as a quality floor and pairs well with higher
+    /// temperatures on long-context conversations.
+    pub min_p: Option<f32>,
     /// Repetition penalty.  Values > 1.0 discourage the model from repeating
     /// the same tokens, reducing looping in long outputs.
     pub repeat_penalty: Option<f32>,
+    /// Number of prompt tokens to retain when the KV cache is shifted to make
+    /// room for new tokens.  `-1` keeps the full initial prompt (system + first
+    /// user turn) — useful for preserving instructions across long sessions.
+    pub n_keep: Option<i32>,
     pub system_prompt: Option<String>,
     /// Show `<think>…</think>` blocks from reasoning models in a dimmed style.
     /// Default: true.

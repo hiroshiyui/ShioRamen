@@ -193,9 +193,17 @@ struct ChatArgs {
     #[arg(long)]
     top_p: Option<f32>,
 
+    /// Min-p sampling — drop tokens below `min_p * p_max` [config: chat.min_p]
+    #[arg(long)]
+    min_p: Option<f32>,
+
     /// Repetition penalty (> 1.0 discourages repetition) [config: chat.repeat_penalty]
     #[arg(long)]
     repeat_penalty: Option<f32>,
+
+    /// Tokens to keep from the initial prompt during context shift; -1 = all [config: chat.n_keep]
+    #[arg(long)]
+    keep: Option<i32>,
 
     /// Skip spawning llama-server; connect to an already running instance
     #[arg(long)]
@@ -234,7 +242,9 @@ async fn main() -> Result<()> {
             let sampling = SamplingParams {
                 temperature: args.temp.or(cfg.chat.temperature).unwrap_or(DEFAULT_TEMP),
                 top_p: args.top_p.or(cfg.chat.top_p),
+                min_p: args.min_p.or(cfg.chat.min_p),
                 repeat_penalty: args.repeat_penalty.or(cfg.chat.repeat_penalty),
+                n_keep: args.keep.or(cfg.chat.n_keep),
             };
             let system_prompt = resolve_system_prompt(&cfg);
             let server = args
@@ -550,7 +560,9 @@ mod tests {
         assert!(args.model.is_none());
         assert!(args.temp.is_none());
         assert!(args.top_p.is_none());
+        assert!(args.min_p.is_none());
         assert!(args.repeat_penalty.is_none());
+        assert!(args.keep.is_none());
     }
 
     #[test]
@@ -561,6 +573,16 @@ mod tests {
         };
         assert_eq!(args.top_p, Some(0.9f32));
         assert_eq!(args.repeat_penalty, Some(1.15f32));
+    }
+
+    #[test]
+    fn chat_parses_min_p_and_keep() {
+        let cli = parse(&["shio", "chat", "--min-p", "0.05", "--keep=-1"]).unwrap();
+        let Commands::Chat(args) = cli.command else {
+            panic!()
+        };
+        assert_eq!(args.min_p, Some(0.05f32));
+        assert_eq!(args.keep, Some(-1i32));
     }
 
     // ── pull flags ───────────────────────────────────────────────────────────
