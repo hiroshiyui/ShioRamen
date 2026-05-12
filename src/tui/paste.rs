@@ -31,8 +31,8 @@ pub(super) fn handle_paste(app: &mut App, text: String) {
             let path = std::path::Path::new(line.trim());
             match attach_image_file(app, path) {
                 Ok(chip) => {
-                    app.input.insert_str(app.cursor, &chip);
-                    app.cursor += chip.len();
+                    app.editor.input.insert_str(app.editor.cursor, &chip);
+                    app.editor.cursor += chip.len();
                 }
                 Err(e) => {
                     let msg = format!("image: {e}");
@@ -40,11 +40,11 @@ pub(super) fn handle_paste(app: &mut App, text: String) {
                 }
             }
         }
-        app.comp_candidates.clear();
+        app.editor.comp_candidates.clear();
     } else {
-        app.input.insert_str(app.cursor, &text);
-        app.cursor += text.len();
-        app.comp_candidates.clear();
+        app.editor.input.insert_str(app.editor.cursor, &text);
+        app.editor.cursor += text.len();
+        app.editor.comp_candidates.clear();
     }
 }
 
@@ -103,9 +103,9 @@ pub(super) fn paste_clipboard(app: &mut App) {
         app.attached_images.push(data_url);
         let n = app.attached_images.len();
         let chip = format!("[Image #{n}]");
-        app.input.insert_str(app.cursor, &chip);
-        app.cursor += chip.len();
-        app.comp_candidates.clear();
+        app.editor.input.insert_str(app.editor.cursor, &chip);
+        app.editor.cursor += chip.len();
+        app.editor.comp_candidates.clear();
         return;
     }
 
@@ -113,9 +113,9 @@ pub(super) fn paste_clipboard(app: &mut App) {
     if let Ok(text) = clip.get_text()
         && !text.is_empty()
     {
-        app.input.insert_str(app.cursor, &text);
-        app.cursor += text.len();
-        app.comp_candidates.clear();
+        app.editor.input.insert_str(app.editor.cursor, &text);
+        app.editor.cursor += text.len();
+        app.editor.comp_candidates.clear();
     }
 }
 

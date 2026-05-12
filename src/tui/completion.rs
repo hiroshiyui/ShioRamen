@@ -22,9 +22,9 @@ pub(super) fn do_complete(app: &mut App) {
         "/stop-record",
     ];
 
-    let typed = app.input[..app.cursor].to_string();
+    let typed = app.editor.input[..app.editor.cursor].to_string();
 
-    if app.comp_candidates.is_empty() {
+    if app.editor.comp_candidates.is_empty() {
         let candidates: Vec<String> = if let Some(path_part) = typed.strip_prefix("/include ") {
             let (dir, prefix) = split_path(path_part);
             list_path_completions(&dir, &prefix)
@@ -53,15 +53,15 @@ pub(super) fn do_complete(app: &mut App) {
         if candidates.is_empty() {
             return;
         }
-        app.comp_candidates = candidates;
-        app.comp_idx = 0;
+        app.editor.comp_candidates = candidates;
+        app.editor.comp_idx = 0;
     } else {
-        app.comp_idx = (app.comp_idx + 1) % app.comp_candidates.len();
+        app.editor.comp_idx = (app.editor.comp_idx + 1) % app.editor.comp_candidates.len();
     }
 
-    let c = app.comp_candidates[app.comp_idx].clone();
-    app.input = c;
-    app.cursor = app.input.len();
+    let c = app.editor.comp_candidates[app.editor.comp_idx].clone();
+    app.editor.input = c;
+    app.editor.cursor = app.editor.input.len();
 }
 
 fn list_path_completions(dir: &str, prefix: &str) -> Vec<String> {

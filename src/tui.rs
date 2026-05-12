@@ -111,6 +111,50 @@ enum EntryKind {
     Error,
 }
 
+struct InputState {
+    input: String,
+    cursor: usize,
+    history: Vec<String>,
+    hist_idx: Option<usize>,
+    saved: String, // input saved when browsing history
+    comp_candidates: Vec<String>,
+    comp_idx: usize,
+}
+
+impl InputState {
+    fn new() -> Self {
+        Self {
+            input: String::new(),
+            cursor: 0,
+            history: Vec::new(),
+            hist_idx: None,
+            saved: String::new(),
+            comp_candidates: Vec::new(),
+            comp_idx: 0,
+        }
+    }
+}
+
+struct StreamState {
+    streaming: Option<String>,
+    thinking: Option<String>,
+    in_think: bool,
+    raw_buf: String,
+    show_thinking: bool,
+}
+
+impl StreamState {
+    fn new(show_thinking: bool) -> Self {
+        Self {
+            streaming: None,
+            thinking: None,
+            in_think: false,
+            raw_buf: String::new(),
+            show_thinking,
+        }
+    }
+}
+
 // ── App state ─────────────────────────────────────────────────────────────────
 
 struct App {
@@ -123,33 +167,17 @@ struct App {
 
     // Display
     entries: Vec<ChatEntry>,
-    streaming: Option<String>, // assistant response being built token-by-token
-    /// Live thinking text accumulating inside a `<think>…</think>` block.
-    thinking: Option<String>,
-    /// True while streaming tokens that belong inside a `<think>` block.
-    in_think: bool,
-    /// Raw token accumulator — held until `<think>`/`</think>` tag boundaries
-    /// are resolved before routing to `streaming` or `thinking`.
-    raw_buf: String,
-    /// Whether to display `<think>` blocks (from config).
-    show_thinking: bool,
+    stream: StreamState,
     scroll: u32,
     auto_scroll: bool,
 
     // Input
-    input: String,
-    cursor: usize,
-    history: Vec<String>,
-    hist_idx: Option<usize>,
-    saved: String, // input saved when browsing history
+    editor: InputState,
 
     /// Base64 data-URLs of images attached via Ctrl+V, sent with the next message.
     attached_images: Vec<String>,
 
     // Tab completion state
-    comp_candidates: Vec<String>,
-    comp_idx: usize,
-
     // Async communication from model task
     event_tx: mpsc::UnboundedSender<TuiEvent>,
     event_rx: mpsc::UnboundedReceiver<TuiEvent>,
@@ -245,21 +273,11 @@ async fn run_loop(
         client: session.client,
         sampling: session.sampling,
         entries: Vec::new(),
-        streaming: None,
-        thinking: None,
-        in_think: false,
-        raw_buf: String::new(),
-        show_thinking: session.show_thinking,
+        stream: StreamState::new(session.show_thinking),
         scroll: 0,
         auto_scroll: true,
-        input: String::new(),
-        cursor: 0,
-        history: Vec::new(),
-        hist_idx: None,
-        saved: String::new(),
+        editor: InputState::new(),
         attached_images: Vec::new(),
-        comp_candidates: Vec::new(),
-        comp_idx: 0,
         event_tx,
         event_rx,
         skills: session.skills,
@@ -400,82 +418,86 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
 
         // Newline: Alt+Enter, Shift+Enter, or Ctrl+J inserts a literal newline.
         (Enter, m) if m.contains(Mods::ALT) || m.contains(Mods::SHIFT) => {
-            app.input.insert(app.cursor, '\n');
-            app.cursor += 1;
-            app.comp_candidates.clear();
+            app.editor.input.insert(app.editor.cursor, '\n');
+            app.editor.cursor += 1;
+            app.editor.comp_candidates.clear();
         }
         (Char('j'), m) if m.contains(Mods::CONTROL) => {
-            app.input.insert(app.cursor, '\n');
-            app.cursor += 1;
-            app.comp_candidates.clear();
+            app.editor.input.insert(app.editor.cursor, '\n');
+            app.editor.cursor += 1;
+            app.editor.comp_candidates.clear();
         }
         // Submit — but if the line ends with `\`, replace it with a newline instead.
         (Enter, _) => {
-            if app.cursor > 0 && app.input.as_bytes().get(app.cursor - 1) == Some(&b'\\') {
-                app.input.replace_range(app.cursor - 1..app.cursor, "\n");
+            if app.editor.cursor > 0
+                && app.editor.input.as_bytes().get(app.editor.cursor - 1) == Some(&b'\\')
+            {
+                app.editor
+                    .input
+                    .replace_range(app.editor.cursor - 1..app.editor.cursor, "\n");
                 // cursor stays at same byte offset (replacing 1 byte with 1 byte)
-                app.comp_candidates.clear();
+                app.editor.comp_candidates.clear();
             } else {
                 submit(app).await;
             }
         }
 
         // Delete
-        (Backspace, _) if app.cursor > 0 => {
-            let new = char_start_before(&app.input, app.cursor);
-            app.input.drain(new..app.cursor);
-            app.cursor = new;
-            app.comp_candidates.clear();
+        (Backspace, _) if app.editor.cursor > 0 => {
+            let new = char_start_before(&app.editor.input, app.editor.cursor);
+            app.editor.input.drain(new..app.editor.cursor);
+            app.editor.cursor = new;
+            app.editor.comp_candidates.clear();
         }
-        (Delete, _) if app.cursor < app.input.len() => {
-            let next = char_end_at(&app.input, app.cursor);
-            app.input.drain(app.cursor..next);
-            app.comp_candidates.clear();
+        (Delete, _) if app.editor.cursor < app.editor.input.len() => {
+            let next = char_end_at(&app.editor.input, app.editor.cursor);
+            app.editor.input.drain(app.editor.cursor..next);
+            app.editor.comp_candidates.clear();
         }
 
         // Cursor movement
         (Left, m) if m.contains(Mods::CONTROL) => {
-            app.cursor = prev_word(&app.input, app.cursor);
+            app.editor.cursor = prev_word(&app.editor.input, app.editor.cursor);
         }
         (Right, m) if m.contains(Mods::CONTROL) => {
-            app.cursor = next_word(&app.input, app.cursor);
+            app.editor.cursor = next_word(&app.editor.input, app.editor.cursor);
         }
         (Left, _) => {
-            app.cursor = char_start_before(&app.input, app.cursor);
+            app.editor.cursor = char_start_before(&app.editor.input, app.editor.cursor);
         }
         (Right, _) => {
-            app.cursor = char_end_at(&app.input, app.cursor);
+            app.editor.cursor = char_end_at(&app.editor.input, app.editor.cursor);
         }
         (Home, _) => {
-            let (line, _) = cursor_line_col(&app.input, app.cursor);
-            app.cursor = line_starts(&app.input)[line];
+            let (line, _) = cursor_line_col(&app.editor.input, app.editor.cursor);
+            app.editor.cursor = line_starts(&app.editor.input)[line];
         }
         (End, _) => {
-            let (line, _) = cursor_line_col(&app.input, app.cursor);
-            let starts = line_starts(&app.input);
-            app.cursor = if line + 1 < starts.len() {
+            let (line, _) = cursor_line_col(&app.editor.input, app.editor.cursor);
+            let starts = line_starts(&app.editor.input);
+            app.editor.cursor = if line + 1 < starts.len() {
                 starts[line + 1] - 1 // position of the '\n', not past it
             } else {
-                app.input.len()
+                app.editor.input.len()
             };
         }
 
         // Up: move cursor up one line within multi-line input, or go to history.
         (Up, _) => {
-            let (line, col) = cursor_line_col(&app.input, app.cursor);
+            let (line, col) = cursor_line_col(&app.editor.input, app.editor.cursor);
             if line == 0 {
                 hist_prev(app);
             } else {
-                let starts = line_starts(&app.input);
+                let starts = line_starts(&app.editor.input);
                 let prev_start = starts[line - 1];
                 let prev_len = starts[line] - 1 - prev_start; // bytes before the '\n'
-                app.cursor = prev_start + col.min(prev_len);
+                app.editor.cursor = prev_start + col.min(prev_len);
             }
         }
         // Down: move cursor down one line within multi-line input, or go to history.
         (Down, _) => {
-            let (line, col) = cursor_line_col(&app.input, app.cursor);
-            let starts = line_starts(&app.input);
+            let (line, col) = cursor_line_col(&app.editor.input, app.editor.cursor);
+            let starts = line_starts(&app.editor.input);
             if line + 1 >= starts.len() {
                 hist_next(app);
             } else {
@@ -483,9 +505,9 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                 let next_len = if line + 2 < starts.len() {
                     starts[line + 2] - 1 - next_start
                 } else {
-                    app.input.len() - next_start
+                    app.editor.input.len() - next_start
                 };
-                app.cursor = next_start + col.min(next_len);
+                app.editor.cursor = next_start + col.min(next_len);
             }
         }
 
@@ -501,28 +523,28 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
 
         // Bash-style line editing
         (Char('a'), m) if m.contains(Mods::CONTROL) => {
-            let (line, _) = cursor_line_col(&app.input, app.cursor);
-            app.cursor = line_starts(&app.input)[line];
+            let (line, _) = cursor_line_col(&app.editor.input, app.editor.cursor);
+            app.editor.cursor = line_starts(&app.editor.input)[line];
         }
         (Char('e'), m) if m.contains(Mods::CONTROL) => {
-            let (line, _) = cursor_line_col(&app.input, app.cursor);
-            let starts = line_starts(&app.input);
-            app.cursor = if line + 1 < starts.len() {
+            let (line, _) = cursor_line_col(&app.editor.input, app.editor.cursor);
+            let starts = line_starts(&app.editor.input);
+            app.editor.cursor = if line + 1 < starts.len() {
                 starts[line + 1] - 1
             } else {
-                app.input.len()
+                app.editor.input.len()
             };
         }
         (Char('u'), m) if m.contains(Mods::CONTROL) => {
-            app.input.clear();
-            app.cursor = 0;
-            app.comp_candidates.clear();
+            app.editor.input.clear();
+            app.editor.cursor = 0;
+            app.editor.comp_candidates.clear();
         }
         (Char('w'), m) if m.contains(Mods::CONTROL) => {
-            let new_cursor = prev_word(&app.input, app.cursor);
-            app.input.drain(new_cursor..app.cursor);
-            app.cursor = new_cursor;
-            app.comp_candidates.clear();
+            let new_cursor = prev_word(&app.editor.input, app.editor.cursor);
+            app.editor.input.drain(new_cursor..app.editor.cursor);
+            app.editor.cursor = new_cursor;
+            app.editor.comp_candidates.clear();
         }
 
         // Paste from clipboard (Ctrl+V): attach image or insert text.
@@ -532,9 +554,9 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
 
         // Regular character
         (Char(c), _) => {
-            app.input.insert(app.cursor, c);
-            app.cursor += c.len_utf8();
-            app.comp_candidates.clear();
+            app.editor.input.insert(app.editor.cursor, c);
+            app.editor.cursor += c.len_utf8();
+            app.editor.comp_candidates.clear();
         }
 
         _ => {}
@@ -573,37 +595,37 @@ fn view_scroll(app: &mut App, delta: i32) {
 }
 
 fn hist_prev(app: &mut App) {
-    if app.history.is_empty() {
+    if app.editor.history.is_empty() {
         return;
     }
-    match app.hist_idx {
+    match app.editor.hist_idx {
         None => {
-            app.saved = app.input.clone();
-            app.hist_idx = Some(app.history.len() - 1);
+            app.editor.saved = app.editor.input.clone();
+            app.editor.hist_idx = Some(app.editor.history.len() - 1);
         }
         Some(0) => return,
         Some(ref mut i) => {
             *i -= 1;
         }
     }
-    let idx = app.hist_idx.expect("hist_idx set in match above");
-    app.input = app.history[idx].clone();
-    app.cursor = app.input.len();
+    let idx = app.editor.hist_idx.expect("hist_idx set in match above");
+    app.editor.input = app.editor.history[idx].clone();
+    app.editor.cursor = app.editor.input.len();
 }
 
 fn hist_next(app: &mut App) {
-    match app.hist_idx {
+    match app.editor.hist_idx {
         None => (),
-        Some(idx) if idx + 1 >= app.history.len() => {
-            app.hist_idx = None;
-            app.input = app.saved.clone();
-            app.cursor = app.input.len();
+        Some(idx) if idx + 1 >= app.editor.history.len() => {
+            app.editor.hist_idx = None;
+            app.editor.input = app.editor.saved.clone();
+            app.editor.cursor = app.editor.input.len();
         }
         Some(ref mut i) => {
             *i += 1;
             let idx = *i;
-            app.input = app.history[idx].clone();
-            app.cursor = app.input.len();
+            app.editor.input = app.editor.history[idx].clone();
+            app.editor.cursor = app.editor.input.len();
         }
     }
 }
@@ -611,19 +633,19 @@ fn hist_next(app: &mut App) {
 // ── Input submission ──────────────────────────────────────────────────────────
 
 async fn submit(app: &mut App) {
-    let input = app.input.trim().to_string();
+    let input = app.editor.input.trim().to_string();
     if input.is_empty() && app.attached_images.is_empty() {
         return;
     }
 
     // Save to input history (deduplicate consecutive identical entries).
-    if app.history.last() != Some(&input) {
-        app.history.push(input.clone());
+    if app.editor.history.last() != Some(&input) {
+        app.editor.history.push(input.clone());
     }
-    app.hist_idx = None;
-    app.input.clear();
-    app.cursor = 0;
-    app.comp_candidates.clear();
+    app.editor.hist_idx = None;
+    app.editor.input.clear();
+    app.editor.cursor = 0;
+    app.editor.comp_candidates.clear();
     app.auto_scroll = true;
 
     match input.as_str() {
@@ -634,14 +656,14 @@ async fn submit(app: &mut App) {
         "/reset" | "/clear" => {
             app.messages.truncate(1);
             app.entries.clear();
-            app.streaming = None;
+            app.stream.streaming = None;
             app.push_info("History cleared.");
             return;
         }
         "/new" => {
             app.messages.truncate(1);
             app.entries.clear();
-            app.streaming = None;
+            app.stream.streaming = None;
             if let Ok(path) = crate::session::latest_path()
                 && path.exists()
             {
@@ -895,9 +917,9 @@ fn cmd_resume(app: &mut App) {
     // app.messages (so the model still has full context) but skipped here to
     // keep the recap concise.
     app.entries.clear();
-    app.streaming = None;
-    app.thinking = None;
-    app.in_think = false;
+    app.stream.streaming = None;
+    app.stream.thinking = None;
+    app.stream.in_think = false;
     for m in &history {
         match m.role.as_str() {
             "user" => {
@@ -1053,12 +1075,12 @@ fn dispatch_turn(app: &mut App) {
 fn handle_model_event(app: &mut App, ev: TuiEvent) {
     match ev {
         TuiEvent::StreamToken(token) => {
-            app.raw_buf.push_str(&token);
+            app.stream.raw_buf.push_str(&token);
             consume_raw_buf(
-                &mut app.raw_buf,
-                &mut app.in_think,
-                &mut app.streaming,
-                &mut app.thinking,
+                &mut app.stream.raw_buf,
+                &mut app.stream.in_think,
+                &mut app.stream.streaming,
+                &mut app.stream.thinking,
             );
             app.auto_scroll = true;
         }
@@ -1124,7 +1146,7 @@ fn handle_model_event(app: &mut App, ev: TuiEvent) {
             }
         }
         TuiEvent::TurnError(err) => {
-            app.streaming = None;
+            app.stream.streaming = None;
             // Roll back the user message we pushed before dispatch.
             app.messages.pop();
             // Remove the matching User display entry and everything after it.
@@ -1601,6 +1623,31 @@ mod tests {
     use super::*;
     use crate::client::{ToolCallFunction, ToolCallItem};
     use crate::tools::DEFAULT_MAX_TOOL_RESULT_CHARS;
+
+    #[test]
+    fn input_state_new_starts_empty() {
+        let state = InputState::new();
+        assert!(state.input.is_empty());
+        assert_eq!(state.cursor, 0);
+        assert!(state.history.is_empty());
+        assert!(state.hist_idx.is_none());
+        assert!(state.saved.is_empty());
+        assert!(state.comp_candidates.is_empty());
+        assert_eq!(state.comp_idx, 0);
+    }
+
+    #[test]
+    fn stream_state_new_tracks_show_thinking() {
+        let state = StreamState::new(true);
+        assert!(state.streaming.is_none());
+        assert!(state.thinking.is_none());
+        assert!(!state.in_think);
+        assert!(state.raw_buf.is_empty());
+        assert!(state.show_thinking);
+
+        let hidden = StreamState::new(false);
+        assert!(!hidden.show_thinking);
+    }
 
     // ── char_start_before ─────────────────────────────────────────────────────
 

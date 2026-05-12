@@ -60,7 +60,7 @@ pub(super) fn render(f: &mut Frame, app: &App) {
     let prefix_cols: u16 = 2;
     let input_area_cols = area.width.saturating_sub(prefix_cols).max(1);
     let (wrapped_rows, cur_row, cur_col) =
-        wrap_input_with_cursor(&app.input, app.cursor, input_area_cols);
+        wrap_input_with_cursor(&app.editor.input, app.editor.cursor, input_area_cols);
     // Show at most 3 wrapped rows; overflow scrolls vertically.
     let visible_input_rows = wrapped_rows.len().clamp(1, 3) as u16;
     let input_height = visible_input_rows + 1; // +1 for the top border
@@ -104,15 +104,15 @@ pub(super) fn render(f: &mut Frame, app: &App) {
     f.render_widget(Paragraph::new(title_line), chunks[0]);
 
     let msg_width = chunks[1].width.saturating_sub(1) as usize;
-    let streaming_think = if app.show_thinking {
-        app.thinking.as_deref()
+    let streaming_think = if app.stream.show_thinking {
+        app.stream.thinking.as_deref()
     } else {
         None
     };
     let all_lines = build_lines(
         &app.entries,
         streaming_think,
-        app.streaming.as_deref(),
+        app.stream.streaming.as_deref(),
         msg_width,
     );
     let total = all_lines.len() as u32;

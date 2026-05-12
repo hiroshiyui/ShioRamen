@@ -119,34 +119,34 @@ pub(super) fn consume_raw_buf(
 }
 
 pub(super) fn finalize_streaming(app: &mut App) {
-    if !app.raw_buf.is_empty() {
-        let remaining = std::mem::take(&mut app.raw_buf);
-        if app.in_think {
-            match &mut app.thinking {
+    if !app.stream.raw_buf.is_empty() {
+        let remaining = std::mem::take(&mut app.stream.raw_buf);
+        if app.stream.in_think {
+            match &mut app.stream.thinking {
                 Some(t) => t.push_str(&remaining),
-                None => app.thinking = Some(remaining),
+                None => app.stream.thinking = Some(remaining),
             }
         } else {
-            match &mut app.streaming {
+            match &mut app.stream.streaming {
                 Some(s) => s.push_str(&remaining),
                 None => {
                     if !remaining.is_empty() {
-                        app.streaming = Some(remaining);
+                        app.stream.streaming = Some(remaining);
                     }
                 }
             }
         }
-        app.in_think = false;
+        app.stream.in_think = false;
     }
 
-    if let Some(text) = app.thinking.take() {
+    if let Some(text) = app.stream.thinking.take() {
         let text = text.trim_matches('\n').to_string();
-        if app.show_thinking && !text.is_empty() {
+        if app.stream.show_thinking && !text.is_empty() {
             app.push_entry(EntryKind::Thinking, &text);
         }
     }
 
-    if let Some(text) = app.streaming.take() {
+    if let Some(text) = app.stream.streaming.take() {
         let text = replace_latex(text);
         app.push_entry(EntryKind::Assistant, &text);
     }
