@@ -17,7 +17,7 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::chat::ChatSession;
-use crate::client::{AgentTurn, LlamaClient, Message, SamplingParams, ToolCallItem, ToolDef};
+use crate::client::{AgentTurn, LlamaClient, Message, SamplingParams, ToolDef};
 use crate::config::SkillDef;
 use crate::context;
 use crate::tools::ToolExecutor;
@@ -33,6 +33,7 @@ mod render;
 mod skill;
 mod stream;
 mod supersede;
+mod tool_call;
 mod tool_result;
 use completion::do_complete;
 use confirm::{fmt_confirm_prompt, needs_confirm};
@@ -48,6 +49,7 @@ use supersede::{SUPERSEDE_STUB_SENTINEL, is_supersede_stub};
 use supersede::{
     stub_oldest_tool_results_in_turn, supersede_prior_tool_for_key, supersede_spec_for,
 };
+use tool_call::fmt_call;
 use tool_result::{cap_tool_result, result_needs_chunk_nudge};
 
 // ── Events from model task → TUI ─────────────────────────────────────────────
@@ -1594,33 +1596,10 @@ async fn run_agent_loop(
     anyhow::bail!("agent exceeded {MAX_AGENT_ITERATIONS} iterations without a text response")
 }
 
-fn fmt_call(call: &ToolCallItem) -> String {
-    let args: serde_json::Value =
-        serde_json::from_str(&call.function.arguments).unwrap_or_default();
-    let name = &call.function.name;
-    if let Some(map) = args.as_object() {
-        let mut keys: Vec<&String> = map.keys().collect();
-        keys.sort();
-        let parts: Vec<String> = keys
-            .iter()
-            .filter_map(|k| {
-                map[k.as_str()].as_str().map(|s| {
-                    let s: String = s.chars().take(60).collect();
-                    format!("{k}=\"{s}\"")
-                })
-            })
-            .take(2)
-            .collect();
-        format!("{name}({})", parts.join(", "))
-    } else {
-        name.clone()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::ToolCallFunction;
+    use crate::client::{ToolCallFunction, ToolCallItem};
     use crate::tools::DEFAULT_MAX_TOOL_RESULT_CHARS;
 
     // ── char_start_before ─────────────────────────────────────────────────────
@@ -1841,44 +1820,6 @@ mod tests {
     fn fmt_confirm_prompt_missing_path_field_shows_question_mark() {
         let call = make_call("write_file", "{}");
         assert_eq!(fmt_confirm_prompt(&call), "Write to ??");
-    }
-
-    // ── fmt_call ──────────────────────────────────────────────────────────────
-
-    #[test]
-    fn fmt_call_shows_function_name_and_first_two_string_args() {
-        let call = make_call("read_file", r#"{"path":"src/lib.rs"}"#);
-        assert!(fmt_call(&call).starts_with("read_file("));
-        assert!(fmt_call(&call).contains(r#"path="src/lib.rs""#));
-    }
-
-    #[test]
-    fn fmt_call_truncates_long_arg_values_at_60_chars() {
-        let long = "x".repeat(80);
-        let args = format!(r#"{{"path":"{long}"}}"#);
-        let out = fmt_call(&make_call("write_file", &args));
-        // The displayed path value must be capped at 60 chars.
-        let value_part = out.split('"').nth(3).unwrap_or("");
-        assert!(value_part.len() <= 60, "value not truncated: {value_part}");
-    }
-
-    #[test]
-    fn fmt_call_no_string_args_shows_just_name() {
-        // Arguments has only non-string (numeric) values — filtered out.
-        let call = make_call("set_timeout", r#"{"ms":500}"#);
-        assert_eq!(fmt_call(&call), "set_timeout()");
-    }
-
-    #[test]
-    fn fmt_call_empty_args_shows_just_name() {
-        let call = make_call("list_tools", "{}");
-        assert_eq!(fmt_call(&call), "list_tools()");
-    }
-
-    #[test]
-    fn fmt_call_invalid_json_falls_back_to_name() {
-        let call = make_call("broken_tool", "not json");
-        assert_eq!(fmt_call(&call), "broken_tool");
     }
 
     // ── trim_to_budget ────────────────────────────────────────────────────────
