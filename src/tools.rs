@@ -10,6 +10,8 @@ use crate::ruby::vm::ShioVm;
 mod executor_tests;
 #[cfg(test)]
 mod file_tests;
+#[cfg(test)]
+mod filesystem_mutation_tests;
 mod infer;
 #[cfg(test)]
 mod insert_after_line_tests;
