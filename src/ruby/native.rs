@@ -1,60 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #![allow(clippy::missing_safety_doc)]
 
-use std::ffi::{CStr, CString, c_char};
+mod context;
+
+use context::{lsp_config_json, set_err, set_result, shell_policy};
+pub(crate) use context::{set_lsp_config_json, set_shell_policy};
+use std::ffi::{CStr, c_char};
 use std::io::Read;
 use std::ptr;
-
-// ── thread-local string slots ────────────────────────────────────────────────
-// Each slot holds the last CString returned (or set as error) by a native call
-// on this thread.  The C caller (glue.c) copies the pointer immediately via
-// mrb_str_new_cstr / mrb_raise, so one slot per direction is sufficient.
-
-thread_local! {
-    static LAST_ERR: std::cell::RefCell<Option<CString>> =
-        const { std::cell::RefCell::new(None) };
-    static LAST_RESULT: std::cell::RefCell<Option<CString>> =
-        const { std::cell::RefCell::new(None) };
-    /// Serialised LSP server config (`{"lang": "cmd", ...}`) set by the Rust
-    /// executor just before each `call_tool` invocation.  Read by
-    /// `shio_native_lsp_query` to pass user-configured servers to `lsp::query`.
-    static LSP_CONFIG_JSON: std::cell::RefCell<String> =
-        const { std::cell::RefCell::new(String::new()) };
-    static SHELL_ALLOWLIST: std::cell::RefCell<Vec<String>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-    static SHELL_DENYLIST: std::cell::RefCell<Vec<String>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
-/// Called by `ToolExecutor::dispatch` before entering the Ruby VM so that
-/// `shio_native_lsp_query` can resolve user-configured LSP server commands.
-pub(crate) fn set_lsp_config_json(json: &str) {
-    LSP_CONFIG_JSON.with(|c| *c.borrow_mut() = json.to_string());
-}
-
-pub(crate) fn set_shell_policy(allowlist: &[String], denylist: &[String]) {
-    SHELL_ALLOWLIST.with(|c| *c.borrow_mut() = allowlist.to_vec());
-    SHELL_DENYLIST.with(|c| *c.borrow_mut() = denylist.to_vec());
-}
-
-pub(super) unsafe fn set_err(error_out: *mut *const c_char, msg: &str) {
-    let cstr = CString::new(msg).unwrap_or_else(|_| c"<error contains nul>".to_owned());
-    LAST_ERR.with(|cell| {
-        unsafe {
-            *error_out = cstr.as_ptr();
-        }
-        *cell.borrow_mut() = Some(cstr);
-    });
-}
-
-fn set_result(s: String) -> *const c_char {
-    let cstr = CString::new(s).unwrap_or_else(|_| c"<result contains nul>".to_owned());
-    LAST_RESULT.with(|cell| {
-        let ptr = cstr.as_ptr();
-        *cell.borrow_mut() = Some(cstr);
-        ptr
-    })
-}
 
 // ── Shio.current_dir ─────────────────────────────────────────────────────────
 
@@ -781,8 +734,7 @@ pub unsafe extern "C" fn shio_native_run_shell(
     let cmd = unsafe { CStr::from_ptr(cmd) }.to_string_lossy();
 
     // Check shell allowlist/denylist before execution.
-    let allow = SHELL_ALLOWLIST.with(|c| c.borrow().clone());
-    let deny = SHELL_DENYLIST.with(|c| c.borrow().clone());
+    let (allow, deny) = shell_policy();
     if let Err(msg) = crate::tools::check_shell_policy(&cmd, &allow, &deny) {
         return set_result(format!("Error: {msg}"));
     }
@@ -805,7 +757,7 @@ pub unsafe extern "C" fn shio_native_lsp_query(
     let file = unsafe { CStr::from_ptr(file) }.to_string_lossy();
     let line = (line as u32).max(1);
     let col = (col as u32).max(1);
-    let config_json = LSP_CONFIG_JSON.with(|c| c.borrow().clone());
+    let config_json = lsp_config_json();
     let lsp_config: std::collections::HashMap<String, String> =
         serde_json::from_str(&config_json).unwrap_or_default();
     let result = crate::lsp::query(&operation, &file, line, col, &lsp_config);
