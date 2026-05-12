@@ -183,8 +183,12 @@ impl ToolExecutor {
 }
 
 fn warn_tool(message: &str) {
-    log::warn!(target: "shio::tools", "{message}");
-    if !log::log_enabled!(target: "shio::tools", log::Level::Warn) {
+    // If a `log` backend is wired up to receive shio::tools warnings, route
+    // through it so callers can capture or redirect; otherwise fall back to
+    // stderr so the warning is still visible in plain CLI use.
+    if log::log_enabled!(target: "shio::tools", log::Level::Warn) {
+        log::warn!(target: "shio::tools", "{message}");
+    } else {
         eprintln!("{}", format_tool_warning(message));
     }
 }

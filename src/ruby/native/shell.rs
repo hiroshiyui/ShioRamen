@@ -27,6 +27,10 @@ fn run_shell_command(cmd: &str, timeout: std::time::Duration) -> String {
         Ok(Err(e)) => return format!("Error reading command output: {e}"),
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
             kill_shell_tree(pid);
+            // Best-effort wait so the wait_with_output thread can observe the
+            // SIGKILL and release the child's pipes. Bounded at 1s — if the
+            // kernel hasn't reaped the group by then the thread (and its fds)
+            // outlive this call, but the next gc will catch them.
             let _ = rx.recv_timeout(std::time::Duration::from_secs(1));
             return format!("Error: command timed out after {}s", timeout.as_secs());
         }
