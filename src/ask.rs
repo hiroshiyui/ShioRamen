@@ -66,16 +66,9 @@ pub async fn run(args: &AskArgs, cfg: &ShioConfig) -> Result<()> {
     // context::collect uses std::fs, so run it on a blocking thread to avoid
     // stalling the tokio executor.
     let paths = args.files.clone();
-    let file_blocks = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
-        let mut out = String::new();
-        for path in &paths {
-            let files = context::collect(path)?;
-            out.push_str(&context::format_as_blocks(&files));
-        }
-        Ok(out)
-    })
-    .await??;
-    let content = file_blocks + &args.question;
+    let question = args.question.clone();
+    let content =
+        tokio::task::spawn_blocking(move || build_user_content(&paths, &question)).await??;
 
     let messages = vec![Message::system(system_prompt), Message::user(content)];
 
@@ -83,4 +76,36 @@ pub async fn run(args: &AskArgs, cfg: &ShioConfig) -> Result<()> {
     client.chat_stream(&messages, sampling).await?;
     drop(server);
     Ok(())
+}
+
+fn build_user_content(paths: &[PathBuf], question: &str) -> Result<String> {
+    let mut out = String::new();
+    for path in paths {
+        let files = context::collect(path)?;
+        out.push_str(&context::format_as_blocks(&files));
+    }
+    out.push_str(question);
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_user_content_appends_question_without_files() {
+        let content = build_user_content(&[], "What changed?").unwrap();
+        assert_eq!(content, "What changed?");
+    }
+
+    #[test]
+    fn build_user_content_includes_file_blocks_before_question() {
+        let path = std::env::temp_dir().join("shio_ask_content.rs");
+        std::fs::write(&path, "fn main() {}\n").unwrap();
+        let content = build_user_content(std::slice::from_ref(&path), "Explain it.").unwrap();
+        assert!(content.contains("```rs"), "{content}");
+        assert!(content.contains("fn main() {}"), "{content}");
+        assert!(content.ends_with("Explain it."), "{content}");
+        let _ = std::fs::remove_file(path);
+    }
 }
