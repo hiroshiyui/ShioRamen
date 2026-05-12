@@ -18,6 +18,8 @@ mod memory_todo_tests;
 #[cfg(test)]
 mod patch_tests;
 #[cfg(test)]
+mod read_file_tests;
+#[cfg(test)]
 mod search_tests;
 mod shell;
 #[cfg(test)]
