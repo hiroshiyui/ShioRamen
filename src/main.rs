@@ -166,6 +166,108 @@ impl ServerArgs {
     }
 }
 
+fn build_sampling_params(args: &ChatArgs, cfg: &ShioConfig) -> SamplingParams {
+    SamplingParams {
+        temperature: args.temp.or(cfg.chat.temperature).unwrap_or(DEFAULT_TEMP),
+        top_p: args.top_p.or(cfg.chat.top_p),
+        min_p: args.min_p.or(cfg.chat.min_p),
+        repeat_penalty: args.repeat_penalty.or(cfg.chat.repeat_penalty),
+        n_keep: args.keep.or(cfg.chat.n_keep),
+    }
+}
+
+fn max_tool_result_chars_for_ctx(ctx_size: u32) -> usize {
+    // Cap a single tool result at 75 % of the context budget (estimated at
+    // 4 bytes per token). This lets the model read large files on wide
+    // context windows while still preventing overflow on small ones.
+    (ctx_size as usize * 4 * 3 / 4).max(24_000)
+}
+
+fn build_tool_executor(
+    cfg: &ShioConfig,
+    max_tool_result_chars: usize,
+    trusted: bool,
+) -> Result<Option<tools::ToolExecutor>> {
+    if !trusted {
+        return Ok(None);
+    }
+
+    let mut exec = tools::ToolExecutor::try_new()?;
+    exec.confirm_writes = cfg.tools.confirm_writes.unwrap_or(true);
+    exec.confirm_shell = cfg.tools.confirm_shell.unwrap_or(true);
+    exec.lsp = cfg.lsp.servers.clone();
+    exec.max_tool_result_chars = max_tool_result_chars;
+    exec.shell_allowlist = cfg.tools.shell_allowlist.clone();
+    exec.shell_denylist = cfg.tools.shell_denylist.clone();
+    Ok(Some(exec))
+}
+
+async fn run_chat(args: ChatArgs, cfg: &ShioConfig) -> Result<()> {
+    let sampling = build_sampling_params(&args, cfg);
+    let system_prompt = resolve_system_prompt(cfg);
+    let server = args
+        .server
+        .spawn_or_connect(args.no_spawn, args.model, cfg)
+        .await?;
+    if args.no_spawn {
+        eprintln!("Connecting to {} ...", server.url);
+    }
+
+    println!();
+    let ctx_size = args.server.ctx.or(cfg.server.ctx).unwrap_or(DEFAULT_CTX);
+    let max_tool_result_chars = max_tool_result_chars_for_ctx(ctx_size);
+    let tools_requested = !args.no_tools && cfg.tools.enabled.unwrap_or(true);
+    let executor = if tools_requested {
+        if prompt_trust()? {
+            build_tool_executor(cfg, max_tool_result_chars, true)?
+        } else {
+            eprintln!("  Tools disabled for this session.\n");
+            None
+        }
+    } else {
+        None
+    };
+    let client = LlamaClient::new(server.url.clone());
+    let show_thinking = cfg.chat.show_thinking.unwrap_or(true);
+    let mut session = ChatSession::new(
+        client,
+        sampling,
+        system_prompt,
+        executor,
+        cfg.skills.clone(),
+        ctx_size,
+        show_thinking,
+    );
+
+    if args.resume {
+        match session::find_latest() {
+            Ok(Some(path)) => match session::load(&path) {
+                Ok(msgs) => {
+                    let count = msgs.len().saturating_sub(1);
+                    session.resume(msgs);
+                    eprintln!(
+                        "  Resumed session from {} ({count} message(s))\n",
+                        path.display()
+                    );
+                }
+                Err(e) => {
+                    eprintln!("  ⚠️  Cannot resume session: {e}\n");
+                }
+            },
+            Ok(None) => {
+                eprintln!("  No saved session found.\n");
+            }
+            Err(e) => {
+                eprintln!("  ⚠️  Cannot find sessions: {e}\n");
+            }
+        }
+    }
+
+    session.run().await?;
+    drop(server);
+    Ok(())
+}
+
 #[derive(clap::Args, Debug)]
 struct ServeArgs {
     /// GGUF model file to load [config: chat.model]
@@ -239,87 +341,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Chat(args) => {
-            let sampling = SamplingParams {
-                temperature: args.temp.or(cfg.chat.temperature).unwrap_or(DEFAULT_TEMP),
-                top_p: args.top_p.or(cfg.chat.top_p),
-                min_p: args.min_p.or(cfg.chat.min_p),
-                repeat_penalty: args.repeat_penalty.or(cfg.chat.repeat_penalty),
-                n_keep: args.keep.or(cfg.chat.n_keep),
-            };
-            let system_prompt = resolve_system_prompt(&cfg);
-            let server = args
-                .server
-                .spawn_or_connect(args.no_spawn, args.model, &cfg)
-                .await?;
-            if args.no_spawn {
-                eprintln!("Connecting to {} ...", server.url);
-            }
-
-            println!();
-            let ctx_size = args.server.ctx.or(cfg.server.ctx).unwrap_or(DEFAULT_CTX);
-            // Cap a single tool result at 75 % of the context budget (estimated at
-            // 4 bytes per token).  This lets the model read large files on wide
-            // context windows while still preventing overflow on small ones.
-            let max_tool_result_chars = (ctx_size as usize * 4 * 3 / 4).max(24_000);
-            let tools_requested = !args.no_tools && cfg.tools.enabled.unwrap_or(true);
-            let executor = if tools_requested {
-                if prompt_trust()? {
-                    let mut exec = tools::ToolExecutor::try_new()?;
-                    exec.confirm_writes = cfg.tools.confirm_writes.unwrap_or(true);
-                    exec.confirm_shell = cfg.tools.confirm_shell.unwrap_or(true);
-                    exec.lsp = cfg.lsp.servers.clone();
-                    exec.max_tool_result_chars = max_tool_result_chars;
-                    exec.shell_allowlist = cfg.tools.shell_allowlist.clone();
-                    exec.shell_denylist = cfg.tools.shell_denylist.clone();
-                    Some(exec)
-                } else {
-                    eprintln!("  Tools disabled for this session.\n");
-                    None
-                }
-            } else {
-                None
-            };
-            let client = LlamaClient::new(server.url.clone());
-            let show_thinking = cfg.chat.show_thinking.unwrap_or(true);
-            let mut session = ChatSession::new(
-                client,
-                sampling,
-                system_prompt,
-                executor,
-                cfg.skills.clone(),
-                ctx_size,
-                show_thinking,
-            );
-
-            // Resume a previous session if requested.
-            if args.resume {
-                match session::find_latest() {
-                    Ok(Some(path)) => {
-                        match session::load(&path) {
-                            Ok(msgs) => {
-                                let count = msgs.len().saturating_sub(1); // exclude system prompt
-                                session.resume(msgs);
-                                eprintln!(
-                                    "  Resumed session from {} ({count} message(s))\n",
-                                    path.display()
-                                );
-                            }
-                            Err(e) => {
-                                eprintln!("  ⚠️  Cannot resume session: {e}\n");
-                            }
-                        }
-                    }
-                    Ok(None) => {
-                        eprintln!("  No saved session found.\n");
-                    }
-                    Err(e) => {
-                        eprintln!("  ⚠️  Cannot find sessions: {e}\n");
-                    }
-                }
-            }
-
-            session.run().await?;
-            drop(server);
+            run_chat(args, &cfg).await?;
         }
 
         Commands::Ask(args) => {
@@ -583,6 +605,90 @@ mod tests {
         };
         assert_eq!(args.min_p, Some(0.05f32));
         assert_eq!(args.keep, Some(-1i32));
+    }
+
+    #[test]
+    fn build_sampling_params_prefers_cli_over_config() {
+        let args = ChatArgs {
+            model: None,
+            server: ServerArgs {
+                server_bin: None,
+                host: None,
+                port: None,
+                ngl: None,
+                ctx: None,
+                cache_type_k: None,
+                cache_type_v: None,
+                flash_attn: false,
+                cont_batching: false,
+                mmproj: None,
+            },
+            temp: Some(0.2),
+            top_p: Some(0.9),
+            min_p: None,
+            repeat_penalty: Some(1.1),
+            keep: Some(12),
+            no_spawn: false,
+            no_tools: false,
+            resume: false,
+        };
+        let cfg = ShioConfig {
+            chat: config::ChatSection {
+                temperature: Some(0.8),
+                top_p: Some(0.4),
+                min_p: Some(0.05),
+                repeat_penalty: Some(1.05),
+                n_keep: Some(64),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let params = build_sampling_params(&args, &cfg);
+        assert_eq!(params.temperature, 0.2);
+        assert_eq!(params.top_p, Some(0.9));
+        assert_eq!(params.min_p, Some(0.05));
+        assert_eq!(params.repeat_penalty, Some(1.1));
+        assert_eq!(params.n_keep, Some(12));
+    }
+
+    #[test]
+    fn max_tool_result_chars_scales_with_context() {
+        assert_eq!(max_tool_result_chars_for_ctx(0), 24_000);
+        assert_eq!(max_tool_result_chars_for_ctx(8_192), 24_576);
+    }
+
+    #[test]
+    fn build_tool_executor_respects_trust_flag() {
+        let cfg = ShioConfig::default();
+        assert!(build_tool_executor(&cfg, 32_000, false).unwrap().is_none());
+    }
+
+    #[test]
+    fn build_tool_executor_applies_config_when_trusted() {
+        let cfg = ShioConfig {
+            tools: config::ToolsSection {
+                confirm_writes: Some(false),
+                confirm_shell: Some(false),
+                shell_allowlist: vec!["cargo".to_string()],
+                shell_denylist: vec!["rm".to_string()],
+                ..Default::default()
+            },
+            lsp: config::LspSection {
+                servers: [("rust".to_string(), "rust-analyzer".to_string())]
+                    .into_iter()
+                    .collect(),
+            },
+            ..Default::default()
+        };
+        let exec = build_tool_executor(&cfg, 32_000, true)
+            .unwrap()
+            .expect("trusted config should build an executor");
+        assert!(!exec.confirm_writes);
+        assert!(!exec.confirm_shell);
+        assert_eq!(exec.max_tool_result_chars, 32_000);
+        assert_eq!(exec.shell_allowlist, vec!["cargo"]);
+        assert_eq!(exec.shell_denylist, vec!["rm"]);
+        assert_eq!(exec.lsp.get("rust"), Some(&"rust-analyzer".to_string()));
     }
 
     // ── pull flags ───────────────────────────────────────────────────────────
