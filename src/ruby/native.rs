@@ -2,10 +2,11 @@
 #![allow(clippy::missing_safety_doc)]
 
 mod context;
+mod lsp;
 mod shell;
 mod web;
 
-use context::{lsp_config_json, set_err, set_result};
+use context::{set_err, set_result};
 pub(crate) use context::{set_lsp_config_json, set_shell_policy};
 use std::ffi::{CStr, c_char};
 use std::ptr;
@@ -385,28 +386,6 @@ pub unsafe extern "C" fn shio_native_grep(
     let mut results = Vec::new();
     grep_path_native(std::path::Path::new(p), &re, &mut results);
     set_result(results.join("\n"))
-}
-
-// ── Shio.lsp_query(operation, file, line, col) ───────────────────────────────
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn shio_native_lsp_query(
-    operation: *const c_char,
-    file: *const c_char,
-    line: std::ffi::c_int,
-    col: std::ffi::c_int,
-    error_out: *mut *const c_char,
-) -> *const c_char {
-    let _ = error_out; // lsp::query never returns an Err; errors come back as strings
-    let operation = unsafe { CStr::from_ptr(operation) }.to_string_lossy();
-    let file = unsafe { CStr::from_ptr(file) }.to_string_lossy();
-    let line = (line as u32).max(1);
-    let col = (col as u32).max(1);
-    let config_json = lsp_config_json();
-    let lsp_config: std::collections::HashMap<String, String> =
-        serde_json::from_str(&config_json).unwrap_or_default();
-    let result = crate::lsp::query(&operation, &file, line, col, &lsp_config);
-    set_result(result)
 }
 
 #[cfg(test)]
