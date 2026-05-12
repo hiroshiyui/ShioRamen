@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use std::collections::HashMap;
 use std::io;
-use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use crossterm::{
     event::{
         DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -35,6 +34,8 @@ use crate::tools::ToolExecutor;
 mod confirm;
 mod context_budget;
 mod input;
+mod palette;
+mod recording;
 mod skill;
 mod supersede;
 mod tool_result;
@@ -43,6 +44,11 @@ use context_budget::{context_used_pct, msg_size, trim_to_budget, trim_to_budget_
 use input::{
     char_end_at, char_start_before, cursor_line_col, line_starts, next_word, prev_word, split_path,
 };
+use palette::{
+    SOL_BASE01, SOL_BASE02, SOL_BASE2, SOL_GREEN, SOL_ORANGE, SOL_RED, SOL_YELLOW, code_line_bg,
+    entry_style,
+};
+use recording::{Recorder, default_recording_path};
 use skill::expand_skill_prompt;
 #[cfg(test)]
 use supersede::{SUPERSEDE_STUB_SENTINEL, is_supersede_stub};
@@ -110,39 +116,6 @@ enum EntryKind {
     Error,
 }
 
-// ── Solarized palette ─────────────────────────────────────────────────────────
-// https://ethanschoonover.com/solarized/
-const SOL_BASE02: Color = Color::Rgb(7, 54, 66); // bg highlights (dark theme)
-const SOL_BASE01: Color = Color::Rgb(88, 110, 117); // comments / secondary
-const SOL_BASE2: Color = Color::Rgb(238, 232, 213); // bg highlights (light theme)
-const SOL_YELLOW: Color = Color::Rgb(181, 137, 0);
-const SOL_ORANGE: Color = Color::Rgb(203, 75, 22);
-const SOL_RED: Color = Color::Rgb(220, 50, 47);
-const SOL_CYAN: Color = Color::Rgb(42, 161, 152);
-const SOL_GREEN: Color = Color::Rgb(133, 153, 0);
-
-fn entry_style(kind: EntryKind) -> (&'static str, &'static str, Style) {
-    // Returns (first-line prefix, continuation indent, style)
-    // All prefixes are 7 characters wide for consistent alignment.
-    match kind {
-        EntryKind::User => ("  you> ", "       ", Style::default().fg(SOL_CYAN)),
-        EntryKind::Assistant => (" shio> ", "       ", Style::default()),
-        EntryKind::Thinking => (
-            "  [~~] ",
-            "       ",
-            Style::default().fg(SOL_BASE01).add_modifier(Modifier::DIM),
-        ),
-        EntryKind::ToolCall => ("  [**] ", "       ", Style::default().fg(SOL_YELLOW)),
-        EntryKind::ToolResult => (
-            "  [-›] ",
-            "       ",
-            Style::default().fg(SOL_GREEN).add_modifier(Modifier::DIM),
-        ),
-        EntryKind::Info => ("  [--] ", "       ", Style::default().fg(SOL_BASE01)),
-        EntryKind::Error => ("  [!!] ", "       ", Style::default().fg(SOL_RED)),
-    }
-}
-
 // ── App state ─────────────────────────────────────────────────────────────────
 
 struct App {
@@ -206,66 +179,6 @@ struct App {
     /// every entry pushed into the chat log is mirrored to the file.  Dropped
     /// on exit, which flushes and closes the file.
     recording: Option<Recorder>,
-}
-
-/// Buffered, append-only writer that mirrors chat entries to a Markdown file
-/// while a `/record` session is active.
-struct Recorder {
-    path: PathBuf,
-    writer: std::io::BufWriter<std::fs::File>,
-}
-
-impl Recorder {
-    fn open(path: PathBuf) -> Result<Self> {
-        if let Some(parent) = path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!("Cannot create recording directory: {}", parent.display())
-            })?;
-        }
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .with_context(|| format!("Cannot open recording file: {}", path.display()))?;
-        let mut writer = std::io::BufWriter::new(file);
-        writeln!(writer, "# shio recording — started {}", unix_seconds())?;
-        writer.flush()?;
-        Ok(Self { path, writer })
-    }
-
-    fn write_entry(&mut self, kind: EntryKind, text: &str) {
-        let header = match kind {
-            EntryKind::User => "you",
-            EntryKind::Assistant => "shio",
-            EntryKind::Thinking => "thinking",
-            EntryKind::ToolCall => "tool call",
-            EntryKind::ToolResult => "tool result",
-            EntryKind::Info => "info",
-            EntryKind::Error => "error",
-        };
-        let _ = writeln!(self.writer, "\n### {header}\n\n{text}");
-        let _ = self.writer.flush();
-    }
-}
-
-fn unix_seconds() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-fn default_recording_path() -> Result<PathBuf> {
-    let root = dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("shio/recordings");
-    let dir = match std::env::current_dir() {
-        Ok(cwd) => root.join(cwd.to_string_lossy().replace('/', "-")),
-        Err(_) => root,
-    };
-    Ok(dir.join(format!("rec-{}.md", unix_seconds())))
 }
 
 enum AppStatus {
@@ -757,12 +670,6 @@ fn highlight_line_inkjet(
     }
 }
 
-/// ── Code-block backgrounds — Solarized Light: Base2 tinted with accent hues. ─
-const CODE_BG: Color = SOL_BASE2; // Base2  — standard code bg
-const DIFF_ADD_BG: Color = Color::Rgb(220, 232, 200); // Base2 + green tint
-const DIFF_DEL_BG: Color = Color::Rgb(242, 218, 210); // Base2 + red tint
-const DIFF_META_BG: Color = Color::Rgb(215, 225, 238); // Base2 + blue tint
-
 fn push_entry_lines(out: &mut Vec<Line<'static>>, entry: &ChatEntry, width: usize) {
     use unicode_width::UnicodeWidthStr;
 
@@ -896,23 +803,6 @@ fn fence_prefix_len(line: &str) -> usize {
         3
     } else {
         0
-    }
-}
-
-/// Picks the background colour for a line inside a code block.
-fn code_line_bg(line: &str, is_diff: bool) -> Color {
-    if is_diff {
-        if line.starts_with("---") || line.starts_with("+++") || line.starts_with("@@") {
-            DIFF_META_BG
-        } else if line.starts_with('-') {
-            DIFF_DEL_BG
-        } else if line.starts_with('+') {
-            DIFF_ADD_BG
-        } else {
-            CODE_BG
-        }
-    } else {
-        CODE_BG
     }
 }
 
@@ -2809,42 +2699,6 @@ mod tests {
         assert_eq!(fence_prefix_len("`~`"), 0);
     }
 
-    // ── code_line_bg ──────────────────────────────────────────────────────────
-
-    #[test]
-    fn code_line_bg_non_diff_always_code_bg() {
-        assert_eq!(code_line_bg("hello world", false), CODE_BG);
-        assert_eq!(code_line_bg("-removed line", false), CODE_BG);
-        assert_eq!(code_line_bg("+added line", false), CODE_BG);
-        assert_eq!(code_line_bg("--- a/file", false), CODE_BG);
-    }
-
-    #[test]
-    fn code_line_bg_diff_removed_line() {
-        assert_eq!(code_line_bg("-removed", true), DIFF_DEL_BG);
-        assert_eq!(code_line_bg("-", true), DIFF_DEL_BG);
-    }
-
-    #[test]
-    fn code_line_bg_diff_added_line() {
-        assert_eq!(code_line_bg("+added", true), DIFF_ADD_BG);
-        assert_eq!(code_line_bg("+", true), DIFF_ADD_BG);
-    }
-
-    #[test]
-    fn code_line_bg_diff_meta_lines() {
-        assert_eq!(code_line_bg("--- a/foo.rs", true), DIFF_META_BG);
-        assert_eq!(code_line_bg("+++ b/foo.rs", true), DIFF_META_BG);
-        assert_eq!(code_line_bg("@@ -1,5 +1,7 @@", true), DIFF_META_BG);
-    }
-
-    #[test]
-    fn code_line_bg_diff_context_line() {
-        // Lines without a leading +/- are unchanged context — same bg as regular code.
-        assert_eq!(code_line_bg(" context line", true), CODE_BG);
-        assert_eq!(code_line_bg("plain", true), CODE_BG);
-    }
-
     // ── fmt_confirm_prompt ────────────────────────────────────────────────────
 
     fn make_call(name: &str, args: &str) -> ToolCallItem {
@@ -3503,50 +3357,6 @@ mod tests {
         ));
     }
 
-    // ── entry_style ───────────────────────────────────────────────────────────
-
-    #[test]
-    fn entry_style_all_prefixes_are_seven_chars_wide() {
-        for kind in [
-            EntryKind::User,
-            EntryKind::Assistant,
-            EntryKind::Thinking,
-            EntryKind::ToolCall,
-            EntryKind::ToolResult,
-            EntryKind::Info,
-            EntryKind::Error,
-        ] {
-            let (prefix, indent, _) = entry_style(kind);
-            assert_eq!(
-                prefix.chars().count(),
-                7,
-                "prefix for {kind:?} should be 7 chars"
-            );
-            assert_eq!(
-                indent.chars().count(),
-                7,
-                "indent for {kind:?} should be 7 chars"
-            );
-        }
-    }
-
-    #[test]
-    fn entry_style_prefixes_are_distinct() {
-        let kinds = [
-            EntryKind::User,
-            EntryKind::Assistant,
-            EntryKind::Thinking,
-            EntryKind::ToolCall,
-            EntryKind::ToolResult,
-            EntryKind::Info,
-            EntryKind::Error,
-        ];
-        let prefixes: Vec<_> = kinds.iter().map(|&k| entry_style(k).0).collect();
-        // All prefixes must be unique.
-        let unique: std::collections::HashSet<_> = prefixes.iter().collect();
-        assert_eq!(unique.len(), prefixes.len());
-    }
-
     // ── consume_raw_buf ───────────────────────────────────────────────────────
 
     fn run_consume(input: &str) -> (Option<String>, Option<String>) {
@@ -3612,114 +3422,5 @@ mod tests {
         // The full string must appear once the buffer is flushed.
         let s = streaming.unwrap_or_default();
         assert!(s.contains("# \u{1F3E0}") || s.is_empty());
-    }
-
-    // ── Recorder ─────────────────────────────────────────────────────────────
-
-    fn fresh_record_path(tag: &str) -> PathBuf {
-        let p = std::env::temp_dir().join(format!(
-            "shio_record_test_{}_{}_{}.md",
-            tag,
-            std::process::id(),
-            unix_seconds()
-        ));
-        let _ = std::fs::remove_file(&p);
-        p
-    }
-
-    #[test]
-    fn recorder_writes_header_and_entries() {
-        let path = fresh_record_path("basic");
-        let mut rec = Recorder::open(path.clone()).unwrap();
-        rec.write_entry(EntryKind::User, "hello");
-        rec.write_entry(EntryKind::Assistant, "hi there");
-        drop(rec);
-
-        let body = std::fs::read_to_string(&path).unwrap();
-        assert!(body.starts_with("# shio recording — started "));
-        assert!(body.contains("### you\n\nhello\n"));
-        assert!(body.contains("### shio\n\nhi there\n"));
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn recorder_creates_missing_parent_directory() {
-        let dir = std::env::temp_dir().join(format!(
-            "shio_record_nested_{}_{}",
-            std::process::id(),
-            unix_seconds()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        let path = dir.join("a/b/c/rec.md");
-        let mut rec = Recorder::open(path.clone()).unwrap();
-        rec.write_entry(EntryKind::Info, "ok");
-        drop(rec);
-        assert!(path.exists());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn recorder_appends_to_existing_file() {
-        let path = fresh_record_path("append");
-        {
-            let mut rec = Recorder::open(path.clone()).unwrap();
-            rec.write_entry(EntryKind::User, "first");
-        }
-        {
-            let mut rec = Recorder::open(path.clone()).unwrap();
-            rec.write_entry(EntryKind::User, "second");
-        }
-        let body = std::fs::read_to_string(&path).unwrap();
-        assert!(body.contains("### you\n\nfirst\n"));
-        assert!(body.contains("### you\n\nsecond\n"));
-        // Two header lines, since each open writes one.
-        assert_eq!(
-            body.matches("# shio recording — started ").count(),
-            2,
-            "each open should write a fresh start banner"
-        );
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn recorder_labels_all_entry_kinds() {
-        let path = fresh_record_path("kinds");
-        let mut rec = Recorder::open(path.clone()).unwrap();
-        rec.write_entry(EntryKind::User, "u");
-        rec.write_entry(EntryKind::Assistant, "a");
-        rec.write_entry(EntryKind::Thinking, "t");
-        rec.write_entry(EntryKind::ToolCall, "tc");
-        rec.write_entry(EntryKind::ToolResult, "tr");
-        rec.write_entry(EntryKind::Info, "i");
-        rec.write_entry(EntryKind::Error, "e");
-        drop(rec);
-
-        let body = std::fs::read_to_string(&path).unwrap();
-        for header in [
-            "### you",
-            "### shio",
-            "### thinking",
-            "### tool call",
-            "### tool result",
-            "### info",
-            "### error",
-        ] {
-            assert!(body.contains(header), "missing header: {header}");
-        }
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn default_recording_path_lives_under_shio_recordings() {
-        let p = default_recording_path().unwrap();
-        let s = p.to_string_lossy();
-        assert!(s.contains("shio/recordings"), "got {s}");
-        assert!(
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .map(|n| n.starts_with("rec-") && n.ends_with(".md"))
-                .unwrap_or(false),
-            "unexpected file name: {s}"
-        );
     }
 }
