@@ -119,9 +119,9 @@ impl ToolExecutor {
                 if result.starts_with("Error: unknown tool:")
                     && let Some(inferred) = infer_tool_name_from_args(args)
                 {
-                    eprintln!(
-                        "[shio] unknown tool \"{name}\", inferred \"{inferred}\" from arguments"
-                    );
+                    warn_tool(&format!(
+                        "unknown tool \"{name}\", inferred \"{inferred}\" from arguments"
+                    ));
                     return guard.call_tool(inferred, &args_json);
                 }
                 result
@@ -167,14 +167,18 @@ impl ToolExecutor {
                     })
                     .collect(),
                 Err(e) => {
-                    eprintln!("[shio] tool_defs: schema export failed: {e}");
+                    warn_tool(&format!("tool_defs: schema export failed: {e}"));
                     vec![]
                 }
             },
             Err(e) => {
-                eprintln!("[shio] tool_defs: VM lock poisoned: {e}");
+                warn_tool(&format!("tool_defs: VM lock poisoned: {e}"));
                 vec![]
             }
         }
     }
+}
+
+fn warn_tool(message: &str) {
+    eprintln!("[shio] {message}");
 }

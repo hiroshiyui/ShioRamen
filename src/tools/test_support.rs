@@ -7,7 +7,7 @@ pub(crate) fn executor(confirm_writes: bool, confirm_shell: bool) -> ToolExecuto
     ToolExecutor {
         confirm_writes,
         confirm_shell,
-        ..Default::default()
+        ..ToolExecutor::try_new().expect("test ToolExecutor VM init failed")
     }
 }
 
