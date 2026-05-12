@@ -4,6 +4,33 @@ use crate::client::{ToolCallFunction, ToolCallItem};
 use std::fs;
 
 #[test]
+fn unwrap_nested_tool_args_unwraps_matching_function_name() {
+    let args = serde_json::json!({
+        "write_file": {
+            "path": "out.txt",
+            "content": "hello"
+        }
+    });
+
+    let unwrapped = super::unwrap_nested_tool_args(args, "write_file");
+    assert_eq!(
+        unwrapped,
+        serde_json::json!({
+            "path": "out.txt",
+            "content": "hello"
+        })
+    );
+}
+
+#[test]
+fn unwrap_nested_tool_args_keeps_non_matching_single_key_object() {
+    let args = serde_json::json!({ "other": {} });
+
+    let unwrapped = super::unwrap_nested_tool_args(args.clone(), "write_file");
+    assert_eq!(unwrapped, args);
+}
+
+#[test]
 fn execute_quiet_does_not_unwrap_non_matching_single_key() {
     let ex = executor(false, false);
     let call = ToolCallItem {

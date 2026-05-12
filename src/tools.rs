@@ -93,27 +93,23 @@ impl ToolExecutor {
     /// Confirmation must be handled externally before calling this.
     /// Used by the TUI agent loop where stderr would corrupt the display.
     pub fn execute_quiet(&self, call: &ToolCallItem) -> String {
-        let mut args: Value = match serde_json::from_str(&call.function.arguments) {
-            Ok(v) => v,
-            Err(e) => return format!("Error parsing arguments: {e}"),
+        let args = match parse_call_args(call) {
+            Ok(args) => unwrap_nested_tool_args(args, call.function.name.as_str()),
+            Err(message) => return message,
         };
-        // Some local models wrap all arguments under the function name, e.g.
-        // {"patch_file": {"path": "…"}} instead of {"path": "…"}.  Unwrap one
-        // level when that pattern is detected.
-        if let Value::Object(map) = &args
-            && map.len() == 1
-            && let Some(inner) = map.get(call.function.name.as_str())
-            && inner.is_object()
-        {
-            args = inner.clone();
-        }
-        // Push config into thread-locals for native methods.
+        self.configure_native_context();
+        self.dispatch_with_inference(call.function.name.as_str(), &args)
+    }
+
+    fn configure_native_context(&self) {
         if let Ok(json) = serde_json::to_string(&self.lsp) {
             crate::ruby::native::set_lsp_config_json(&json);
         }
         crate::ruby::native::set_shell_policy(&self.shell_allowlist, &self.shell_denylist);
+    }
+
+    fn dispatch_with_inference(&self, name: &str, args: &Value) -> String {
         let args_json = args.to_string();
-        let name = call.function.name.as_str();
         match self.vm.lock() {
             Ok(mut guard) => {
                 let result = guard.call_tool(name, &args_json);
@@ -121,7 +117,7 @@ impl ToolExecutor {
                 // "cloud_subprocess_filecontent" instead of "write_file"),
                 // try to infer the intended tool from the argument keys.
                 if result.starts_with("Error: unknown tool:")
-                    && let Some(inferred) = infer_tool_name_from_args(&args)
+                    && let Some(inferred) = infer_tool_name_from_args(args)
                 {
                     eprintln!(
                         "[shio] unknown tool \"{name}\", inferred \"{inferred}\" from arguments"
@@ -133,6 +129,25 @@ impl ToolExecutor {
             Err(_) => "Error: VM mutex poisoned".to_string(),
         }
     }
+}
+
+fn parse_call_args(call: &ToolCallItem) -> Result<Value, String> {
+    serde_json::from_str(&call.function.arguments)
+        .map_err(|e| format!("Error parsing arguments: {e}"))
+}
+
+fn unwrap_nested_tool_args(args: Value, name: &str) -> Value {
+    // Some local models wrap all arguments under the function name, e.g.
+    // {"patch_file": {"path": "..."}} instead of {"path": "..."}. Unwrap one
+    // level when that pattern is detected.
+    if let Value::Object(map) = &args
+        && map.len() == 1
+        && let Some(inner) = map.get(name)
+        && inner.is_object()
+    {
+        return inner.clone();
+    }
+    args
 }
 
 impl ToolExecutor {
