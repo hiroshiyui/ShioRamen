@@ -15,6 +15,11 @@ cargo clippy -- -D warnings  # no warnings allowed
 
 Always run `cargo test` after any change. Never leave failing tests.
 
+## Agent Workflow
+
+- Run shell commands with `/bin/zsh`.
+- Load user-defined skills from `.claude/skills/` when a request matches one of those workflows.
+
 ## Repository Layout
 
 | Path | Purpose |
