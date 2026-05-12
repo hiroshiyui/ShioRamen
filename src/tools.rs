@@ -9,8 +9,6 @@ use crate::ruby::vm::ShioVm;
 #[cfg(test)]
 mod executor_tests;
 #[cfg(test)]
-mod file_tests;
-#[cfg(test)]
 mod filesystem_mutation_tests;
 mod infer;
 #[cfg(test)]
@@ -35,6 +33,8 @@ mod vm_smoke_tests;
 mod web;
 #[cfg(test)]
 mod web_vm_tests;
+#[cfg(test)]
+mod write_append_tests;
 use infer::infer_tool_name_from_args;
 pub(crate) use shell::check_shell_policy;
 pub(crate) use web::{
