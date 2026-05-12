@@ -215,3 +215,160 @@ pub(crate) fn resolves_to_private(url: &str) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn percent_decode_handles_basic_encoding() {
+        assert_eq!(percent_decode("hello+world"), "hello world");
+        assert_eq!(percent_decode("foo%2Fbar"), "foo/bar");
+        assert_eq!(percent_decode("a%20b"), "a b");
+    }
+
+    #[test]
+    fn percent_decode_handles_utf8_sequences() {
+        // "é" encodes as %C3%A9 in UTF-8
+        assert_eq!(percent_decode("%C3%A9"), "é");
+    }
+
+    #[test]
+    fn strip_html_removes_tags_and_decodes_entities() {
+        let html = "<p>Hello &amp; <b>world</b>!&nbsp;It&#39;s fine.</p>";
+        let out = strip_html(html);
+        assert!(out.contains("Hello & world!"), "{out}");
+        assert!(out.contains("It's fine."), "{out}");
+        assert!(!out.contains('<'), "{out}");
+    }
+
+    #[test]
+    fn strip_html_drops_script_and_style_content() {
+        let html = "<style>body{color:red}</style><script>alert(1)</script><p>visible</p>";
+        let out = strip_html(html);
+        assert!(out.contains("visible"), "{out}");
+        assert!(!out.contains("color:red"), "{out}");
+        assert!(!out.contains("alert"), "{out}");
+    }
+
+    #[test]
+    fn is_private_host_localhost() {
+        assert!(is_private_host("http://localhost/path"));
+        assert!(is_private_host("https://localhost:8080/x"));
+    }
+
+    #[test]
+    fn is_private_host_loopback_ipv4() {
+        assert!(is_private_host("http://127.0.0.1/"));
+        assert!(is_private_host("http://127.1.2.3/"));
+    }
+
+    #[test]
+    fn is_private_host_private_ipv4_ranges() {
+        assert!(is_private_host("http://10.0.0.1/"));
+        assert!(is_private_host("http://10.255.255.255/"));
+        assert!(is_private_host("http://172.16.0.1/"));
+        assert!(is_private_host("http://172.31.255.255/"));
+        assert!(is_private_host("http://192.168.1.100/"));
+    }
+
+    #[test]
+    fn is_private_host_link_local_imds() {
+        // 169.254.169.254 is the AWS/GCP IMDS endpoint -- must be blocked.
+        assert!(is_private_host("http://169.254.169.254/latest/meta-data/"));
+    }
+
+    #[test]
+    fn is_private_host_ipv6_loopback() {
+        assert!(is_private_host("http://[::1]/"));
+        assert!(is_private_host("http://[::1]:9000/"));
+    }
+
+    #[test]
+    fn is_private_host_ipv6_unique_local() {
+        // fc00::/7 -- unique local addresses (fd00:: is in range, fc00:: is too)
+        assert!(is_private_host("http://[fd12:3456:789a::1]/"));
+        assert!(is_private_host("http://[fc00::1]/path"));
+    }
+
+    #[test]
+    fn is_private_host_ipv6_link_local() {
+        // fe80::/10 -- link-local addresses
+        assert!(is_private_host("http://[fe80::1]/"));
+        assert!(is_private_host("http://[fe80::dead:beef]:8080/api"));
+    }
+
+    #[test]
+    fn is_private_host_ipv6_public_returns_false() {
+        // 2001:db8::/32 is documentation range (publicly routable prefix)
+        assert!(!is_private_host("https://[2001:db8::1]/"));
+        assert!(!is_private_host("https://[2606:4700:4700::1111]/dns")); // Cloudflare
+    }
+
+    #[test]
+    fn is_private_host_mdns_local() {
+        assert!(is_private_host("http://mydevice.local/api"));
+    }
+
+    #[test]
+    fn is_private_host_public_address_returns_false() {
+        assert!(!is_private_host("https://example.com/"));
+        assert!(!is_private_host("https://8.8.8.8/dns"));
+        assert!(!is_private_host("https://172.32.0.1/")); // just outside 172.16-31
+    }
+
+    #[test]
+    fn is_private_host_strips_port_correctly() {
+        assert!(is_private_host("http://192.168.0.1:3000/api"));
+        assert!(!is_private_host("http://93.184.216.34:443/"));
+    }
+
+    #[test]
+    fn is_private_host_handles_userinfo_with_private_host() {
+        assert!(is_private_host("http://user:pass@192.168.0.1/admin"));
+        assert!(is_private_host("http://example.com@127.0.0.1/"));
+    }
+
+    #[test]
+    fn is_private_host_invalid_url_fails_closed() {
+        assert!(is_private_host("not a url"));
+        assert!(is_private_host("http://"));
+    }
+
+    #[test]
+    fn is_private_host_ipv4_mapped_ipv6_loopback() {
+        assert!(is_private_host("http://[::ffff:127.0.0.1]/"));
+        assert!(is_private_host("http://[::ffff:127.0.0.1]:8080/"));
+    }
+
+    #[test]
+    fn is_private_host_ipv4_mapped_ipv6_private() {
+        assert!(is_private_host("http://[::ffff:10.0.0.1]/"));
+        assert!(is_private_host("http://[::ffff:192.168.1.1]/"));
+        assert!(is_private_host("http://[::ffff:169.254.169.254]/"));
+    }
+
+    #[test]
+    fn is_private_host_ipv4_mapped_ipv6_public_returns_false() {
+        assert!(!is_private_host("http://[::ffff:93.184.216.34]/"));
+    }
+
+    #[test]
+    fn is_private_host_ipv6_unspecified() {
+        assert!(is_private_host("http://[::]/"));
+        assert!(is_private_host("http://[::]:8080/"));
+    }
+
+    #[test]
+    fn resolves_to_private_blocks_localhost() {
+        // "localhost" should resolve to 127.0.0.1 or ::1 on all platforms.
+        assert!(resolves_to_private("http://localhost/"));
+        assert!(resolves_to_private("http://localhost:8080/path"));
+    }
+
+    #[test]
+    fn resolves_to_private_invalid_url_fails_closed() {
+        assert!(resolves_to_private("not a url"));
+        assert!(resolves_to_private("http://"));
+    }
+}
