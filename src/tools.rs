@@ -12,6 +12,8 @@ mod executor_tests;
 mod file_tests;
 mod infer;
 #[cfg(test)]
+mod insert_after_line_tests;
+#[cfg(test)]
 mod lsp_vm_tests;
 #[cfg(test)]
 mod memory_todo_tests;
