@@ -128,11 +128,7 @@ pub async fn run(args: &EditArgs, cfg: &ShioConfig) -> Result<()> {
     }
 
     // Write a backup before overwriting so the user can recover.
-    let bak = args.file.with_extension({
-        let mut ext = args.file.extension().unwrap_or_default().to_os_string();
-        ext.push(".bak");
-        ext
-    });
+    let bak = backup_path_for(&args.file);
     std::fs::write(&bak, &original)
         .with_context(|| format!("Cannot write backup: {}", bak.display()))?;
 
@@ -185,6 +181,17 @@ fn build_diff(original: &str, updated: &str) -> String {
         String::new()
     } else {
         out
+    }
+}
+
+fn backup_path_for(path: &std::path::Path) -> PathBuf {
+    match path.extension() {
+        Some(ext) if !ext.is_empty() => {
+            let mut ext = ext.to_os_string();
+            ext.push(".bak");
+            path.with_extension(ext)
+        }
+        _ => path.with_extension("bak"),
     }
 }
 
@@ -260,5 +267,21 @@ mod tests {
     fn build_diff_contains_removed_line() {
         let d = build_diff("a\nb\n", "a\n");
         assert!(d.contains('-'));
+    }
+
+    #[test]
+    fn backup_path_for_preserves_existing_extension() {
+        assert_eq!(
+            backup_path_for(std::path::Path::new("src/main.rs")),
+            PathBuf::from("src/main.rs.bak")
+        );
+    }
+
+    #[test]
+    fn backup_path_for_handles_extensionless_file() {
+        assert_eq!(
+            backup_path_for(std::path::Path::new("Makefile")),
+            PathBuf::from("Makefile.bak")
+        );
     }
 }
