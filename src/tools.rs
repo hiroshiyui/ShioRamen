@@ -102,10 +102,13 @@ impl ToolExecutor {
     }
 
     fn configure_native_context(&self) {
-        if let Ok(json) = serde_json::to_string(&self.lsp) {
-            crate::ruby::native::set_lsp_config_json(&json);
+        if let Ok(lsp_config_json) = serde_json::to_string(&self.lsp) {
+            crate::ruby::native::set_tool_context(crate::ruby::native::NativeToolContext {
+                lsp_config_json: &lsp_config_json,
+                shell_allowlist: &self.shell_allowlist,
+                shell_denylist: &self.shell_denylist,
+            });
         }
-        crate::ruby::native::set_shell_policy(&self.shell_allowlist, &self.shell_denylist);
     }
 
     fn dispatch_with_inference(&self, name: &str, args: &Value) -> String {

@@ -17,22 +17,25 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Called by `ToolExecutor::dispatch` before entering the Ruby VM so that
-/// `shio_native_lsp_query` can resolve user-configured LSP server commands.
-pub(crate) fn set_lsp_config_json(json: &str) {
-    LSP_CONFIG_JSON.with(|c| *c.borrow_mut() = json.to_string());
+pub(crate) struct NativeToolContext<'a> {
+    pub(crate) lsp_config_json: &'a str,
+    pub(crate) shell_allowlist: &'a [String],
+    pub(crate) shell_denylist: &'a [String],
 }
 
-pub(crate) fn lsp_config_json() -> String {
+/// Called before entering the Ruby VM so native callbacks can use the current
+/// executor's LSP configuration and shell policy.
+pub(crate) fn set_tool_context(ctx: NativeToolContext<'_>) {
+    LSP_CONFIG_JSON.with(|c| *c.borrow_mut() = ctx.lsp_config_json.to_string());
+    SHELL_ALLOWLIST.with(|c| *c.borrow_mut() = ctx.shell_allowlist.to_vec());
+    SHELL_DENYLIST.with(|c| *c.borrow_mut() = ctx.shell_denylist.to_vec());
+}
+
+pub(super) fn lsp_config_json() -> String {
     LSP_CONFIG_JSON.with(|c| c.borrow().clone())
 }
 
-pub(crate) fn set_shell_policy(allowlist: &[String], denylist: &[String]) {
-    SHELL_ALLOWLIST.with(|c| *c.borrow_mut() = allowlist.to_vec());
-    SHELL_DENYLIST.with(|c| *c.borrow_mut() = denylist.to_vec());
-}
-
-pub(crate) fn shell_policy() -> (Vec<String>, Vec<String>) {
+pub(super) fn shell_policy() -> (Vec<String>, Vec<String>) {
     let allow = SHELL_ALLOWLIST.with(|c| c.borrow().clone());
     let deny = SHELL_DENYLIST.with(|c| c.borrow().clone());
     (allow, deny)
@@ -55,4 +58,42 @@ pub(super) fn set_result(s: String) -> *const c_char {
         *cell.borrow_mut() = Some(cstr);
         ptr
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NativeToolContext, lsp_config_json, set_tool_context, shell_policy};
+
+    #[test]
+    fn set_tool_context_updates_lsp_config_and_shell_policy() {
+        let allow = vec!["cargo".to_string()];
+        let deny = vec!["curl".to_string()];
+
+        set_tool_context(NativeToolContext {
+            lsp_config_json: r#"{"rust":"rust-analyzer"}"#,
+            shell_allowlist: &allow,
+            shell_denylist: &deny,
+        });
+
+        assert_eq!(lsp_config_json(), r#"{"rust":"rust-analyzer"}"#);
+        assert_eq!(shell_policy(), (allow, deny));
+    }
+
+    #[test]
+    fn set_tool_context_replaces_previous_shell_policy() {
+        set_tool_context(NativeToolContext {
+            lsp_config_json: "{}",
+            shell_allowlist: &["cargo".to_string()],
+            shell_denylist: &["curl".to_string()],
+        });
+
+        set_tool_context(NativeToolContext {
+            lsp_config_json: "[]",
+            shell_allowlist: &[],
+            shell_denylist: &[],
+        });
+
+        assert_eq!(lsp_config_json(), "[]");
+        assert_eq!(shell_policy(), (Vec::new(), Vec::new()));
+    }
 }

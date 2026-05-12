@@ -7,4 +7,4 @@ mod lsp;
 mod shell;
 mod web;
 
-pub(crate) use context::{set_lsp_config_json, set_shell_policy};
+pub(crate) use context::{NativeToolContext, set_tool_context};
