@@ -10,6 +10,8 @@ use crate::ruby::vm::ShioVm;
 mod file_tests;
 mod infer;
 #[cfg(test)]
+mod lsp_vm_tests;
+#[cfg(test)]
 mod patch_tests;
 #[cfg(test)]
 mod search_tests;
@@ -181,50 +183,6 @@ mod tests {
         );
         assert_eq!(fs::read_to_string(&path).unwrap(), content);
         let _ = fs::remove_file(&path);
-    }
-
-    // ── lsp ───────────────────────────────────────────────────────────────────
-
-    #[test]
-    fn lsp_query_unsupported_extension_returns_error_message() {
-        // .xyz is not a known language — exercises lsp::query through Ruby without
-        // needing a real LSP server.
-        let ex = executor(false, false);
-        let result = ex.vm.lock().unwrap().call_tool(
-            "lsp",
-            &serde_json::json!({
-                "operation": "hover",
-                "file": "test.xyz",
-                "line": 1,
-                "column": 1
-            })
-            .to_string(),
-        );
-        assert!(
-            result.contains("No LSP server found") || result.contains("Error"),
-            "expected error message, got: {result}"
-        );
-    }
-
-    #[test]
-    fn lsp_query_missing_file_argument() {
-        let ex = executor(false, false);
-        let result = ex.vm.lock().unwrap().call_tool(
-            "lsp",
-            &serde_json::json!({ "operation": "hover" }).to_string(),
-        );
-        assert!(result.contains("missing 'file'"), "got: {result}");
-    }
-
-    #[test]
-    fn lsp_query_dispatched_via_execute_quiet() {
-        // Verify the lsp tool is reachable through the Ruby VM.
-        let ex = executor(false, false);
-        let result = ex.vm.lock().unwrap().call_tool(
-            "lsp",
-            &serde_json::json!({"operation": "hover", "file": "test.xyz", "line": 1}).to_string(),
-        );
-        assert!(!result.starts_with("Error: unknown tool:"), "got: {result}");
     }
 
     // ── fetch_url (scheme guard, no network) ─────────────────────────────────
