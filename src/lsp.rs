@@ -14,6 +14,30 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LspOperation {
+    Hover,
+    Definition,
+    References,
+    Diagnostics,
+}
+
+impl std::str::FromStr for LspOperation {
+    type Err = String;
+
+    fn from_str(operation: &str) -> Result<Self, Self::Err> {
+        match operation {
+            "hover" => Ok(Self::Hover),
+            "definition" => Ok(Self::Definition),
+            "references" => Ok(Self::References),
+            "diagnostics" => Ok(Self::Diagnostics),
+            op => Err(format!(
+                "Unknown LSP operation '{op}'. Use: hover, definition, references, diagnostics."
+            )),
+        }
+    }
+}
+
 // ── Session ───────────────────────────────────────────────────────────────────
 
 struct LspSession {
@@ -102,14 +126,12 @@ pub fn query(
     let line0 = line.saturating_sub(1);
     let col0 = column.saturating_sub(1);
 
-    match operation {
-        "hover" => do_hover(sess, &abs_file, line0, col0),
-        "definition" => do_definition(sess, &abs_file, line0, col0),
-        "references" => do_references(sess, &abs_file, line0, col0),
-        "diagnostics" => do_diagnostics(sess, &abs_file),
-        op => format!(
-            "Unknown LSP operation '{op}'. Use: hover, definition, references, diagnostics."
-        ),
+    match operation.parse::<LspOperation>() {
+        Ok(LspOperation::Hover) => do_hover(sess, &abs_file, line0, col0),
+        Ok(LspOperation::Definition) => do_definition(sess, &abs_file, line0, col0),
+        Ok(LspOperation::References) => do_references(sess, &abs_file, line0, col0),
+        Ok(LspOperation::Diagnostics) => do_diagnostics(sess, &abs_file),
+        Err(message) => message,
     }
 }
 
@@ -707,6 +729,29 @@ fn format_diagnostics(notif: &Value, abs_file: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lsp_operation_parses_known_names() {
+        assert_eq!("hover".parse::<LspOperation>(), Ok(LspOperation::Hover));
+        assert_eq!(
+            "definition".parse::<LspOperation>(),
+            Ok(LspOperation::Definition)
+        );
+        assert_eq!(
+            "references".parse::<LspOperation>(),
+            Ok(LspOperation::References)
+        );
+        assert_eq!(
+            "diagnostics".parse::<LspOperation>(),
+            Ok(LspOperation::Diagnostics)
+        );
+    }
+
+    #[test]
+    fn lsp_operation_rejects_unknown_names() {
+        let err = "jump_to_declaration".parse::<LspOperation>().unwrap_err();
+        assert!(err.contains("Unknown LSP operation"));
+    }
 
     #[test]
     fn lang_from_ext_rust() {
