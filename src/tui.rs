@@ -27,22 +27,28 @@ use ratatui::{
 use tokio::sync::{mpsc, oneshot};
 
 use crate::chat::ChatSession;
-use crate::client::{
-    AgentTurn, LlamaClient, Message, MessageContent, SamplingParams, ToolCallItem, ToolDef,
-};
+use crate::client::{AgentTurn, LlamaClient, Message, SamplingParams, ToolCallItem, ToolDef};
 use crate::config::SkillDef;
 use crate::context;
 use crate::tools::ToolExecutor;
 
 mod confirm;
+mod context_budget;
 mod input;
 mod skill;
+mod supersede;
 mod tool_result;
 use confirm::{fmt_confirm_prompt, needs_confirm};
+use context_budget::{context_used_pct, msg_size, trim_to_budget, trim_to_budget_before};
 use input::{
     char_end_at, char_start_before, cursor_line_col, line_starts, next_word, prev_word, split_path,
 };
 use skill::expand_skill_prompt;
+#[cfg(test)]
+use supersede::{SUPERSEDE_STUB_SENTINEL, is_supersede_stub};
+use supersede::{
+    stub_oldest_tool_results_in_turn, supersede_prior_tool_for_key, supersede_spec_for,
+};
 use tool_result::{cap_tool_result, result_needs_chunk_nudge};
 
 // ── Events from model task → TUI ─────────────────────────────────────────────
@@ -1830,82 +1836,6 @@ fn try_expand_skill(app: &App, input: &str) -> Option<String> {
     Some(expand_skill_prompt(&skill.prompt, raw_args))
 }
 
-/// Estimate the token-budget cost of a message in bytes.
-///
-/// Estimate the percentage of the context window currently consumed by messages.
-/// Returns `None` when `ctx_size` is unknown (0).
-fn context_used_pct(msgs: &[Message], tools: &[ToolDef], ctx_size: u32) -> Option<u32> {
-    if ctx_size == 0 {
-        return None;
-    }
-    let tools_overhead = serde_json::to_string(tools).map_or(0, |s| s.len());
-    let total: usize = msgs.iter().map(msg_size).sum::<usize>() + tools_overhead;
-    let capacity = ctx_size as usize * 4; // ~4 bytes per token estimate
-    Some(((total * 100) / capacity).min(100) as u32)
-}
-
-/// For text-only messages this is the serialized JSON length.  For multimodal
-/// messages that contain `image_url` parts, the base64 data URL is *not*
-/// counted as tokens — llama-server decodes the image and feeds it through
-/// the multimodal projector, which produces a fixed number of embedding
-/// tokens (~256-576) regardless of pixel dimensions or file size.  We
-/// estimate each image at 576 tokens × 4 bytes = 2 304 bytes.
-fn msg_size(m: &Message) -> usize {
-    use crate::client::{ContentPart, MessageContent};
-
-    const IMAGE_TOKEN_ESTIMATE: usize = 576 * 4; // bytes
-
-    match &m.content {
-        Some(MessageContent::Parts(parts)) => {
-            let mut size = 0;
-            for part in parts {
-                match part {
-                    ContentPart::ImageUrl { .. } => size += IMAGE_TOKEN_ESTIMATE,
-                    ContentPart::Text { text } => size += text.len(),
-                }
-            }
-            // Add overhead for role, tool_calls, etc.
-            size += m.role.len() + 32;
-            if let Some(tc) = &m.tool_calls {
-                size += serde_json::to_string(tc).map_or(0, |s| s.len());
-            }
-            size
-        }
-        _ => serde_json::to_string(m).map_or(0, |s| s.len()),
-    }
-}
-
-/// Drop the oldest non-system messages from `msgs` until the total content
-/// length in bytes fits within `budget`.  The system prompt (index 0) is
-/// always kept.  Returns the number of messages removed.
-fn trim_to_budget(msgs: &mut Vec<Message>, budget: usize) -> usize {
-    trim_to_budget_before(msgs, budget, msgs.len())
-}
-
-/// Like [`trim_to_budget`] but only removes messages before index
-/// `protected_from`.  Messages at or after that index are never touched,
-/// preserving the current agent turn's tool results.
-/// Returns the number of messages removed.
-fn trim_to_budget_before(
-    msgs: &mut Vec<Message>,
-    budget: usize,
-    mut protected_from: usize,
-) -> usize {
-    let mut dropped = 0;
-    loop {
-        let total: usize = msgs.iter().map(msg_size).sum();
-        // Stop if within budget or no pre-turn messages left to drop (index 0 is
-        // always the system prompt; earliest droppable index is 1).
-        if total <= budget || protected_from <= 1 {
-            break;
-        }
-        msgs.remove(1);
-        protected_from -= 1;
-        dropped += 1;
-    }
-    dropped
-}
-
 fn dispatch_turn(app: &mut App) {
     // Safety-net trim: drop old messages only when very close to the context
     // ceiling (95%).  The normal path is auto-compact at 80% after TurnDone,
@@ -2636,151 +2566,6 @@ async fn run_agent_loop(
     }
 
     anyhow::bail!("agent exceeded {MAX_AGENT_ITERATIONS} iterations without a text response")
-}
-
-// ── Supersede sentinel and dispatch ──────────────────────────────────────────
-//
-// All shio-emitted stubs start with a zero-width-space (`\u{200B}`). The model
-// sees the human-readable text as if the ZWSP weren't there; we use it as an
-// unambiguous machine-detectable sentinel so heuristics (`is_supersede_stub`)
-// can never collide with real tool output.
-const SUPERSEDE_STUB_SENTINEL: char = '\u{200B}';
-
-/// Read-shaped tools whose later call obsoletes an earlier call on the same
-/// `key` argument. Third tuple field is the value used when the tool is called
-/// without an explicit value for the key (matches the Ruby tool's default).
-const SUPERSEDE_DISPATCH: &[(&str, &str, Option<&str>)] = &[
-    ("read_file", "path", None),
-    ("list_directory", "path", Some(".")),
-    ("fetch_url", "url", None),
-];
-
-fn supersede_spec_for(
-    tool_name: &str,
-) -> Option<&'static (&'static str, &'static str, Option<&'static str>)> {
-    SUPERSEDE_DISPATCH.iter().find(|(n, _, _)| *n == tool_name)
-}
-
-fn is_supersede_stub(body: &str) -> bool {
-    body.starts_with(SUPERSEDE_STUB_SENTINEL)
-}
-
-/// Replace the body of any earlier `tool_name` tool_result whose argument
-/// `key_name` equals `key_value` with a short stub. Keeps the message in
-/// place (chat templates require every `role:"tool"` message to pair with a
-/// tool_call in the preceding assistant message) but drops the bytes so
-/// context doesn't grow per call. Used for read-shaped tools where a later
-/// call obsoletes earlier ones on the same key (read_file → path,
-/// list_directory → path, fetch_url → url).
-fn supersede_prior_tool_for_key(
-    msgs: &mut [Message],
-    tool_name: &str,
-    key_name: &str,
-    key_value: &str,
-    current_id: &str,
-) {
-    use std::collections::HashMap;
-    // If the caller's tool has a registered default for this key (e.g.
-    // list_directory's `path` defaults to "."), reuse it when scanning prior
-    // calls so implicit-arg invocations still supersede each other.
-    let default_for_key: Option<&str> = SUPERSEDE_DISPATCH
-        .iter()
-        .find(|(n, k, _)| *n == tool_name && *k == key_name)
-        .and_then(|(_, _, d)| *d);
-    // Map tool_call id → (function name, value of `key_name` in args).
-    let mut owner: HashMap<String, (String, String)> = HashMap::new();
-    for m in msgs.iter() {
-        if m.role == "assistant"
-            && let Some(calls) = &m.tool_calls
-        {
-            for c in calls {
-                let v: serde_json::Value =
-                    serde_json::from_str(&c.function.arguments).unwrap_or_default();
-                let resolved = v.get(key_name).and_then(|x| x.as_str()).or_else(|| {
-                    // Only apply the default for the matching tool name.
-                    if c.function.name == tool_name {
-                        default_for_key
-                    } else {
-                        None
-                    }
-                });
-                if let Some(k) = resolved {
-                    owner.insert(c.id.clone(), (c.function.name.clone(), k.to_string()));
-                }
-            }
-        }
-    }
-    for m in msgs.iter_mut() {
-        if m.role != "tool" {
-            continue;
-        }
-        let Some(id) = &m.tool_call_id else { continue };
-        if id == current_id {
-            continue;
-        }
-        if let Some((name, k)) = owner.get(id)
-            && name == tool_name
-            && k == key_value
-        {
-            m.content = Some(MessageContent::Text(format!(
-                "{SUPERSEDE_STUB_SENTINEL}[earlier {tool_name} result for {key_value} — superseded by a later call]"
-            )));
-        }
-    }
-}
-
-/// Stub the *oldest* tool_result messages in the slice `msgs[turn_start..]`
-/// until total estimated size is at or below `budget`, or only one
-/// tool_result remains. Stubs (rather than removing) so chat-template
-/// `tool_call_id` pairing stays valid. Used inside the agent loop when the
-/// current-turn history alone exceeds budget — `trim_to_budget_before` only
-/// touches pre-turn history.
-///
-/// Returns the number of messages that were stubbed.
-fn stub_oldest_tool_results_in_turn(
-    msgs: &mut [Message],
-    turn_start: usize,
-    budget: usize,
-) -> usize {
-    if turn_start >= msgs.len() {
-        return 0;
-    }
-    let total: usize = msgs.iter().map(msg_size).sum();
-    if total <= budget {
-        return 0;
-    }
-    // Indices of tool_result messages in this turn that haven't already been
-    // stubbed. Stubs are identified by the SUPERSEDE_STUB_SENTINEL prefix —
-    // an unambiguous marker that real tool output can't accidentally produce.
-    let candidates: Vec<usize> = msgs
-        .iter()
-        .enumerate()
-        .skip(turn_start)
-        .filter(|(_, m)| m.role == "tool" && !m.text_content().is_some_and(is_supersede_stub))
-        .map(|(i, _)| i)
-        .collect();
-    // Keep at least one current-turn tool_result un-stubbed (the most recent).
-    if candidates.len() <= 1 {
-        return 0;
-    }
-    let mut stubbed = 0usize;
-    let cutoff = candidates.len() - 1; // skip the last (newest)
-    let stub_body = "\u{200B}[earlier tool result dropped to free context]";
-    let stub_size_estimate = msg_size(&Message::tool_result("placeholder", stub_body));
-    let mut running_total = total;
-    for &idx in &candidates[..cutoff] {
-        if running_total <= budget {
-            break;
-        }
-        let old_size = msg_size(&msgs[idx]);
-        let m = &mut msgs[idx];
-        m.content = Some(MessageContent::Text(stub_body.to_string()));
-        running_total = running_total
-            .saturating_sub(old_size)
-            .saturating_add(stub_size_estimate);
-        stubbed += 1;
-    }
-    stubbed
 }
 
 fn fmt_call(call: &ToolCallItem) -> String {
