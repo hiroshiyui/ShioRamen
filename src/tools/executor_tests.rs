@@ -127,3 +127,17 @@ fn format_tool_warning_preserves_cli_prefix() {
         "[shio] tool_defs: schema export failed"
     );
 }
+
+#[test]
+fn try_new_initialises_default_settings() {
+    let ex = super::ToolExecutor::try_new().expect("ToolExecutor should initialise");
+    assert!(!ex.confirm_writes);
+    assert!(!ex.confirm_shell);
+    assert_eq!(
+        ex.max_tool_result_chars,
+        super::DEFAULT_MAX_TOOL_RESULT_CHARS
+    );
+    assert!(ex.shell_allowlist.is_empty());
+    assert!(ex.shell_denylist.is_empty());
+    assert!(ex.lsp.is_empty());
+}

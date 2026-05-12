@@ -2296,11 +2296,10 @@ mod tests {
     }
 
     fn exec(confirm_writes: bool, confirm_shell: bool) -> ToolExecutor {
-        ToolExecutor {
-            confirm_writes,
-            confirm_shell,
-            ..Default::default()
-        }
+        let mut exec = ToolExecutor::try_new().expect("ToolExecutor should initialise");
+        exec.confirm_writes = confirm_writes;
+        exec.confirm_shell = confirm_shell;
+        exec
     }
 
     #[test]

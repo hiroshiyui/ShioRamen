@@ -82,12 +82,6 @@ impl ToolExecutor {
     }
 }
 
-impl Default for ToolExecutor {
-    fn default() -> Self {
-        Self::try_new().expect("ShioVm init failed")
-    }
-}
-
 impl ToolExecutor {
     /// Execute a tool call without producing any terminal output.
     /// Confirmation must be handled externally before calling this.

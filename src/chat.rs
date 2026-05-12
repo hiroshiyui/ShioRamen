@@ -265,11 +265,9 @@ mod tests {
 
     #[test]
     fn new_session_with_executor_has_executor() {
-        let exec = ToolExecutor {
-            confirm_writes: true,
-            confirm_shell: true,
-            ..Default::default()
-        };
+        let mut exec = ToolExecutor::try_new().expect("ToolExecutor should initialise");
+        exec.confirm_writes = true;
+        exec.confirm_shell = true;
         let session = make_session(Some(exec));
         assert!(session.executor.is_some());
     }
