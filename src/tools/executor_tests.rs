@@ -31,6 +31,36 @@ fn unwrap_nested_tool_args_keeps_non_matching_single_key_object() {
 }
 
 #[test]
+fn parse_call_args_accepts_valid_json_object() {
+    let call = ToolCallItem {
+        id: "x".into(),
+        kind: "function".into(),
+        function: ToolCallFunction {
+            name: "read_file".into(),
+            arguments: serde_json::json!({ "path": "src/main.rs" }).to_string(),
+        },
+    };
+
+    let parsed = super::parse_call_args(&call).unwrap();
+    assert_eq!(parsed, serde_json::json!({ "path": "src/main.rs" }));
+}
+
+#[test]
+fn parse_call_args_reports_invalid_json() {
+    let call = ToolCallItem {
+        id: "x".into(),
+        kind: "function".into(),
+        function: ToolCallFunction {
+            name: "read_file".into(),
+            arguments: "not json at all".into(),
+        },
+    };
+
+    let err = super::parse_call_args(&call).unwrap_err();
+    assert!(err.starts_with("Error parsing arguments"), "{err}");
+}
+
+#[test]
 fn execute_quiet_does_not_unwrap_non_matching_single_key() {
     let ex = executor(false, false);
     let call = ToolCallItem {
