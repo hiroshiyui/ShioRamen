@@ -2,6 +2,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 use std::ffi::{CStr, CString, c_char};
+use std::io::Read;
 use std::ptr;
 
 // ── thread-local string slots ────────────────────────────────────────────────
@@ -453,28 +454,6 @@ pub unsafe extern "C" fn shio_native_fetch_url(
         max_chars as usize
     };
 
-    if !url.starts_with("http://") && !url.starts_with("https://") {
-        unsafe {
-            set_err(
-                error_out,
-                &format!("only http:// and https:// URLs are supported, got: {url}"),
-            )
-        };
-        return ptr::null();
-    }
-
-    if crate::tools::is_private_host(url) || crate::tools::resolves_to_private(url) {
-        unsafe {
-            set_err(
-                error_out,
-                &format!(
-                    "requests to localhost and private network addresses are not allowed: {url}"
-                ),
-            )
-        };
-        return ptr::null();
-    }
-
     let client = match crate::tools::http_client() {
         Ok(c) => c,
         Err(e) => {
@@ -483,68 +462,13 @@ pub unsafe extern "C" fn shio_native_fetch_url(
         }
     };
 
-    let response = match client
-        .get(url)
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-    {
-        Ok(r) => r,
+    match fetch_url_text(client, url, max_chars) {
+        Ok(result) => set_result(result),
         Err(e) => {
-            unsafe { set_err(error_out, &format!("Error fetching {url}: {e}")) };
-            return ptr::null();
+            unsafe { set_err(error_out, &e) };
+            ptr::null()
         }
-    };
-
-    if !response.status().is_success() {
-        unsafe {
-            set_err(
-                error_out,
-                &format!("server returned {} for {url}", response.status()),
-            )
-        };
-        return ptr::null();
     }
-
-    let content_type = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-
-    const BODY_LIMIT: usize = 2 * 1024 * 1024;
-    let body = match response.text() {
-        Ok(t) => {
-            if t.len() > BODY_LIMIT {
-                t[..t.floor_char_boundary(BODY_LIMIT)].to_string()
-            } else {
-                t
-            }
-        }
-        Err(e) => {
-            unsafe { set_err(error_out, &format!("Error reading response body: {e}")) };
-            return ptr::null();
-        }
-    };
-
-    let text = if content_type.contains("text/html") {
-        crate::tools::strip_html(&body)
-    } else {
-        body
-    };
-
-    let text = text.trim().to_string();
-    let result = if text.len() > max_chars {
-        let limit = text.floor_char_boundary(max_chars);
-        format!(
-            "{}\n\n[… truncated at {max_chars} chars — use max_chars to get more]",
-            &text[..limit]
-        )
-    } else {
-        text
-    };
-
-    set_result(result)
 }
 
 // ── Shio.web_search ───────────────────────────────────────────────────────────
@@ -676,34 +600,82 @@ pub unsafe extern "C" fn shio_native_web_search(
 
 // ── Shio.run_shell(cmd) ──────────────────────────────────────────────────────
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn shio_native_run_shell(
-    cmd: *const c_char,
-    error_out: *mut *const c_char,
-) -> *const c_char {
-    let _ = error_out; // errors returned as strings, not C errors
-    let cmd = unsafe { CStr::from_ptr(cmd) }.to_string_lossy();
+const BODY_LIMIT: usize = 2 * 1024 * 1024;
+const SHELL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-    // Check shell allowlist/denylist before execution.
-    let allow = SHELL_ALLOWLIST.with(|c| c.borrow().clone());
-    let deny = SHELL_DENYLIST.with(|c| c.borrow().clone());
-    if let Err(msg) = crate::tools::check_shell_policy(&cmd, &allow, &deny) {
-        return set_result(format!("Error: {msg}"));
+fn fetch_url_text(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    max_chars: usize,
+) -> Result<String, String> {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err(format!(
+            "only http:// and https:// URLs are supported, got: {url}"
+        ));
     }
 
-    const SHELL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+    if crate::tools::is_private_host(url) || crate::tools::resolves_to_private(url) {
+        return Err(format!(
+            "requests to localhost and private network addresses are not allowed: {url}"
+        ));
+    }
 
-    let child = match std::process::Command::new("sh")
-        .args(["-c", &*cmd])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-    {
-        Err(e) => return set_result(format!("Error running command: {e}")),
+    let response = client
+        .get(url)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .map_err(|e| format!("Error fetching {url}: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!("server returned {} for {url}", response.status()));
+    }
+
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    let body = read_limited_text(response, BODY_LIMIT)
+        .map_err(|e| format!("Error reading response body: {e}"))?;
+    let text = if content_type.contains("text/html") {
+        crate::tools::strip_html(&body)
+    } else {
+        body
+    };
+
+    Ok(truncate_tool_text(text.trim(), max_chars))
+}
+
+fn truncate_tool_text(text: &str, max_chars: usize) -> String {
+    if text.len() > max_chars {
+        let limit = text.floor_char_boundary(max_chars);
+        format!(
+            "{}\n\n[… truncated at {max_chars} chars — use max_chars to get more]",
+            &text[..limit]
+        )
+    } else {
+        text.to_string()
+    }
+}
+
+fn read_limited_text<R: Read>(mut reader: R, limit: usize) -> std::io::Result<String> {
+    let mut bytes = Vec::with_capacity(limit.min(8192));
+    let mut limited = (&mut reader).take(limit as u64 + 1);
+    limited.read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        bytes.truncate(limit);
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn run_shell_command(cmd: &str, timeout: std::time::Duration) -> String {
+    let child = match spawn_shell(cmd) {
+        Err(e) => return format!("Error running command: {e}"),
         Ok(c) => c,
     };
 
-    // Grab the PID so we can kill from the main thread on timeout.
     let pid = child.id();
 
     // Run wait_with_output() in a background thread so stdout/stderr are
@@ -714,28 +686,16 @@ pub unsafe extern "C" fn shio_native_run_shell(
         let _ = tx.send(child.wait_with_output());
     });
 
-    let out = match rx.recv_timeout(SHELL_TIMEOUT) {
+    let out = match rx.recv_timeout(timeout) {
         Ok(Ok(o)) => o,
-        Ok(Err(e)) => return set_result(format!("Error reading command output: {e}")),
+        Ok(Err(e)) => return format!("Error reading command output: {e}"),
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            // Kill via raw PID — the Child was moved into the thread.
-            // Use kill(2) directly via the nix-style raw syscall to avoid
-            // adding a crate dependency for a single call.
-            #[cfg(unix)]
-            unsafe {
-                // SAFETY: sending SIGKILL to a known PID we spawned.
-                unsafe extern "C" {
-                    fn kill(pid: i32, sig: i32) -> i32;
-                }
-                kill(pid as i32, 9); // SIGKILL = 9
-            }
-            return set_result(format!(
-                "Error: command timed out after {}s",
-                SHELL_TIMEOUT.as_secs()
-            ));
+            kill_shell_tree(pid);
+            let _ = rx.recv_timeout(std::time::Duration::from_secs(1));
+            return format!("Error: command timed out after {}s", timeout.as_secs());
         }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            return set_result("Error: command thread panicked".to_string());
+            return "Error: command thread panicked".to_string();
         }
     };
 
@@ -759,10 +719,75 @@ pub unsafe extern "C" fn shio_native_run_shell(
         ));
     }
     if result.is_empty() {
-        set_result("(no output)".to_string())
+        "(no output)".to_string()
     } else {
-        set_result(result)
+        result
     }
+}
+
+fn spawn_shell(cmd: &str) -> std::io::Result<std::process::Child> {
+    let mut command = std::process::Command::new("sh");
+    command
+        .args(["-c", cmd])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            command.pre_exec(|| {
+                if libc_setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    command.spawn()
+}
+
+#[cfg(unix)]
+fn kill_shell_tree(pid: u32) {
+    // kill(2) with a negative PID sends SIGKILL to the process group whose id
+    // is `pid`. `spawn_shell` creates that group with setsid().
+    libc_kill(-(pid as i32), 9);
+}
+
+#[cfg(not(unix))]
+fn kill_shell_tree(_pid: u32) {}
+
+#[cfg(unix)]
+unsafe extern "C" {
+    fn setsid() -> i32;
+    fn kill(pid: i32, sig: i32) -> i32;
+}
+
+#[cfg(unix)]
+fn libc_setsid() -> i32 {
+    unsafe { setsid() }
+}
+
+#[cfg(unix)]
+fn libc_kill(pid: i32, sig: i32) -> i32 {
+    unsafe { kill(pid, sig) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn shio_native_run_shell(
+    cmd: *const c_char,
+    error_out: *mut *const c_char,
+) -> *const c_char {
+    let _ = error_out; // errors returned as strings, not C errors
+    let cmd = unsafe { CStr::from_ptr(cmd) }.to_string_lossy();
+
+    // Check shell allowlist/denylist before execution.
+    let allow = SHELL_ALLOWLIST.with(|c| c.borrow().clone());
+    let deny = SHELL_DENYLIST.with(|c| c.borrow().clone());
+    if let Err(msg) = crate::tools::check_shell_policy(&cmd, &allow, &deny) {
+        return set_result(format!("Error: {msg}"));
+    }
+
+    set_result(run_shell_command(&cmd, SHELL_TIMEOUT))
 }
 
 // ── Shio.lsp_query(operation, file, line, col) ───────────────────────────────
@@ -789,8 +814,12 @@ pub unsafe extern "C" fn shio_native_lsp_query(
 
 #[cfg(test)]
 mod tests {
-    use super::{READ_CACHE_CAP, cached_read_file, read_cache};
+    use super::{
+        READ_CACHE_CAP, cached_read_file, read_cache, read_limited_text, run_shell_command,
+        truncate_tool_text,
+    };
     use std::fs;
+    use std::io::Cursor;
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
     /// Serialise tests in this module — they all share the process-wide
@@ -894,5 +923,49 @@ mod tests {
         clear_cache();
         let err = cached_read_file("/nonexistent/shio_cache_missing.txt").unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn read_limited_text_stops_at_limit() {
+        let body = vec![b'x'; 2 * 1024 * 1024 + 512];
+        let text = read_limited_text(Cursor::new(body), 2 * 1024 * 1024).unwrap();
+        assert_eq!(text.len(), 2 * 1024 * 1024);
+        assert!(text.chars().all(|c| c == 'x'));
+    }
+
+    #[test]
+    fn read_limited_text_allows_short_body() {
+        let text = read_limited_text(Cursor::new("hello".as_bytes()), 1024).unwrap();
+        assert_eq!(text, "hello");
+    }
+
+    #[test]
+    fn truncate_tool_text_respects_char_boundaries() {
+        let text = truncate_tool_text("aé日", 3);
+        assert!(text.starts_with("aé"), "{text}");
+        assert!(text.contains("truncated"), "{text}");
+    }
+
+    #[test]
+    fn truncate_tool_text_returns_short_text_unchanged() {
+        assert_eq!(truncate_tool_text("short", 100), "short");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_shell_timeout_kills_descendant_processes() {
+        let path = std::env::temp_dir().join(format!(
+            "shio_timeout_descendant_{}.txt",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        let cmd = format!("sh -c 'sleep 2; touch {}' & wait", path.to_string_lossy());
+        let out = run_shell_command(&cmd, std::time::Duration::from_millis(100));
+        assert!(out.contains("timed out"), "{out}");
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        assert!(
+            !path.exists(),
+            "timeout should kill background descendants before they can touch the file"
+        );
     }
 }
