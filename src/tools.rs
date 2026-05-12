@@ -7,6 +7,8 @@ use crate::client::{FunctionSpec, ToolCallItem, ToolDef};
 use crate::ruby::vm::ShioVm;
 
 #[cfg(test)]
+mod executor_tests;
+#[cfg(test)]
 mod file_tests;
 mod infer;
 #[cfg(test)]
@@ -217,76 +219,5 @@ mod tests {
         let ex = executor(false, false);
         let out = ex.vm.lock().unwrap().call_tool("exit_plan_mode", "{}");
         assert!(!out.starts_with("Error: unknown tool"), "{out}");
-    }
-
-    // ── execute_quiet: argument-unwrap edge cases ─────────────────────────────
-
-    #[test]
-    fn execute_quiet_does_not_unwrap_non_matching_single_key() {
-        // A single-key object whose key does NOT match the function name must
-        // not be unwrapped — it should go to dispatch as-is (and produce an
-        // error about the missing argument, not a panic or wrong behaviour).
-        use crate::client::{ToolCallFunction, ToolCallItem};
-        let ex = executor(false, false);
-        let call = ToolCallItem {
-            id: "x".into(),
-            kind: "function".into(),
-            function: ToolCallFunction {
-                name: "get_working_directory".into(),
-                // Single key but named "other", not "get_working_directory".
-                arguments: serde_json::json!({ "other": {} }).to_string(),
-            },
-        };
-        // get_working_directory ignores args entirely, so it must still succeed.
-        let out = ex.execute_quiet(&call);
-        assert!(!out.starts_with("Error"), "{out}");
-    }
-
-    #[test]
-    fn execute_quiet_invalid_json_returns_error() {
-        use crate::client::{ToolCallFunction, ToolCallItem};
-        let ex = executor(false, false);
-        let call = ToolCallItem {
-            id: "x".into(),
-            kind: "function".into(),
-            function: ToolCallFunction {
-                name: "read_file".into(),
-                arguments: "not json at all".into(),
-            },
-        };
-        let out = ex.execute_quiet(&call);
-        assert!(out.starts_with("Error parsing arguments"), "{out}");
-    }
-
-    #[test]
-    fn execute_quiet_infers_write_file_from_hallucinated_name() {
-        // Simulates a model calling "cloud_subprocess_filecontent" instead of
-        // "write_file" — the exact bug from the issue.
-        use crate::client::{ToolCallFunction, ToolCallItem};
-        let path = std::env::temp_dir().join("shio_infer_write.txt");
-        let _ = fs::remove_file(&path);
-        let ex = executor(false, false);
-        let call = ToolCallItem {
-            id: "call_0".into(),
-            kind: "function".into(),
-            function: ToolCallFunction {
-                name: "cloud_subprocess_filecontent".into(),
-                arguments: serde_json::json!({
-                    "path": path.to_str().unwrap(),
-                    "content": "# Chapter 1\nHello world"
-                })
-                .to_string(),
-            },
-        };
-        let out = ex.execute_quiet(&call);
-        assert!(
-            out.contains("bytes") || out.contains("Wrote"),
-            "expected success but got: {out}"
-        );
-        assert_eq!(
-            fs::read_to_string(&path).unwrap(),
-            "# Chapter 1\nHello world"
-        );
-        let _ = fs::remove_file(&path);
     }
 }
