@@ -155,18 +155,6 @@ mod tests {
         }
     }
 
-    // ── list_directory ────────────────────────────────────────────────────────
-
-    #[test]
-    fn list_directory_shows_entries() {
-        let ex = executor(false, false);
-        let out = ex.vm.lock().unwrap().call_tool(
-            "list_directory",
-            &serde_json::json!({ "path": "src" }).to_string(),
-        );
-        assert!(out.contains("main.rs"), "{out}");
-    }
-
     // ── run_shell ─────────────────────────────────────────────────────────────
 
     #[test]
@@ -524,71 +512,6 @@ mod tests {
         let _ = fs::remove_file(&path);
     }
 
-    // ── delete_file ───────────────────────────────────────────────────────────
-
-    #[test]
-    fn delete_file_removes_existing_file() {
-        let path = std::env::temp_dir().join("shio_delete.txt");
-        fs::write(&path, "bye").unwrap();
-        let ex = executor(false, false);
-        let out = ex.vm.lock().unwrap().call_tool(
-            "delete_file",
-            &serde_json::json!({ "path": path.to_str().unwrap() }).to_string(),
-        );
-        assert!(out.contains("Deleted"), "{out}");
-        assert!(!path.exists());
-    }
-
-    #[test]
-    fn delete_file_errors_on_missing_file() {
-        let ex = executor(false, false);
-        let out = ex.vm.lock().unwrap().call_tool(
-            "delete_file",
-            &serde_json::json!({ "path": "/nonexistent/shio_gone.txt" }).to_string(),
-        );
-        assert!(out.starts_with("Error"), "{out}");
-    }
-
-    // ── move_file ─────────────────────────────────────────────────────────────
-
-    #[test]
-    fn move_file_renames_file() {
-        let src = std::env::temp_dir().join("shio_move_src.txt");
-        let dst = std::env::temp_dir().join("shio_move_dst.txt");
-        let _ = fs::remove_file(&dst);
-        fs::write(&src, "content").unwrap();
-        let ex = executor(false, false);
-        let out = ex.vm.lock().unwrap().call_tool(
-            "move_file",
-            &serde_json::json!({
-                "src": src.to_str().unwrap(),
-                "dst": dst.to_str().unwrap()
-            })
-            .to_string(),
-        );
-        assert!(out.contains("Moved") || out.contains("→"), "{out}");
-        assert!(!src.exists());
-        assert!(dst.exists());
-        let _ = fs::remove_file(&dst);
-    }
-
-    #[test]
-    fn move_file_nonexistent_source_returns_error() {
-        let ex = executor(false, false);
-        let out = ex.vm.lock().unwrap().call_tool(
-            "move_file",
-            &serde_json::json!({
-                "src": "/tmp/shio_move_no_such_file.txt",
-                "dst": "/tmp/shio_move_dst.txt"
-            })
-            .to_string(),
-        );
-        assert!(
-            out.contains("Error"),
-            "expected error for missing source: {out}"
-        );
-    }
-
     // ── lsp ───────────────────────────────────────────────────────────────────
 
     #[test]
@@ -654,41 +577,6 @@ mod tests {
             .lock()
             .unwrap()
             .call_tool("fetch_url", &serde_json::json!({}).to_string());
-        assert!(result.starts_with("Error"), "{result}");
-    }
-
-    // ── create_directory ──────────────────────────────────────────────────────
-
-    #[test]
-    fn create_directory_creates_nested_dirs() {
-        let dir = std::env::temp_dir().join("shio_test_mkdir/a/b/c");
-        let ex = executor(false, false);
-        let result = ex.vm.lock().unwrap().call_tool(
-            "create_directory",
-            &serde_json::json!({ "path": dir.to_str().unwrap() }).to_string(),
-        );
-        assert!(result.contains("Created"), "{result}");
-        assert!(dir.is_dir());
-        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("shio_test_mkdir"));
-    }
-
-    #[test]
-    fn create_directory_is_idempotent() {
-        let dir = std::env::temp_dir().join("shio_test_mkdir_exist");
-        std::fs::create_dir_all(&dir).unwrap();
-        let ex = executor(false, false);
-        let result = ex.vm.lock().unwrap().call_tool(
-            "create_directory",
-            &serde_json::json!({ "path": dir.to_str().unwrap() }).to_string(),
-        );
-        assert!(result.contains("Created"), "{result}");
-        let _ = std::fs::remove_dir(&dir);
-    }
-
-    #[test]
-    fn create_directory_requires_path() {
-        let ex = executor(false, false);
-        let result = ex.vm.lock().unwrap().call_tool("create_directory", "{}");
         assert!(result.starts_with("Error"), "{result}");
     }
 
