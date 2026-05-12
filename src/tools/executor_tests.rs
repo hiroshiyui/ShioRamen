@@ -89,3 +89,11 @@ fn execute_quiet_infers_write_file_from_hallucinated_name() {
         "# Chapter 1\nHello world"
     );
 }
+
+#[test]
+fn format_tool_warning_preserves_cli_prefix() {
+    assert_eq!(
+        super::format_tool_warning("tool_defs: schema export failed"),
+        "[shio] tool_defs: schema export failed"
+    );
+}

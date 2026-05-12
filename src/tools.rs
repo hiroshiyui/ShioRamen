@@ -183,5 +183,12 @@ impl ToolExecutor {
 }
 
 fn warn_tool(message: &str) {
-    eprintln!("[shio] {message}");
+    log::warn!(target: "shio::tools", "{message}");
+    if !log::log_enabled!(target: "shio::tools", log::Level::Warn) {
+        eprintln!("{}", format_tool_warning(message));
+    }
+}
+
+fn format_tool_warning(message: &str) -> String {
+    format!("[shio] {message}")
 }

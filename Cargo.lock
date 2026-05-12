@@ -16,6 +16,7 @@ dependencies = [
  "futures-util",
  "glob",
  "inkjet",
+ "log",
  "png 0.17.16",
  "ratatui",
  "regex",
