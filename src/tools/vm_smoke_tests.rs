@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-use super::*;
+use super::test_support::{call_tool, call_tool_raw, executor, path_str};
 use std::fs;
-
-fn executor(confirm_writes: bool, confirm_shell: bool) -> ToolExecutor {
-    ToolExecutor {
-        confirm_writes,
-        confirm_shell,
-        ..Default::default()
-    }
-}
 
 #[test]
 fn ruby_string_interpolation_is_escaped() {
@@ -17,13 +9,13 @@ fn ruby_string_interpolation_is_escaped() {
     let ex = executor(false, false);
     let content = "before #{1+1} after";
 
-    ex.vm.lock().unwrap().call_tool(
+    call_tool(
+        &ex,
         "write_file",
-        &serde_json::json!({
-            "path": path.to_str().unwrap(),
+        serde_json::json!({
+            "path": path_str(&path),
             "content": content
-        })
-        .to_string(),
+        }),
     );
 
     assert_eq!(fs::read_to_string(&path).unwrap(), content);
@@ -33,11 +25,7 @@ fn ruby_string_interpolation_is_escaped() {
 #[test]
 fn get_working_directory_returns_nonempty_path() {
     let ex = executor(false, false);
-    let result = ex
-        .vm
-        .lock()
-        .unwrap()
-        .call_tool("get_working_directory", "{}");
+    let result = call_tool_raw(&ex, "get_working_directory", "{}");
     assert!(!result.is_empty());
     assert!(!result.starts_with("Error"), "{result}");
 }
@@ -45,13 +33,13 @@ fn get_working_directory_returns_nonempty_path() {
 #[test]
 fn enter_plan_mode_is_registered_and_callable() {
     let ex = executor(false, false);
-    let out = ex.vm.lock().unwrap().call_tool("enter_plan_mode", "{}");
+    let out = call_tool_raw(&ex, "enter_plan_mode", "{}");
     assert!(!out.starts_with("Error: unknown tool"), "{out}");
 }
 
 #[test]
 fn exit_plan_mode_is_registered_and_callable() {
     let ex = executor(false, false);
-    let out = ex.vm.lock().unwrap().call_tool("exit_plan_mode", "{}");
+    let out = call_tool_raw(&ex, "exit_plan_mode", "{}");
     assert!(!out.starts_with("Error: unknown tool"), "{out}");
 }

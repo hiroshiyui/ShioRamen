@@ -30,5 +30,8 @@ arboard          = "3"
 base64           = "0.22"
 png              = "0.17"
 
+[dev-dependencies]
+tempfile = "3"
+
 [build-dependencies]
 cc = "1"

@@ -1,20 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+use super::test_support::{call_tool, executor};
 use super::*;
-
-fn executor(confirm_writes: bool, confirm_shell: bool) -> ToolExecutor {
-    ToolExecutor {
-        confirm_writes,
-        confirm_shell,
-        ..Default::default()
-    }
-}
 
 #[test]
 fn run_shell_captures_stdout() {
     let ex = executor(false, false);
-    let out = ex.vm.lock().unwrap().call_tool(
+    let out = call_tool(
+        &ex,
         "run_shell",
-        &serde_json::json!({ "command": "echo hello" }).to_string(),
+        serde_json::json!({ "command": "echo hello" }),
     );
     assert!(out.contains("hello"), "{out}");
 }
@@ -22,22 +16,19 @@ fn run_shell_captures_stdout() {
 #[test]
 fn run_shell_includes_exit_code_on_failure() {
     let ex = executor(false, false);
-    let out = ex.vm.lock().unwrap().call_tool(
-        "run_shell",
-        &serde_json::json!({ "command": "exit 1" }).to_string(),
-    );
+    let out = call_tool(&ex, "run_shell", serde_json::json!({ "command": "exit 1" }));
     assert!(out.contains("exit code"), "{out}");
 }
 
 #[test]
 fn run_shell_large_output_does_not_deadlock() {
     let ex = executor(false, false);
-    let out = ex.vm.lock().unwrap().call_tool(
+    let out = call_tool(
+        &ex,
         "run_shell",
-        &serde_json::json!({
+        serde_json::json!({
             "command": "yes 'abcdefghijklmnopqrstuvwxyz' | head -5000"
-        })
-        .to_string(),
+        }),
     );
     assert!(
         !out.contains("timed out"),
@@ -69,11 +60,7 @@ fn run_shell_blocked_by_denylist() {
 #[test]
 fn run_shell_missing_command_returns_error() {
     let ex = executor(false, false);
-    let out = ex
-        .vm
-        .lock()
-        .unwrap()
-        .call_tool("run_shell", &serde_json::json!({}).to_string());
+    let out = call_tool(&ex, "run_shell", serde_json::json!({}));
     assert!(
         out.starts_with("Error"),
         "expected error for missing command, got: {out}"

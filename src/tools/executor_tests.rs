@@ -1,15 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-use super::*;
+use super::test_support::{executor, path_str};
 use crate::client::{ToolCallFunction, ToolCallItem};
 use std::fs;
-
-fn executor(confirm_writes: bool, confirm_shell: bool) -> ToolExecutor {
-    ToolExecutor {
-        confirm_writes,
-        confirm_shell,
-        ..Default::default()
-    }
-}
 
 #[test]
 fn execute_quiet_does_not_unwrap_non_matching_single_key() {
@@ -54,7 +46,7 @@ fn execute_quiet_infers_write_file_from_hallucinated_name() {
         function: ToolCallFunction {
             name: "cloud_subprocess_filecontent".into(),
             arguments: serde_json::json!({
-                "path": path.to_str().unwrap(),
+                "path": path_str(&path),
                 "content": "# Chapter 1\nHello world"
             })
             .to_string(),

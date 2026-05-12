@@ -23,6 +23,8 @@ mod shell;
 #[cfg(test)]
 mod shell_vm_tests;
 #[cfg(test)]
+mod test_support;
+#[cfg(test)]
 mod vm_smoke_tests;
 mod web;
 #[cfg(test)]

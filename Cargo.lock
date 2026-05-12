@@ -23,6 +23,7 @@ dependencies = [
  "serde",
  "serde_json",
  "similar",
+ "tempfile",
  "textwrap",
  "tokio",
  "toml",
