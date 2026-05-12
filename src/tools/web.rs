@@ -127,6 +127,15 @@ fn is_private_ipv4(o: [u8; 4]) -> bool {
         || o == [0, 0, 0, 0] // unspecified
 }
 
+/// Strip the surrounding `[...]` from an IPv6 host literal as serialized by the
+/// `url` crate. Returns the input unchanged when the brackets are absent or
+/// unbalanced.
+fn host_without_brackets(host: &str) -> &str {
+    host.strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(host)
+}
+
 /// Return `true` if the URL's host is localhost, a loopback address, or a
 /// private/link-local IP range -- any destination that should not be reachable
 /// from an SSRF attack.
@@ -137,7 +146,7 @@ pub(crate) fn is_private_host(url: &str) -> bool {
     let Some(host) = parsed.host_str() else {
         return true;
     };
-    let host_lc = host.trim_matches(['[', ']']).to_ascii_lowercase();
+    let host_lc = host_without_brackets(host).to_ascii_lowercase();
 
     // Textual localhost / unspecified.
     if matches!(host_lc.as_str(), "localhost" | "::1" | "::" | "0.0.0.0") {
@@ -186,6 +195,7 @@ pub(crate) fn resolves_to_private(url: &str) -> bool {
     let Some(port) = parsed.port_or_known_default() else {
         return true;
     };
+    let host = host_without_brackets(host);
     use std::net::ToSocketAddrs;
     let Ok(addrs) = (host, port).to_socket_addrs() else {
         // Resolution failed -- fail-closed: block the request.
@@ -371,5 +381,29 @@ mod tests {
     fn resolves_to_private_invalid_url_fails_closed() {
         assert!(resolves_to_private("not a url"));
         assert!(resolves_to_private("http://"));
+    }
+
+    #[test]
+    fn resolves_to_private_bracketed_ipv6_loopback_blocked() {
+        // host_str returns "[::1]"; without bracket stripping ToSocketAddrs
+        // would fail to parse and we'd block via fail-closed for the wrong
+        // reason. With stripping, the literal parses as ::1 directly.
+        assert!(resolves_to_private("http://[::1]/"));
+        assert!(resolves_to_private("http://[::1]:8080/"));
+    }
+
+    #[test]
+    fn resolves_to_private_bracketed_public_ipv6_allowed() {
+        // Public IPv6 literal must pass after bracket stripping — no DNS
+        // needed since ToSocketAddrs parses the address directly.
+        assert!(!resolves_to_private("https://[2606:4700:4700::1111]/dns"));
+    }
+
+    #[test]
+    fn host_without_brackets_strips_balanced_brackets_only() {
+        assert_eq!(host_without_brackets("[::1]"), "::1");
+        assert_eq!(host_without_brackets("example.com"), "example.com");
+        assert_eq!(host_without_brackets("[unclosed"), "[unclosed");
+        assert_eq!(host_without_brackets("unopened]"), "unopened]");
     }
 }
