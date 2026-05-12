@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.8.1] — 2026-05-12
+
+### Fixed
+- (web): public IPv6 hosts are no longer blocked by `resolves_to_private`. `reqwest::Url::host_str()` returns IPv6 literals in bracketed form (`[::1]`), which `ToSocketAddrs` cannot parse; the new `host_without_brackets` helper strips a balanced `[…]` before resolution so legitimate IPv6 destinations succeed and bracketed loopback still fail-closes.
+- (edit): backup files for extensionless inputs (e.g. `Makefile`) now produce `Makefile.bak` instead of `Makefile..bak`. Extraction into a named `backup_path_for` helper covers both branches with tests.
+- (ruby/native): shell-timeout now `SIGKILL`s the entire process group via `setsid(2)` in `pre_exec` + `kill(-pid, SIGKILL)`. Previously only the direct `sh` child was signalled, so backgrounded grandchildren (`cmd &`) could outlive the 30s timeout.
+
+### Changed
+- (tools): SSRF host parsing centralized on `reqwest::Url`. Closes a userinfo-bypass (`http://x@127.0.0.1/`) and fails closed on parse errors or missing host/port.
+- (tools): warnings route through the `log` crate (target `shio::tools`) when a logger is attached; otherwise fall back to stderr so CLI users still see them.
+- (web): static regex construction unified behind `static_regex(…)` in `tools/web.rs` and `ruby/native/web.rs`, eliminating scattered `Regex::new(…).unwrap()` calls.
+- Module splits — `src/tui.rs`, `src/tools.rs`, `src/ruby/native.rs`, and `src/client.rs` broken into focused submodules: `tui/{render, stream, paste, completion, palette, recording, tool_call, confirm, input, context_budget, supersede, skill, tool_result}`, `tools/{infer, shell, web}`, `ruby/native/{context, files, lsp, shell, web}`, and `client/tool_parse`. No public-API changes; visibility preserved via `pub(crate)` re-exports.
+- (ask): `build_user_content` extracted as a pure helper for testability.
+- (ruby/native): network and shell logic moved into testable Rust helpers (`fetch_url_text`, `run_shell_command`, `read_limited_text`, `truncate_tool_text`) behind thin FFI wrappers.
+
+### Documentation
+- (config): `[chat].system_prompt` in `shio.toml` synced word-for-word with `DEFAULT_SYSTEM_PROMPT` in `src/chat.rs`.
+- (agents): recorded local workflow preferences in `AGENTS.md`.
+
+### Maintenance
+- (tests): 35+ VM tests relocated from `src/tools.rs` into focused `src/tools/*_tests.rs` modules (executor, filesystem mutation, write/append, patch, read_file, insert_after_line, search, shell, lsp, memory/todo, web, vm_smoke). Shared `test_support` helper isolates temp files.
+- (tests): new coverage for bounded body reads, char-boundary truncation, shell-timeout descendant kill, IPv6 bracket handling in SSRF, userinfo-bypass attempts, invalid URL fail-closed paths, and tool-argument parsing. Test count 412 → 452.
+- (deps): added `log = "0.4"`.
+
 ## [v1.8.0] — 2026-05-10
 
 ### Added
