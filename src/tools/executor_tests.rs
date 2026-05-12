@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use super::test_support::{executor, path_str, temp_path};
 use crate::client::{ToolCallFunction, ToolCallItem};
+use std::collections::HashSet;
 use std::fs;
 
 #[test]
@@ -140,4 +141,28 @@ fn try_new_initialises_default_settings() {
     assert!(ex.shell_allowlist.is_empty());
     assert!(ex.shell_denylist.is_empty());
     assert!(ex.lsp.is_empty());
+}
+
+#[test]
+fn tool_defs_match_basic_builtin_handlers() {
+    let ex = executor(false, false);
+    let defs = ex.tool_defs();
+    let names: HashSet<&str> = defs.iter().map(|def| def.function.name.as_str()).collect();
+
+    for name in ["get_working_directory", "enter_plan_mode", "exit_plan_mode"] {
+        assert!(names.contains(name), "missing schema for {name}");
+        let call = ToolCallItem {
+            id: "x".into(),
+            kind: "function".into(),
+            function: ToolCallFunction {
+                name: name.into(),
+                arguments: "{}".into(),
+            },
+        };
+        let out = ex.execute_quiet(&call);
+        assert!(
+            !out.starts_with("Error: unknown tool:"),
+            "schema/handler mismatch for {name}: {out}"
+        );
+    }
 }

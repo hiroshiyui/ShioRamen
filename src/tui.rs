@@ -233,29 +233,69 @@ impl App {
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 pub async fn run(session: ChatSession) -> Result<()> {
-    enable_raw_mode()?;
-    let mut out = io::stdout();
-    execute!(
-        out,
-        EnterAlternateScreen,
-        EnableMouseCapture,
-        EnableBracketedPaste
-    )?;
-    let backend = CrosstermBackend::new(out);
-    let mut term = Terminal::new(backend)?;
+    let mut terminal = TerminalGuard::enter()?;
+    let result = run_loop(&mut terminal.term, session).await;
 
-    let result = run_loop(&mut term, session).await;
-
-    // Always restore terminal, even on error.
-    disable_raw_mode()?;
-    execute!(
-        term.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture,
-        DisableBracketedPaste
-    )?;
-    term.show_cursor()?;
+    // Explicit finish keeps the error path visible while Drop remains a fallback.
+    terminal.finish()?;
     result
+}
+
+struct TerminalGuard {
+    term: Terminal<CrosstermBackend<io::Stdout>>,
+    restored: bool,
+}
+
+impl TerminalGuard {
+    fn enter() -> Result<Self> {
+        enable_raw_mode()?;
+        let mut out = io::stdout();
+        execute!(
+            out,
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableBracketedPaste
+        )?;
+        let backend = CrosstermBackend::new(out);
+        let term = Terminal::new(backend)?;
+        Ok(Self {
+            term,
+            restored: false,
+        })
+    }
+
+    fn finish(mut self) -> Result<()> {
+        self.restore()?;
+        self.restored = true;
+        Ok(())
+    }
+
+    fn restore(&mut self) -> Result<()> {
+        disable_raw_mode()?;
+        execute!(
+            self.term.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture,
+            DisableBracketedPaste
+        )?;
+        self.term.show_cursor()?;
+        Ok(())
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        if !self.restored {
+            let _ = disable_raw_mode();
+            let _ = execute!(
+                self.term.backend_mut(),
+                LeaveAlternateScreen,
+                DisableMouseCapture,
+                DisableBracketedPaste
+            );
+            let _ = self.term.show_cursor();
+        }
+    }
 }
 
 async fn run_loop(
