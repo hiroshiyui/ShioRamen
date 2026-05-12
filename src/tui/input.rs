@@ -67,3 +67,29 @@ pub(super) fn next_word(s: &str, pos: usize) -> usize {
     let skip_space = rest.len() - rest.trim_start_matches(' ').len();
     pos + skip_non_space + skip_space
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_path_with_slash() {
+        let (dir, prefix) = split_path("src/ma");
+        assert_eq!(dir, "src/");
+        assert_eq!(prefix, "ma");
+    }
+
+    #[test]
+    fn split_path_no_slash() {
+        let (dir, prefix) = split_path("main");
+        assert_eq!(dir, "");
+        assert_eq!(prefix, "main");
+    }
+
+    #[test]
+    fn split_path_trailing_slash() {
+        let (dir, prefix) = split_path("src/");
+        assert_eq!(dir, "src/");
+        assert_eq!(prefix, "");
+    }
+}

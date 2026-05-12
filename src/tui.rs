@@ -22,6 +22,7 @@ use crate::config::SkillDef;
 use crate::context;
 use crate::tools::ToolExecutor;
 
+mod completion;
 mod confirm;
 mod context_budget;
 mod input;
@@ -31,11 +32,10 @@ mod render;
 mod skill;
 mod supersede;
 mod tool_result;
+use completion::do_complete;
 use confirm::{fmt_confirm_prompt, needs_confirm};
 use context_budget::{context_used_pct, msg_size, trim_to_budget, trim_to_budget_before};
-use input::{
-    char_end_at, char_start_before, cursor_line_col, line_starts, next_word, prev_word, split_path,
-};
+use input::{char_end_at, char_start_before, cursor_line_col, line_starts, next_word, prev_word};
 use recording::{Recorder, default_recording_path};
 use render::render;
 use skill::expand_skill_prompt;
@@ -600,91 +600,6 @@ fn hist_next(app: &mut App) {
             app.cursor = app.input.len();
         }
     }
-}
-
-fn do_complete(app: &mut App) {
-    const SLASH_CMDS: &[&str] = &[
-        "/exit",
-        "/quit",
-        "/new",
-        "/reset",
-        "/clear",
-        "/compact",
-        "/resume",
-        "/model",
-        "/stats",
-        "/include ",
-        "/tools",
-        "/skills",
-        "/record",
-        "/record ",
-        "/stop-record",
-    ];
-
-    let typed = app.input[..app.cursor].to_string();
-
-    if app.comp_candidates.is_empty() {
-        // Build candidate list for the current input.
-        let candidates: Vec<String> = if let Some(path_part) = typed.strip_prefix("/include ") {
-            let (dir, prefix) = split_path(path_part);
-            list_path_completions(&dir, &prefix)
-                .into_iter()
-                .map(|c| format!("/include {c}"))
-                .collect()
-        } else if typed.starts_with('/') {
-            let mut all: Vec<String> = SLASH_CMDS
-                .iter()
-                .filter(|&&c| c.starts_with(typed.as_str()))
-                .map(|&c| c.to_string())
-                .collect();
-            // Add dynamic skill names (e.g. "/commit", "/review").
-            for name in app.skills.keys() {
-                let slash_name = format!("/{name}");
-                if slash_name.starts_with(typed.as_str()) {
-                    all.push(slash_name);
-                }
-            }
-            all.sort();
-            all.dedup();
-            all
-        } else {
-            return;
-        };
-
-        if candidates.is_empty() {
-            return;
-        }
-        app.comp_candidates = candidates;
-        app.comp_idx = 0;
-    } else {
-        // Cycle through the existing candidates.
-        app.comp_idx = (app.comp_idx + 1) % app.comp_candidates.len();
-    }
-
-    let c = app.comp_candidates[app.comp_idx].clone();
-    app.input = c;
-    app.cursor = app.input.len();
-}
-
-fn list_path_completions(dir: &str, prefix: &str) -> Vec<String> {
-    let read_path = if dir.is_empty() { "." } else { dir };
-    let Ok(entries) = std::fs::read_dir(read_path) else {
-        return vec![];
-    };
-    let mut results: Vec<String> = entries
-        .filter_map(|e| e.ok())
-        .filter_map(|e| {
-            let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with(prefix) {
-                let trail = if e.path().is_dir() { "/" } else { "" };
-                Some(format!("{dir}{name}{trail}"))
-            } else {
-                None
-            }
-        })
-        .collect();
-    results.sort();
-    results
 }
 
 // ── Input submission ──────────────────────────────────────────────────────────
@@ -2057,29 +1972,6 @@ mod tests {
     fn next_word_at_end() {
         let s = "hello";
         assert_eq!(next_word(s, 5), 5);
-    }
-
-    // ── split_path ────────────────────────────────────────────────────────────
-
-    #[test]
-    fn split_path_with_slash() {
-        let (dir, prefix) = split_path("src/ma");
-        assert_eq!(dir, "src/");
-        assert_eq!(prefix, "ma");
-    }
-
-    #[test]
-    fn split_path_no_slash() {
-        let (dir, prefix) = split_path("main");
-        assert_eq!(dir, "");
-        assert_eq!(prefix, "main");
-    }
-
-    #[test]
-    fn split_path_trailing_slash() {
-        let (dir, prefix) = split_path("src/");
-        assert_eq!(dir, "src/");
-        assert_eq!(prefix, "");
     }
 
     // ── expand_skill_prompt ───────────────────────────────────────────────────
