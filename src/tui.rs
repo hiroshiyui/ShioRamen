@@ -36,10 +36,14 @@ use crate::tools::ToolExecutor;
 
 mod confirm;
 mod input;
+mod skill;
+mod tool_result;
 use confirm::{fmt_confirm_prompt, needs_confirm};
 use input::{
     char_end_at, char_start_before, cursor_line_col, line_starts, next_word, prev_word, split_path,
 };
+use skill::expand_skill_prompt;
+use tool_result::{cap_tool_result, result_needs_chunk_nudge};
 
 // ── Events from model task → TUI ─────────────────────────────────────────────
 
@@ -1813,19 +1817,6 @@ fn cmd_model(app: &mut App) {
     });
 }
 
-/// Expand a skill prompt template with the given args string.
-/// `{args}` is replaced by `args`; if the placeholder is absent and `args` is
-/// non-empty, they are appended after the prompt. The result is trimmed.
-fn expand_skill_prompt(prompt: &str, args: &str) -> String {
-    if prompt.contains("{args}") {
-        prompt.replace("{args}", args).trim().to_string()
-    } else if !args.is_empty() {
-        format!("{} {}", prompt.trim_end(), args)
-    } else {
-        prompt.to_string()
-    }
-}
-
 /// If `input` is a skill invocation (`/<name> [args]`), return the expanded
 /// prompt. Returns `None` for unknown skill names or non-slash input.
 /// Built-in commands are checked by the caller before this is reached.
@@ -2322,27 +2313,6 @@ async fn run_stream_turn(
     Ok(())
 }
 
-/// Cap a tool result at `limit` characters.
-/// The truncation message instructs the model to use read_file_range
-/// rather than leaving it confused about partial content.
-fn cap_tool_result(result: String, limit: usize) -> String {
-    if result.len() <= limit {
-        return result;
-    }
-    // Truncate at a char boundary.
-    let cut = result
-        .char_indices()
-        .map(|(i, _)| i)
-        .take_while(|&i| i < limit)
-        .last()
-        .unwrap_or(limit);
-    format!(
-        "{}\n[Output truncated at {cut} chars. \
-         Use read_file_range with explicit line numbers to read specific sections.]",
-        &result[..cut]
-    )
-}
-
 async fn run_agent_loop(
     client: &LlamaClient,
     msgs: &mut Vec<Message>,
@@ -2666,13 +2636,6 @@ async fn run_agent_loop(
     }
 
     anyhow::bail!("agent exceeded {MAX_AGENT_ITERATIONS} iterations without a text response")
-}
-
-/// True iff the given tool result body is a chunked `read_file` response
-/// that signals more content is available — i.e. the trailing hint produced
-/// by `tools/builtin/read_file.rb` when the file has not yet been fully read.
-fn result_needs_chunk_nudge(tool_name: &str, body: &str) -> bool {
-    tool_name == "read_file" && body.contains("call read_file again with cursor=")
 }
 
 // ── Supersede sentinel and dispatch ──────────────────────────────────────────
