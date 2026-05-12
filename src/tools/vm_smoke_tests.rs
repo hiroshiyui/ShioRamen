@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-use super::test_support::{call_tool, call_tool_raw, executor, path_str};
+use super::test_support::{call_tool, call_tool_raw, executor, path_str, temp_path};
 use std::fs;
 
 #[test]
 fn ruby_string_interpolation_is_escaped() {
-    let path = std::env::temp_dir().join("shio_interp_test.txt");
-    let _ = fs::remove_file(&path);
+    let (_dir, path) = temp_path("interp.txt");
     let ex = executor(false, false);
     let content = "before #{1+1} after";
 
@@ -19,7 +18,6 @@ fn ruby_string_interpolation_is_escaped() {
     );
 
     assert_eq!(fs::read_to_string(&path).unwrap(), content);
-    let _ = fs::remove_file(&path);
 }
 
 #[test]

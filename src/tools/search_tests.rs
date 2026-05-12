@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-use super::test_support::{call_tool, executor, path_str};
-use std::fs;
+use super::test_support::{call_tool, executor, path_str, temp_file};
 
 #[test]
 fn search_files_finds_rust_sources() {
@@ -26,8 +25,8 @@ fn grep_files_finds_pattern() {
 
 #[test]
 fn grep_files_case_insensitive_flag() {
-    let path = std::env::temp_dir().join("shio_grep_ci.txt");
-    fs::write(&path, "Hello World\nlower case\n").unwrap();
+    let file = temp_file("Hello World\nlower case\n");
+    let path = file.path();
     let ex = executor(false, false);
     let out = call_tool(
         &ex,
@@ -39,7 +38,6 @@ fn grep_files_case_insensitive_flag() {
         }),
     );
     assert!(out.contains("Hello World"), "got: {out}");
-    let _ = fs::remove_file(&path);
 }
 
 #[test]

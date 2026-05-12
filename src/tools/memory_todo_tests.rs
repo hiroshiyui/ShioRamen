@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-use super::test_support::{call_tool, executor, path_str};
+use super::test_support::{call_tool, executor, path_str, temp_path};
 use std::fs;
 
 #[test]
 fn save_memory_appends_to_file() {
-    let path = std::env::temp_dir().join("shio_test_memory.md");
-    let _ = fs::remove_file(&path);
+    let (_dir, path) = temp_path("memory.md");
     let path_str = path_str(&path);
     let ex = executor(false, false);
 
@@ -24,14 +23,11 @@ fn save_memory_appends_to_file() {
         serde_json::json!({ "memory": "prefer snake_case", "file": path_str }),
     );
     assert!(result2.contains("skipped"), "{result2}");
-
-    let _ = fs::remove_file(&path);
 }
 
 #[test]
 fn save_memory_does_not_false_positive_on_substring() {
-    let path = std::env::temp_dir().join("shio_test_memory_substr.md");
-    let _ = fs::remove_file(&path);
+    let (_dir, path) = temp_path("memory-substr.md");
     let path_str = path_str(&path);
     let ex = executor(false, false);
 
@@ -55,7 +51,6 @@ fn save_memory_does_not_false_positive_on_substring() {
         result.contains("Saved"),
         "substring should not be treated as duplicate: {result}"
     );
-    let _ = fs::remove_file(&path);
 }
 
 #[test]
@@ -67,7 +62,7 @@ fn save_memory_requires_memory_arg() {
 
 #[test]
 fn write_todos_creates_file_with_checkboxes() {
-    let path = std::env::temp_dir().join("shio_todos_test.md");
+    let (_dir, path) = temp_path("todos.md");
     let ex = executor(false, false);
     let result = call_tool(
         &ex,
@@ -86,7 +81,6 @@ fn write_todos_creates_file_with_checkboxes() {
     assert!(content.contains("[x] first task"), "{content}");
     assert!(content.contains("[-] second task"), "{content}");
     assert!(content.contains("[ ] third task"), "{content}");
-    let _ = fs::remove_file(&path);
 }
 
 #[test]

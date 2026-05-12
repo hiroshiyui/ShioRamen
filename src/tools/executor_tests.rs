@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-use super::test_support::{executor, path_str};
+use super::test_support::{executor, path_str, temp_path};
 use crate::client::{ToolCallFunction, ToolCallItem};
 use std::fs;
 
@@ -37,8 +37,7 @@ fn execute_quiet_invalid_json_returns_error() {
 
 #[test]
 fn execute_quiet_infers_write_file_from_hallucinated_name() {
-    let path = std::env::temp_dir().join("shio_infer_write.txt");
-    let _ = fs::remove_file(&path);
+    let (_dir, path) = temp_path("shio_infer_write.txt");
     let ex = executor(false, false);
     let call = ToolCallItem {
         id: "call_0".into(),
@@ -62,5 +61,4 @@ fn execute_quiet_infers_write_file_from_hallucinated_name() {
         fs::read_to_string(&path).unwrap(),
         "# Chapter 1\nHello world"
     );
-    let _ = fs::remove_file(&path);
 }
