@@ -378,42 +378,13 @@ fn is_private_ipv4(o: [u8; 4]) -> bool {
 /// private/link-local IP range — any destination that should not be reachable
 /// from an SSRF attack.
 pub(crate) fn is_private_host(url: &str) -> bool {
-    // Strip scheme.
-    let without_scheme = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-        .unwrap_or(url);
-
-    // Strip path, query, fragment — everything after the first '/', '?', '#'.
-    let authority = without_scheme
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or(without_scheme);
-
-    // Strip userinfo (e.g. "user:pass@host" → "host").  Without this an
-    // attacker could bypass the private-host check with a URL like
-    // http://x@192.168.1.1/ whose authority parses as host "x@192.168.1.1",
-    // which fails the IPv4 parse and slips through.
-    let host_with_port = authority.rsplit('@').next().unwrap_or(authority);
-
-    // Strip port.  IPv6 addresses are enclosed in brackets: [::1]:8080.
-    let host = if host_with_port.starts_with('[') {
-        host_with_port
-            .trim_start_matches('[')
-            .split(']')
-            .next()
-            .unwrap_or(host_with_port)
-    } else {
-        // For plain hostnames / IPv4 we can't just split on ':' because colons
-        // appear in IPv6 too — but we've already handled the bracket form above,
-        // so here it's safe to strip the port with rsplit_once.
-        host_with_port
-            .rsplit_once(':')
-            .map(|(h, _)| h)
-            .unwrap_or(host_with_port)
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return true;
     };
-
-    let host_lc = host.to_ascii_lowercase();
+    let Some(host) = parsed.host_str() else {
+        return true;
+    };
+    let host_lc = host.trim_matches(['[', ']']).to_ascii_lowercase();
 
     // Textual localhost / unspecified.
     if matches!(host_lc.as_str(), "localhost" | "::1" | "::" | "0.0.0.0") {
@@ -425,13 +396,13 @@ pub(crate) fn is_private_host(url: &str) -> bool {
     }
 
     // IPv4 private / loopback / link-local ranges.
-    if let Ok(ipv4) = host.parse::<std::net::Ipv4Addr>() {
+    if let Ok(ipv4) = host_lc.parse::<std::net::Ipv4Addr>() {
         return is_private_ipv4(ipv4.octets());
     }
 
     // IPv6: loopback, unspecified, unique-local (fc00::/7), link-local (fe80::/10),
     // and IPv4-mapped addresses (::ffff:x.x.x.x) — re-check the embedded IPv4.
-    if let Ok(ipv6) = host.parse::<std::net::Ipv6Addr>() {
+    if let Ok(ipv6) = host_lc.parse::<std::net::Ipv6Addr>() {
         if ipv6.is_loopback() || ipv6.is_unspecified() {
             return true;
         }
@@ -453,33 +424,17 @@ pub(crate) fn is_private_host(url: &str) -> bool {
 /// yields at least one private IP, or if the hostname cannot be resolved
 /// (fail-closed).
 pub(crate) fn resolves_to_private(url: &str) -> bool {
-    let without_scheme = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-        .unwrap_or(url);
-    let authority = without_scheme
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or(without_scheme);
-    let host_with_port = authority.rsplit('@').next().unwrap_or(authority);
-
-    // Ensure we have host:port for ToSocketAddrs.
-    let addr_str = if host_with_port.contains(':') && !host_with_port.starts_with('[') {
-        // Already has a port or is bare IPv6 — try as-is, then with default port.
-        host_with_port.to_string()
-    } else if host_with_port.starts_with('[') {
-        // Bracketed IPv6 — may or may not have port.
-        if host_with_port.contains("]:") {
-            host_with_port.to_string()
-        } else {
-            format!("{}:80", host_with_port)
-        }
-    } else {
-        format!("{host_with_port}:80")
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return true;
     };
-
+    let Some(host) = parsed.host_str() else {
+        return true;
+    };
+    let Some(port) = parsed.port_or_known_default() else {
+        return true;
+    };
     use std::net::ToSocketAddrs;
-    let Ok(addrs) = addr_str.to_socket_addrs() else {
+    let Ok(addrs) = (host, port).to_socket_addrs() else {
         // Resolution failed — fail-closed: block the request.
         return true;
     };
@@ -1737,6 +1692,18 @@ mod tests {
     }
 
     #[test]
+    fn is_private_host_handles_userinfo_with_private_host() {
+        assert!(is_private_host("http://user:pass@192.168.0.1/admin"));
+        assert!(is_private_host("http://example.com@127.0.0.1/"));
+    }
+
+    #[test]
+    fn is_private_host_invalid_url_fails_closed() {
+        assert!(is_private_host("not a url"));
+        assert!(is_private_host("http://"));
+    }
+
+    #[test]
     fn is_private_host_ipv4_mapped_ipv6_loopback() {
         assert!(is_private_host("http://[::ffff:127.0.0.1]/"));
         assert!(is_private_host("http://[::ffff:127.0.0.1]:8080/"));
@@ -1765,6 +1732,12 @@ mod tests {
         // "localhost" should resolve to 127.0.0.1 or ::1 on all platforms.
         assert!(resolves_to_private("http://localhost/"));
         assert!(resolves_to_private("http://localhost:8080/path"));
+    }
+
+    #[test]
+    fn resolves_to_private_invalid_url_fails_closed() {
+        assert!(resolves_to_private("not a url"));
+        assert!(resolves_to_private("http://"));
     }
 
     // ── write_file — parent directory auto-creation ───────────────────────────
