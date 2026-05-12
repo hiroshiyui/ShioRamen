@@ -19,6 +19,8 @@ mod shell;
 #[cfg(test)]
 mod shell_vm_tests;
 mod web;
+#[cfg(test)]
+mod web_vm_tests;
 use infer::infer_tool_name_from_args;
 pub(crate) use shell::check_shell_policy;
 pub(crate) use web::{
@@ -185,30 +187,6 @@ mod tests {
         let _ = fs::remove_file(&path);
     }
 
-    // ── fetch_url (scheme guard, no network) ─────────────────────────────────
-
-    #[test]
-    fn fetch_url_rejects_non_http_schemes() {
-        let ex = executor(false, false);
-        let result = ex.vm.lock().unwrap().call_tool(
-            "fetch_url",
-            &serde_json::json!({ "url": "file:///etc/passwd" }).to_string(),
-        );
-        assert!(result.starts_with("Error"), "{result}");
-        assert!(result.contains("http"), "{result}");
-    }
-
-    #[test]
-    fn fetch_url_requires_url_argument() {
-        let ex = executor(false, false);
-        let result = ex
-            .vm
-            .lock()
-            .unwrap()
-            .call_tool("fetch_url", &serde_json::json!({}).to_string());
-        assert!(result.starts_with("Error"), "{result}");
-    }
-
     // ── get_working_directory ─────────────────────────────────────────────────
 
     #[test]
@@ -221,19 +199,6 @@ mod tests {
             .call_tool("get_working_directory", "{}");
         assert!(!result.is_empty());
         assert!(!result.starts_with("Error"), "{result}");
-    }
-
-    // ── web_search ────────────────────────────────────────────────────────────
-
-    #[test]
-    fn web_search_requires_query() {
-        let ex = executor(false, false);
-        let result = ex
-            .vm
-            .lock()
-            .unwrap()
-            .call_tool("web_search", &serde_json::json!({}).to_string());
-        assert!(result.starts_with("Error"), "{result}");
     }
 
     // ── save_memory ───────────────────────────────────────────────────────────
