@@ -22,6 +22,8 @@ mod search_tests;
 mod shell;
 #[cfg(test)]
 mod shell_vm_tests;
+#[cfg(test)]
+mod vm_smoke_tests;
 mod web;
 #[cfg(test)]
 mod web_vm_tests;
@@ -151,73 +153,5 @@ impl ToolExecutor {
                 vec![]
             }
         }
-    }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-
-    fn executor(confirm_writes: bool, confirm_shell: bool) -> ToolExecutor {
-        ToolExecutor {
-            confirm_writes,
-            confirm_shell,
-            ..Default::default()
-        }
-    }
-
-    // ── value_to_ruby string interpolation safety ──────────────────────────
-
-    #[test]
-    fn ruby_string_interpolation_is_escaped() {
-        // Verify that Ruby #{} interpolation in tool args is escaped, not evaluated.
-        let path = std::env::temp_dir().join("shio_interp_test.txt");
-        let _ = fs::remove_file(&path);
-        let ex = executor(false, false);
-        // If #{} were NOT escaped, mRuby would try to evaluate `1+1` and write "2".
-        let content = "before #{1+1} after";
-        ex.vm.lock().unwrap().call_tool(
-            "write_file",
-            &serde_json::json!({
-                "path": path.to_str().unwrap(),
-                "content": content
-            })
-            .to_string(),
-        );
-        assert_eq!(fs::read_to_string(&path).unwrap(), content);
-        let _ = fs::remove_file(&path);
-    }
-
-    // ── get_working_directory ─────────────────────────────────────────────────
-
-    #[test]
-    fn get_working_directory_returns_nonempty_path() {
-        let ex = executor(false, false);
-        let result = ex
-            .vm
-            .lock()
-            .unwrap()
-            .call_tool("get_working_directory", "{}");
-        assert!(!result.is_empty());
-        assert!(!result.starts_with("Error"), "{result}");
-    }
-
-    // ── plan_mode stubs ────────────────────────────────────────────────────────
-
-    #[test]
-    fn enter_plan_mode_is_registered_and_callable() {
-        let ex = executor(false, false);
-        let out = ex.vm.lock().unwrap().call_tool("enter_plan_mode", "{}");
-        assert!(!out.starts_with("Error: unknown tool"), "{out}");
-    }
-
-    #[test]
-    fn exit_plan_mode_is_registered_and_callable() {
-        let ex = executor(false, false);
-        let out = ex.vm.lock().unwrap().call_tool("exit_plan_mode", "{}");
-        assert!(!out.starts_with("Error: unknown tool"), "{out}");
     }
 }
