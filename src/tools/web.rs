@@ -2,6 +2,10 @@
 
 use std::sync::OnceLock;
 
+fn static_regex(pattern: &'static str) -> regex::Regex {
+    regex::Regex::new(pattern).expect("valid static web regex")
+}
+
 // ── Shared HTTP client ────────────────────────────────────────────────────────
 
 /// Return the process-wide blocking HTTP client, or an error string if the
@@ -69,19 +73,16 @@ pub(crate) fn strip_html(html: &str) -> String {
     static RE_SPACES: OnceLock<regex::Regex> = OnceLock::new();
     static RE_NEWLINES: OnceLock<regex::Regex> = OnceLock::new();
 
-    let re_script =
-        RE_SCRIPT.get_or_init(|| regex::Regex::new(r"(?si)<script[^>]*>.*?</script>").unwrap());
-    let re_style =
-        RE_STYLE.get_or_init(|| regex::Regex::new(r"(?si)<style[^>]*>.*?</style>").unwrap());
+    let re_script = RE_SCRIPT.get_or_init(|| static_regex(r"(?si)<script[^>]*>.*?</script>"));
+    let re_style = RE_STYLE.get_or_init(|| static_regex(r"(?si)<style[^>]*>.*?</style>"));
     let re_block = RE_BLOCK.get_or_init(|| {
-        regex::Regex::new(
+        static_regex(
             r"(?i)</?(?:p|div|h[1-6]|li|tr|br|hr|blockquote|pre|article|section|header|footer|nav|main)[^>]*>",
         )
-        .unwrap()
     });
-    let re_tag = RE_TAG.get_or_init(|| regex::Regex::new(r"<[^>]+>").unwrap());
-    let re_spaces = RE_SPACES.get_or_init(|| regex::Regex::new(r"[ \t]+").unwrap());
-    let re_newlines = RE_NEWLINES.get_or_init(|| regex::Regex::new(r"\n{3,}").unwrap());
+    let re_tag = RE_TAG.get_or_init(|| static_regex(r"<[^>]+>"));
+    let re_spaces = RE_SPACES.get_or_init(|| static_regex(r"[ \t]+"));
+    let re_newlines = RE_NEWLINES.get_or_init(|| static_regex(r"\n{3,}"));
 
     // 1. Drop script / style blocks (content included).
     let s = re_script.replace_all(html, " ");

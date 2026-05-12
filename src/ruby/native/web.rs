@@ -7,6 +7,10 @@ use std::sync::OnceLock;
 
 const BODY_LIMIT: usize = 2 * 1024 * 1024;
 
+fn static_regex(pattern: &'static str) -> regex::Regex {
+    regex::Regex::new(pattern).expect("valid static native web regex")
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn shio_native_fetch_url(
     url: *const c_char,
@@ -130,10 +134,9 @@ fn parse_search_results(body: &str, max_results: usize) -> Vec<(String, String)>
     static RE_RESULT: OnceLock<regex::Regex> = OnceLock::new();
     static RE_UDDG: OnceLock<regex::Regex> = OnceLock::new();
 
-    let re_result = RE_RESULT.get_or_init(|| {
-        regex::Regex::new(r#"(?s)<a[^>]+href="[^"]*uddg=[^"]*"[^>]*>(.*?)</a>"#).unwrap()
-    });
-    let re_uddg = RE_UDDG.get_or_init(|| regex::Regex::new(r"uddg=([^&\s]+)").unwrap());
+    let re_result = RE_RESULT
+        .get_or_init(|| static_regex(r#"(?s)<a[^>]+href="[^"]*uddg=[^"]*"[^>]*>(.*?)</a>"#));
+    let re_uddg = RE_UDDG.get_or_init(|| static_regex(r"uddg=([^&\s]+)"));
 
     re_result
         .captures_iter(body)
@@ -162,9 +165,8 @@ fn parse_search_results(body: &str, max_results: usize) -> Vec<(String, String)>
 fn parse_search_snippets(body: &str, max_results: usize) -> Vec<String> {
     static RE_SNIPPET: OnceLock<regex::Regex> = OnceLock::new();
 
-    let re_snippet = RE_SNIPPET.get_or_init(|| {
-        regex::Regex::new(r#"(?s)<td[^>]*class="result-snippet"[^>]*>(.*?)</td>"#).unwrap()
-    });
+    let re_snippet = RE_SNIPPET
+        .get_or_init(|| static_regex(r#"(?s)<td[^>]*class="result-snippet"[^>]*>(.*?)</td>"#));
     re_snippet
         .captures_iter(body)
         .map(|cap| {
