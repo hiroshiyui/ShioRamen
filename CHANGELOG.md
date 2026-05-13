@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.8.2] — 2026-05-13
+
+### Changed
+- (lsp): replaced stringly typed operation branching with a typed `LspOperation` parser and tests.
+- (main): extracted chat startup assembly into a dedicated helper so the CLI branch stays thin.
+- (tools): made `ToolExecutor` initialization explicit instead of relying on a panic-prone `Default`.
+- (tui): split input and streaming state into focused substructs, then rewired render/completion/paste handling.
+
+### Maintenance
+- (tests): added direct coverage for `ToolExecutor::try_new`, TUI state constructors, and basic tool schema/handler consistency.
+
 ## [v1.8.1] — 2026-05-12
 
 ### Fixed
