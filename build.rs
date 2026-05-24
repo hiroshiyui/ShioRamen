@@ -56,6 +56,7 @@ fn main() {
     cc::Build::new()
         .file("src/ruby/glue.c")
         .include(mruby_dir.join("include"))
+        .include(mruby_dir.join("build/host/include"))
         .compile("shio_ruby_glue");
 
     println!("cargo:rerun-if-changed=build.rs");
