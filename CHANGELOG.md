@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.8.4] — 2026-06-21
+
+### Maintenance
+- (deps): bumped `llama.cpp` submodule from `b9030` to `b9739` (709 upstream commits); rebuilt `./bin/llama-server` (CUDA).
+- (deps): updated `Cargo.lock` dependencies to latest semver-compatible versions.
+- (config): switched chat model to `./models/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf`.
+
 ## [v1.8.3] — 2026-05-24
 
 ### Fixed
