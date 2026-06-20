@@ -16,10 +16,10 @@ flash_attn    = true   # Faster attention; disable if you hit compatibility issu
 cont_batching = true   # Better throughput when multiple requests queue up
 
 # Multimodal projector for vision models (Gemma 4, LLaVA, etc.)
-mmproj = "./models/mmproj-gemma-4-12B-it-Q8_0.gguf"
+mmproj = "./models/mmproj-BF16.gguf"
 
 [chat]
-model          = "./models/gemma-4-12B-it-Q4_K_M.gguf"
+model          = "./models/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf"
 temperature    = 0.1   # Low temperature for precise, deterministic coding responses
 # top_p          = 0.95  # Nucleus sampling — lower values focus on top tokens
 # min_p          = 0.05  # Quality floor; pairs well with higher temperature on long contexts
